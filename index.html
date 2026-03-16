@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Risse — AI Companion</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Three.js canvas container -->
+    <div id="container"></div>
+
+    <!-- Drag hint (fades in on hover) -->
+    <div id="drag-hint">drag me ✦</div>
+
+    <!-- Terminal Overlay (for seeing what she says) -->
+    <div id="terminal-overlay">
+        <div class="terminal-header">Risse Terminal</div>
+        <div id="terminal-content"></div>
+    </div>
+
+    <!-- Minimal Status Indicator -->
+    <div id="status-indicator" style="position: absolute; top: 10px; right: 10px; width: 10px; height: 10px; border-radius: 50%; background-color: rgba(255,255,255,0.3); z-index: 9999; transition: all 0.3s ease;"></div>
+
+    <!-- UI Overlay (Hidden) -->
+    <div id="ui-overlay" style="display: none;">
+        <div id="response-bubble" class="hidden"></div>
+        <div id="status"></div>
+        <button id="talk-btn">Talk</button>
+    </div>
+
+    <!-- Import Map for ES Modules -->
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "./node_modules/three/build/three.module.js",
+            "three/examples/jsm/loaders/GLTFLoader": "./node_modules/three/examples/jsm/loaders/GLTFLoader.js",
+            "@pixiv/three-vrm": "./node_modules/@pixiv/three-vrm/lib/three-vrm.module.js"
+        }
+    }
+    </script>
+    <script type="module" src="renderer.js"></script>
+</body>
+</html>

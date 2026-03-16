@@ -1,0 +1,25 @@
+# Exclude environment variables and virtual environments
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Exclude node_modules
+node_modules/
+dist/
+
+# Exclude logs
+*.log
+renderer.log
+server_crash.log
+server_debug.log
+voices_output.txt
+voices_output_utf8.txt
+
+# Exclude OS-specific files
+.DS_Store
+Thumbs.db
+
+# Exclude VS Code settings
+.vscode/

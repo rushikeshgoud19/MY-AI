@@ -1,0 +1,16 @@
+{
+  "name": "floating-3d-ai-assistant",
+  "version": "2.0.0",
+  "description": "A floating 3D AI voice assistant — Electron frontend + Python backend.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "dependencies": {
+    "@pixiv/three-vrm": "^2.1.0",
+    "three": "^0.162.0"
+  },
+  "devDependencies": {
+    "electron": "^29.1.0"
+  }
+}

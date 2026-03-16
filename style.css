@@ -1,0 +1,206 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    overflow: hidden;
+    background-color: transparent;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    -webkit-user-select: none;
+    user-select: none;
+    width: 100vw;
+    height: 100vh;
+}
+
+#container {
+    width: 100vw;
+    height: 100vh;
+    /* pointer-events: auto so we can click/drag on the canvas */
+    pointer-events: auto;
+    cursor: grab;
+}
+
+#container.dragging {
+    cursor: grabbing;
+}
+
+/* ─── UI Overlay ────────────────────────────────── */
+#ui-overlay {
+    position: absolute;
+    bottom: 20px;
+    left: 0;
+    right: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    pointer-events: none;
+    z-index: 10;
+}
+
+/* Response speech bubble */
+#response-bubble {
+    max-width: 90%;
+    background: rgba(20, 20, 35, 0.85);
+    color: #e0e0ff;
+    padding: 12px 18px;
+    border-radius: 16px;
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(110, 142, 251, 0.3);
+    text-align: center;
+    transition: opacity 0.3s ease, transform 0.3s ease;
+    pointer-events: none;
+}
+
+#response-bubble.hidden {
+    opacity: 0;
+    transform: translateY(10px);
+    pointer-events: none;
+}
+
+/* Status pill */
+#status {
+    background: rgba(0, 0, 0, 0.55);
+    color: #aaa;
+    padding: 6px 14px;
+    border-radius: 20px;
+    font-size: 12px;
+    -webkit-backdrop-filter: blur(5px);
+    backdrop-filter: blur(5px);
+    pointer-events: none;
+    transition: color 0.3s ease, border-color 0.3s ease;
+}
+
+#status.listening {
+    color: #ff6b6b;
+    border: 1px solid rgba(255, 107, 107, 0.4);
+}
+
+#status.connected {
+    color: #6bffb8;
+}
+
+/* Talk button */
+#talk-btn {
+    display: none !important; /* Hidden — voice only */
+    background: linear-gradient(135deg, #6e8efb, #a777e3);
+    border: none;
+    color: white;
+    padding: 10px 26px;
+    border-radius: 25px;
+    font-size: 16px;
+    font-weight: bold;
+    cursor: pointer;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+    transition: transform 0.2s, box-shadow 0.2s;
+    pointer-events: auto;
+}
+
+#talk-btn:hover {
+    transform: scale(1.05);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+}
+
+#talk-btn:active {
+    transform: scale(0.95);
+}
+
+#talk-btn.active {
+    background: linear-gradient(135deg, #ff416c, #ff4b2b);
+    animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+    0%   { transform: scale(1);    box-shadow: 0 0 0 0 rgba(255, 75, 43, 0.7); }
+    70%  { transform: scale(1.05); box-shadow: 0 0 0 10px rgba(255, 75, 43, 0); }
+    100% { transform: scale(1);    box-shadow: 0 0 0 0 rgba(255, 75, 43, 0); }
+}
+
+/* Drag-handle hint — visible on hover */
+#drag-hint {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    background: rgba(110, 142, 251, 0.15);
+    color: rgba(110, 142, 251, 0.6);
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+    z-index: 20;
+    -webkit-backdrop-filter: blur(4px);
+    backdrop-filter: blur(4px);
+}
+
+body:hover #drag-hint {
+    opacity: 1;
+}
+
+/* ─── Terminal Overlay ───────────────────────── */
+#terminal-overlay {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 90%;
+    height: 80%;
+    background: rgba(10, 10, 20, 0.95);
+    border: 1px solid rgba(110, 142, 251, 0.4);
+    border-radius: 12px;
+    z-index: 1000;
+    display: none; /* Hidden by default, toggled via hotkey */
+    flex-direction: column;
+    overflow: hidden;
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.8);
+    -webkit-backdrop-filter: blur(20px);
+    backdrop-filter: blur(20px);
+}
+
+.terminal-header {
+    background: rgba(110, 142, 251, 0.2);
+    color: #6e8efb;
+    padding: 10px 15px;
+    font-size: 11px;
+    font-weight: bold;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    border-bottom: 1px solid rgba(110, 142, 251, 0.2);
+}
+
+#terminal-content {
+    flex: 1;
+    padding: 15px;
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 13px;
+    color: #c0c0ff;
+    overflow-y: auto;
+    scroll-behavior: smooth;
+}
+
+#terminal-content::-webkit-scrollbar {
+    width: 6px;
+}
+
+#terminal-content::-webkit-scrollbar-thumb {
+    background: rgba(110, 142, 251, 0.3);
+    border-radius: 3px;
+}
+
+.terminal-line {
+    margin-bottom: 8px;
+    line-height: 1.4;
+    word-break: break-all;
+}
+
+.terminal-user { color: #f8f8f2; }
+.terminal-risse { color: #6e8efb; font-weight: 500; }
+.terminal-system { color: #888; font-style: italic; }
+.terminal-error { color: #ff5555; }
+

@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+websockets
+SpeechRecognition
+sounddevice
+scipy
+numpy
+pyautogui
+keyboard
+google-generativeai
+google-genai
+pipwin
+pyaudio
