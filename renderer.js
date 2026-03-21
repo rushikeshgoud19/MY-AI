@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader';
-import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
+import { VRMLoaderPlugin } from '@pixiv/three-vrm';
 
 // Node built-ins in Electron
 const { ipcRenderer } = window.require('electron');
@@ -14,40 +14,140 @@ const log = (msg) => {
     console.log(msg);
 };
 window.onerror = (msg, url, line) => log(`ERROR: ${msg} at ${url}:${line}`);
-log('Renderer process started (Portrait Mode).');
+log('Renderer started.');
 
+// ─── Config ──────────────────────────────────────────────────────────────────
+const CONFIG_PATH = path.join(process.cwd(), 'config.json');
+let cfg = {};
+function loadCfg() {
+    try { cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')); }
+    catch(e) { cfg = {}; }
+}
+loadCfg();
+
+// ─── Scene globals ────────────────────────────────────────────────────────────
 let scene, camera, renderer, clock, currentVrm;
 let ws = null;
 let reconnectTimer = null;
 let isSpeaking = false;
 let isWaving = false;
-let isSmiling = false;
 let waveStartTime = 0;
-const vrmPath = './character/5816025470716354497.vrm';
 
-// Lip-Sync Globals
+// Emotion system with smooth blending
+let currentEmotion = 'neutral';
+let emotionTimer = 0;
+let emotionBlends = { happy: 0, sad: 0, angry: 0, surprised: 0, relaxed: 0 };
+let targetBlends  = { happy: 0, sad: 0, angry: 0, surprised: 0, relaxed: 0.2 };
+
+// Blink system — independent of emotions
+let blinkTimer = 0;
+let blinkInterval = 3.5 + Math.random() * 2.5; // random 3.5–6s
+let blinkValue = 0;
+let isBlinking = false;
+let blinkPhase = 0; // 0=closed, 1=open
+
+// Lip sync with smooth interpolation
 let audioAnalyzer = null;
 let audioDataArray = null;
 let mouthVolume = 0;
+let smoothMouthA = 0;
+let smoothMouthOh = 0;
 
-// ─── DOM References ──────────────────────────────────────────────────────────
+// Natural idle animation state
+let idlePhaseOffset = Math.random() * Math.PI * 2;
+let breathPhaseOffset = Math.random() * Math.PI * 2;
+let hipSwayPhase = Math.random() * Math.PI * 2;
+
+// Speaking head nod state
+let speakNodTimer = 0;
+let speakNodActive = false;
+let speakNodValue = 0;
+
+// Arm smooth targets — VRM bone axes:
+// Upper arm Z = how far arm hangs from body (π/2 ≈ 1.57 = straight down)
+// Upper arm X = forward/back swing
+// Lower arm Y = forearm twist (supination/pronation)
+// Lower arm Z = elbow bend
+const armTargets = {
+    leftUpperArm:  { x: 0.05, y: 0,     z:  1.55 },  // almost straight down, slight forward
+    rightUpperArm: { x: 0.05, y: 0,     z: -1.55 },
+    leftLowerArm:  { x: 0,    y: -0.2,  z:  0.08 },  // slight supination, barely bent
+    rightLowerArm: { x: 0,    y:  0.2,  z: -0.08 },
+    leftHand:      { x: 0.06, y: -0.08, z:  0.05 },
+    rightHand:     { x: 0.06, y:  0.08, z: -0.05 },
+    leftShoulder:  { x: 0,    y:  0.05, z:  0.2  },
+    rightShoulder: { x: 0,    y: -0.05, z: -0.2  },
+    // Thumbs excluded from lerp system — handled separately with safe values
+};
+const armCurrent = {};
+for (const k of Object.keys(armTargets)) {
+    armCurrent[k] = { ...armTargets[k] };
+}
+
+// ─── DOM References ───────────────────────────────────────────────────────────
 const container = document.getElementById('container');
 const statusEl = document.getElementById('status');
 const responseBubble = document.getElementById('response-bubble');
-const talkBtn = document.getElementById('talk-btn');
 const terminalContent = document.getElementById('terminal-content');
+const chatInput = document.getElementById('chat-input');
+
+// ─── Expose globals for inline onclick handlers ───────────────────────────────
+window.toggleTerminal = toggleTerminal;
+window.openSettings = openSettings;
+window.sendTextMessage = sendTextMessage;
 
 function logTerminal(text, type = 'system') {
     if (!terminalContent) return;
     const line = document.createElement('div');
     line.className = `terminal-line terminal-${type}`;
-    const prefix = type === 'user' ? 'You: ' : type === 'risse' ? 'Risse: ' : '> ';
+    const prefix = type === 'user' ? 'You: ' : type === 'risse' ? `${cfg.character_name || 'Risse'}: ` : type === 'emotion' ? '✦ ' : '> ';
     line.textContent = prefix + text;
     terminalContent.appendChild(line);
     terminalContent.scrollTop = terminalContent.scrollHeight;
 }
 
-// ─── Drag-to-Move ────────────────────────────────────────────────────────────
+// ─── Settings ─────────────────────────────────────────────────────────────────
+function openSettings() {
+    ipcRenderer.send('open-settings');
+}
+
+ipcRenderer.on('config-updated', (_event, newCfg) => {
+    const oldFile = cfg.character_file;
+    cfg = newCfg;
+    if (newCfg.character_file !== oldFile) {
+        log(`[CONFIG] Character changed to: ${newCfg.character_file}`);
+        loadVRM(newCfg.character_file);
+    }
+});
+
+// ─── Text Chat ────────────────────────────────────────────────────────────────
+function sendTextMessage() {
+    const text = chatInput ? chatInput.value.trim() : '';
+    if (!text) return;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'chat', text }));
+        logTerminal(text, 'user');
+        chatInput.value = '';
+    } else {
+        logTerminal('Not connected to backend.', 'error');
+    }
+}
+
+if (chatInput) {
+    chatInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); sendTextMessage(); }
+    });
+}
+
+// ─── Terminal Toggle ──────────────────────────────────────────────────────────
+function toggleTerminal() {
+    const terminal = document.getElementById('terminal-overlay');
+    if (!terminal) return;
+    const isHidden = window.getComputedStyle(terminal).display === 'none';
+    terminal.style.display = isHidden ? 'flex' : 'none';
+}
+
+// ─── Drag-to-Move ─────────────────────────────────────────────────────────────
 let isDragging = false;
 let dragLastX = 0;
 let dragLastY = 0;
@@ -78,20 +178,13 @@ document.addEventListener('mouseup', () => {
     }
 });
 
-// ─── Init ────────────────────────────────────────────────────────────────────
+// ─── Init ─────────────────────────────────────────────────────────────────────
 function init() {
     log('Initializing Three.js scene...');
     scene = new THREE.Scene();
-    
-    // Portrait lens for 120x150 head-to-chest framing
-    camera = new THREE.PerspectiveCamera(
-        35.0, 
-        window.innerWidth / window.innerHeight,
-        0.1,
-        20.0
-    );
-    // Camera centered on face/chest, pulled back enough to fit head
-    camera.position.set(0.0, -0.05, 1.55); 
+
+    camera = new THREE.PerspectiveCamera(35.0, window.innerWidth / window.innerHeight, 0.1, 20.0);
+    camera.position.set(0.0, -0.05, 1.55);
     camera.lookAt(0, -0.05, 0);
 
     renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -104,385 +197,687 @@ function init() {
 
     const ambientLight = new THREE.AmbientLight(0xffffff, 2.0);
     scene.add(ambientLight);
-
     const directionalLight = new THREE.DirectionalLight(0xffffff, 1.5);
     directionalLight.position.set(0, 1, 1).normalize();
     scene.add(directionalLight);
 
+    clock = new THREE.Clock();
+    loadVRM(cfg.character_file || 'character/5816025470716354497.vrm');
+    animate();
+    connectWebSocket();
+}
+
+// ─── VRM Loading ──────────────────────────────────────────────────────────────
+function loadVRM(vrmPath) {
+    if (currentVrm) {
+        scene.remove(currentVrm.scene);
+        currentVrm = null;
+    }
+    // Reset animation state for new model
+    emotionBlends = { happy: 0, sad: 0, angry: 0, surprised: 0, relaxed: 0 };
+    targetBlends  = { happy: 0, sad: 0, angry: 0, surprised: 0, relaxed: 0.2 };
+    smoothMouthA = 0;
+    smoothMouthOh = 0;
+    blinkValue = 0;
+
     const loader = new GLTFLoader();
     loader.register((parser) => new VRMLoaderPlugin(parser));
+    log(`[VRM] Loading: ${vrmPath}`);
 
-    log('Loading VRM...');
     loader.load(
         vrmPath,
         (gltf) => {
             const vrm = gltf.userData.vrm;
             vrm.scene.scale.set(1.0, 1.0, 1.0);
-            vrm.scene.rotation.y = Math.PI; 
-            
-            // Translate model so face (eyes) is at (0, 0)
+            vrm.scene.rotation.y = Math.PI;
             vrm.scene.position.set(0, -1.48, 0);
-            
             scene.add(vrm.scene);
             currentVrm = vrm;
-            log('[VRM] Model loaded face-center.');
-            
-            applyAPose(vrm);
+            log('[VRM] Model loaded.');
         },
         null,
         (error) => log('[VRM] Error: ' + error.message)
     );
-
-    clock = new THREE.Clock();
-    animate();
-    connectWebSocket();
 }
 
-// ─── Animation Helpers ──────────────────────────────────────────────────────
-function findBoneByName(node, namePart) {
-    let result = null;
-    node.traverse((child) => {
-        if (child.isBone && child.name.toLowerCase().includes(namePart.toLowerCase())) {
-            result = child;
+// ─── Smooth lerp helper ───────────────────────────────────────────────────────
+function lerp(a, b, t) { return a + (b - a) * t; }
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+// ─── Blink System (independent, natural timing) ───────────────────────────────
+function updateBlink(deltaTime) {
+    if (!currentVrm || !currentVrm.expressionManager) return;
+    const em = currentVrm.expressionManager;
+
+    blinkTimer += deltaTime;
+
+    if (!isBlinking) {
+        if (blinkTimer >= blinkInterval) {
+            isBlinking = true;
+            blinkPhase = 0;
+            blinkTimer = 0;
+            // Randomize next blink interval: 2.5–7s
+            blinkInterval = 2.5 + Math.random() * 4.5;
         }
-    });
-    return result;
+    } else {
+        // Close eye (0→1 in 0.06s), hold (6 frames), open (1→0 in 0.08s)
+        const closeSpeed = deltaTime / 0.06;
+        const openSpeed  = deltaTime / 0.08;
+        if (blinkPhase === 0) {
+            blinkValue = Math.min(blinkValue + closeSpeed, 1.0);
+            if (blinkValue >= 1.0) { blinkPhase = 1; blinkTimer = 0; }
+        } else if (blinkPhase === 1) {
+            if (blinkTimer > 0.05) blinkPhase = 2;
+        } else {
+            blinkValue = Math.max(blinkValue - openSpeed, 0.0);
+            if (blinkValue <= 0.0) { isBlinking = false; blinkValue = 0; }
+        }
+    }
+
+    em.setValue('blink', blinkValue);
 }
 
-function applyAPose(vrm) {
-    if (!vrm) return;
-    log('[VRM] A-Pose engine ready.');
+// ─── Emotion Blend System (smooth transitions) ────────────────────────────────
+function setTargetEmotion(emotion) {
+    targetBlends = { happy: 0, sad: 0, angry: 0, surprised: 0, relaxed: 0 };
+    if (emotion === 'happy')     targetBlends.happy = 1.0;
+    else if (emotion === 'sad')  targetBlends.sad = 0.8;
+    else if (emotion === 'angry') targetBlends.angry = 0.8;
+    else if (emotion === 'surprised') targetBlends.surprised = 1.0;
+    else                         targetBlends.relaxed = 0.2;
 }
 
+function updateEmotionBlends(deltaTime) {
+    if (!currentVrm || !currentVrm.expressionManager) return;
+    const em = currentVrm.expressionManager;
+    const blendSpeed = deltaTime * 3.0; // smooth over ~0.33s
+
+    for (const key of Object.keys(emotionBlends)) {
+        emotionBlends[key] = lerp(emotionBlends[key], targetBlends[key], Math.min(blendSpeed, 1.0));
+        em.setValue(key, emotionBlends[key]);
+    }
+}
+
+// ─── Lip Sync with smooth interpolation ──────────────────────────────────────
+function updateLipSync(deltaTime, time) {
+    if (!currentVrm || !currentVrm.expressionManager) return;
+    const em = currentVrm.expressionManager;
+    const lerpSpeed = deltaTime * 18.0; // snappy but not jarring
+
+    if (isSpeaking) {
+        let rawVolume = 0;
+        if (audioAnalyzer) {
+            audioAnalyzer.getByteFrequencyData(audioDataArray);
+            let sum = 0;
+            // Focus on speech-frequency bins (roughly 300Hz–3kHz)
+            const start = 1;
+            const end = Math.min(8, audioDataArray.length);
+            for (let i = start; i < end; i++) sum += audioDataArray[i];
+            rawVolume = sum / (end - start) / 255;
+        } else {
+            // Fallback: simulate varied mouth movement
+            rawVolume = 0.25
+                + 0.25 * Math.sin(time * 18.0)
+                + 0.10 * Math.sin(time * 31.0 + 1.2)
+                + 0.05 * Math.sin(time * 47.0 + 2.4);
+        }
+
+        mouthVolume = clamp(rawVolume, 0, 1);
+        const targetA  = clamp(mouthVolume * 2.8, 0, 1.0);
+        const targetOh = clamp(mouthVolume * 0.4, 0, 0.5);
+
+        smoothMouthA  = lerp(smoothMouthA,  targetA,  Math.min(lerpSpeed, 1.0));
+        smoothMouthOh = lerp(smoothMouthOh, targetOh, Math.min(lerpSpeed * 0.6, 1.0));
+
+        em.setValue('aa', smoothMouthA);
+        em.setValue('oh', smoothMouthOh);
+    } else {
+        mouthVolume   = 0;
+        smoothMouthA  = lerp(smoothMouthA,  0, Math.min(lerpSpeed, 1.0));
+        smoothMouthOh = lerp(smoothMouthOh, 0, Math.min(lerpSpeed, 1.0));
+        em.setValue('aa', smoothMouthA);
+        em.setValue('oh', smoothMouthOh);
+        em.setValue('ih', 0);
+        em.setValue('ou', 0);
+        em.setValue('ee', 0);
+
+        // Release analyzer only after mouth is fully closed
+        if (smoothMouthA < 0.01 && smoothMouthOh < 0.01) {
+            audioAnalyzer = null;
+        }
+    }
+}
+
+// ─── Animation Loop ───────────────────────────────────────────────────────────
 function animate() {
     requestAnimationFrame(animate);
     const deltaTime = clock.getDelta();
+
     if (currentVrm) {
         const time = clock.elapsedTime;
         const humanoid = currentVrm.humanoid;
-        // ── 0. Update internal state FIRST (Humanoid/Expressions/Physics) ───
+
         currentVrm.update(deltaTime);
 
-        // ── 1. Absolute Multi-Axis Pose Overrides (Post-Update Brute Force) ──
-        const nodesToForce = [
-            { name: 'leftUpperArm', rot: [0, 0, 1.45] },
-            { name: 'rightUpperArm', rot: [0, 0, -1.45] },
-            { name: 'leftShoulder', rot: [0, 0.1, 0.4] },
-            { name: 'rightShoulder', rot: [0, -0.1, -0.4] },
-            { name: 'leftLowerArm', rot: [0, 0, 0.2] },
-            { name: 'rightLowerArm', rot: [0, 0, -0.2] }
-        ];
+        // ── Emotion decay ──
+        if (currentEmotion !== 'neutral') {
+            emotionTimer -= deltaTime;
+            if (emotionTimer <= 0) {
+                currentEmotion = 'neutral';
+                setTargetEmotion('neutral');
+            }
+        }
+
+        // ── Independent blink ──
+        updateBlink(deltaTime);
+
+        // ── Smooth emotion blends ──
+        updateEmotionBlends(deltaTime);
+
+        // ── Lip sync ──
+        updateLipSync(deltaTime, time);
+
+        // ── Breathing (chest + shoulders rise) ──
+        const breathe = 0.018 * Math.sin(time * 1.4 + breathPhaseOffset)
+                       + 0.006 * Math.sin(time * 2.8 + breathPhaseOffset); // slight double-breath
+        const chest = humanoid.getRawBoneNode('chest');
+        if (chest) {
+            chest.rotation.x = breathe;
+            chest.rotation.z = 0.006 * Math.sin(time * 0.7 + breathPhaseOffset);
+        }
+        const spine = humanoid.getRawBoneNode('spine');
+        if (spine) {
+            spine.rotation.x = breathe * 0.4;
+        }
+
+        // ── Idle body sway (hips) ──
+        const hipSwayX = 0.008 * Math.sin(time * 0.55 + hipSwayPhase);
+        const hipSwayZ = 0.005 * Math.cos(time * 0.38 + hipSwayPhase + 0.8);
+        const hips = humanoid.getRawBoneNode('hips');
+        if (hips) {
+            hips.rotation.z = hipSwayZ;
+            hips.rotation.x = hipSwayX * 0.3;
+        }
+
+        // ── Head movement ──
+        const head = humanoid.getRawBoneNode('head');
+        if (head) {
+            let headY, headZ, headX;
+            if (isSpeaking) {
+                // More expressive head movement while speaking
+                headY = 0.12 * Math.sin(time * 1.3 + idlePhaseOffset)
+                       + 0.04 * Math.sin(time * 2.7 + idlePhaseOffset + 0.5);
+                headZ = 0.07 * Math.cos(time * 1.6 + idlePhaseOffset)
+                       + 0.02 * Math.cos(time * 3.1 + idlePhaseOffset + 1.0);
+                // Speaking nod: gentle downward nod
+                speakNodTimer += deltaTime;
+                if (!speakNodActive && speakNodTimer > 1.2 + Math.random() * 1.5) {
+                    speakNodActive = true;
+                    speakNodTimer = 0;
+                }
+                if (speakNodActive) {
+                    speakNodValue = Math.min(speakNodValue + deltaTime * 4, 1.0);
+                    if (speakNodValue >= 1.0) { speakNodActive = false; }
+                } else {
+                    speakNodValue = Math.max(speakNodValue - deltaTime * 3, 0.0);
+                }
+                headX = 0.04 * Math.sin(speakNodValue * Math.PI); // nod arc
+            } else {
+                headY = 0.05 * Math.sin(time * 0.9 + idlePhaseOffset)
+                       + 0.02 * Math.sin(time * 2.1 + idlePhaseOffset + 1.3);
+                headZ = 0.03 * Math.cos(time * 1.1 + idlePhaseOffset)
+                       + 0.01 * Math.cos(time * 2.3 + idlePhaseOffset + 0.7);
+                headX = 0;
+                speakNodTimer = 0;
+                speakNodValue = Math.max(speakNodValue - deltaTime * 3, 0.0);
+            }
+            head.rotation.y = headY;
+            head.rotation.z = headZ;
+            head.rotation.x = headX;
+        }
+
+        // ── Neck subtle tilt ──
+        const neck = humanoid.getRawBoneNode('neck');
+        if (neck) {
+            neck.rotation.z = 0.015 * Math.sin(time * 0.6 + idlePhaseOffset + 1.5);
+        }
+
+        // ── Eye tracking (slow, natural drift) ──
+        if (currentVrm.lookAt) {
+            const eyeX = 0.6 * Math.sin(time * 0.35 + idlePhaseOffset)
+                        + 0.2 * Math.sin(time * 0.9 + idlePhaseOffset + 2.1);
+            const eyeY = 0.25 * Math.cos(time * 0.22 + idlePhaseOffset)
+                        + 0.08 * Math.cos(time * 0.6 + idlePhaseOffset + 1.0);
+            currentVrm.lookAt.lookAt(new THREE.Vector3(eyeX, eyeY, 15.0));
+        }
+
+        // ── Arm animation — smooth lerp targets, no hard snapping ──
+        const breathLift = 0.012 * Math.sin(time * 1.4 + breathPhaseOffset);
+        const hipZ = hipSwayZ; // reuse from hips above
 
         if (isWaving) {
             const waveElapsed = time - waveStartTime;
-            const waveDuration = 3.0;
+            const waveDuration = 5.0;  // Longer, more visible wave
             if (waveElapsed > waveDuration) {
                 isWaving = false;
             } else {
-                // Smooth cubic ease-in/ease-out
-                const rawRaise = Math.min(waveElapsed / 0.5, 1.0);
-                const rawLower = Math.max((waveElapsed - (waveDuration - 0.5)) / 0.5, 0.0);
-                const easeIn = rawRaise * rawRaise * (3 - 2 * rawRaise); // smoothstep
+                const rawRaise = Math.min(waveElapsed / 0.3, 1.0);  // Faster arm raise
+                const rawLower = Math.max((waveElapsed - (waveDuration - 0.6)) / 0.6, 0.0);
+                const easeIn  = rawRaise * rawRaise * (3 - 2 * rawRaise);
                 const easeOut = 1.0 - (rawLower * rawLower * (3 - 2 * rawLower));
-                const armUp = easeIn * easeOut;
-
-                // Gentle, slow wave motion
-                const wave1 = Math.sin(waveElapsed * 6) * 0.4;
-                const wave2 = Math.sin(waveElapsed * 4 + 0.7) * 0.2;
+                const armUp   = easeIn * easeOut;
+                // Bigger, more energetic wave motion
+                const wave1   = Math.sin(waveElapsed * 8.0) * 0.55;
+                const wave2   = Math.sin(waveElapsed * 5.0 + 0.9) * 0.25;
                 const waveAngle = (wave1 + wave2) * armUp;
-
-                // Right upper arm: smoothly raise
-                nodesToForce[1].rot = [
-                    0.3 * (1 - armUp),
-                    0.3 * armUp,
-                    -1.2 - (1.2 * armUp)
-                ];
-                // Right lower arm: gentle waving
-                nodesToForce[5].rot = [
-                    0,
-                    0.5 * (1 - armUp) + waveAngle,
-                    -0.6 * (1 - armUp) - 0.4 * armUp
-                ];
+                // Right arm raises high, bends elbow hard, sways for visible wave
+                armTargets.rightUpperArm = { x: 0.3 * (1 - armUp) - waveAngle * 0.9, y: 0.35 * armUp, z: -1.55 + 1.45 * armUp };
+                armTargets.rightLowerArm = { x: 0, y: 0.25 * (1 - armUp), z: -0.08 - 1.6 * armUp };
+                armTargets.rightHand     = { x: 0.12 * armUp, y: 0.15 * armUp, z: -0.05 + waveAngle * 0.6 };
+                // Left arm hangs naturally
+                armTargets.leftUpperArm  = { x: 0.05, y: -0.04 * armUp, z: 1.55 + breathLift };
+                armTargets.leftLowerArm  = { x: 0, y: -0.2, z: 0.08 };
+                armTargets.leftHand      = { x: 0.06, y: -0.08, z: 0.05 };
             }
+        } else {
+            // Idle: arms hang at sides, driven by breath + hip sway
+            const idleSway = 0.01 * Math.sin(time * 0.75 + idlePhaseOffset);
+            armTargets.leftUpperArm  = { x: 0.05, y: -hipZ * 0.3, z:  1.55 + breathLift + idleSway };
+            armTargets.rightUpperArm = { x: 0.05, y:  hipZ * 0.3, z: -1.55 - breathLift - idleSway };
+            armTargets.leftLowerArm  = { x: 0, y: -0.2 + 0.015 * Math.sin(time * 0.5 + idlePhaseOffset), z:  0.08 };
+            armTargets.rightLowerArm = { x: 0, y:  0.2 - 0.015 * Math.sin(time * 0.5 + idlePhaseOffset), z: -0.08 };
+            armTargets.leftHand      = { x: 0.06, y: -0.08 + 0.01 * Math.sin(time * 0.8), z:  0.05 };
+            armTargets.rightHand     = { x: 0.06, y:  0.08 - 0.01 * Math.sin(time * 0.8), z: -0.05 };
         }
 
-        nodesToForce.forEach(cfg => {
-            const bone = humanoid.getRawBoneNode(cfg.name) || findBoneByName(currentVrm.scene, cfg.name);
+        // Lerp all arm bones toward targets
+        const armSpeed = Math.min(deltaTime * (isWaving ? 12.0 : 6.0), 1.0);  // Faster during wave
+        for (const [boneName, target] of Object.entries(armTargets)) {
+            const bone = humanoid.getRawBoneNode(boneName);
+            if (!bone) continue;
+            const cur = armCurrent[boneName];
+            cur.x = lerp(cur.x, target.x, armSpeed);
+            cur.y = lerp(cur.y, target.y, armSpeed);
+            cur.z = lerp(cur.z, target.z, armSpeed);
+            bone.rotation.set(cur.x, cur.y, cur.z);
+        }
+
+        // ── Fingers: proximal curl + per-finger micro-animation ──
+        const fingerDefs = [
+            { name: 'leftIndexProximal',   baseZ:  0.30, side:  1 },
+            { name: 'leftMiddleProximal',  baseZ:  0.32, side:  1 },
+            { name: 'leftRingProximal',    baseZ:  0.28, side:  1 },
+            { name: 'leftLittleProximal',  baseZ:  0.25, side:  1 },
+            { name: 'rightIndexProximal',  baseZ:  0.30, side: -1 },
+            { name: 'rightMiddleProximal', baseZ:  0.32, side: -1 },
+            { name: 'rightRingProximal',   baseZ:  0.28, side: -1 },
+            { name: 'rightLittleProximal', baseZ:  0.25, side: -1 },
+        ];
+        fingerDefs.forEach(({ name, baseZ, side }, i) => {
+            const bone = humanoid.getRawBoneNode(name);
             if (bone) {
-                bone.rotation.set(cfg.rot[0], cfg.rot[1], cfg.rot[2]);
+                const micro = 0.03 * Math.sin(time * 0.45 + i * 0.85 + idlePhaseOffset);
+                bone.rotation.z = side * (baseZ + micro);
+                bone.rotation.x = 0.08 + 0.015 * Math.sin(time * 0.3 + i * 0.5);
             }
         });
 
-        // ── 2. Fluid Head & Body Sway ──────
-        const breathe = 0.02 * Math.sin(time * 1.5);
-        if (humanoid.getRawBoneNode('chest')) humanoid.getRawBoneNode('chest').rotation.x = breathe;
+        // ── Thumbs — VRM thumb local axis is very different, keep small safe values ──
+        const lThumb = humanoid.getRawBoneNode('leftThumbProximal');
+        if (lThumb) { lThumb.rotation.set(0.2, 0.3, 0.15); }
+        const rThumb = humanoid.getRawBoneNode('rightThumbProximal');
+        if (rThumb) { rThumb.rotation.set(0.2, -0.3, -0.15); }
 
-        const headSwayY = isSpeaking ? 0.15 : 0.06;
-        const headSwayZ = isSpeaking ? 0.08 : 0.04;
-        const head = humanoid.getRawBoneNode('head');
-        if (head) {
-            head.rotation.y = headSwayY * Math.sin(time * 1.1);
-            head.rotation.z = headSwayZ * Math.cos(time * 1.4);
-        }
-
-        // ── 3. Eye Tracking ─────────────────────────────────
-        if (currentVrm.lookAt) {
-            currentVrm.lookAt.lookAt(new THREE.Vector3(
-                0.8 * Math.sin(time * 0.4), 
-                0.3 * Math.cos(time * 0.25), 
-                15.0
-            ));
-        }
-
-        // ── 4. Expressions ───────────────────────────────────
-        if (currentVrm.expressionManager) {
-            const blinkCycle = time % 5.0;
-            currentVrm.expressionManager.setValue('blink', (blinkCycle > 4.75) ? 1.0 : 0.0);
-            
-            if (isSmiling) {
-                currentVrm.expressionManager.setValue('happy', 1.0);
-            } else {
-                currentVrm.expressionManager.setValue('happy', 0.0);
-            }
-
-            if (isSpeaking) {
-                // Audio Lip Sync
-                if (audioAnalyzer) {
-                    audioAnalyzer.getByteFrequencyData(audioDataArray);
-                    let sum = 0;
-                    for (let i = 0; i < audioDataArray.length; i++) sum += audioDataArray[i];
-                    mouthVolume = sum / audioDataArray.length / 255;
-                } else {
-                    // Simple sine fallback if no analyzer (e.g. Web Speech API)
-                    mouthVolume = 0.2 + 0.3 * Math.sin(time * 22.0);
-                }
-                const mouthA = mouthVolume * 2.5; // Boost for visibility
-                currentVrm.expressionManager.setValue('aa', Math.min(mouthA, 1.0));
-                currentVrm.expressionManager.setValue('oh', 0.1 * mouthVolume);
-            } else {
-                mouthVolume = 0;
-                audioAnalyzer = null;
-                // Completely close mouth to stop idle motion
-                currentVrm.expressionManager.setValue('aa', 0.0);
-                currentVrm.expressionManager.setValue('oh', 0.0);
-                currentVrm.expressionManager.setValue('ih', 0.0);
-                currentVrm.expressionManager.setValue('ou', 0.0);
-                currentVrm.expressionManager.setValue('ee', 0.0);
-                currentVrm.expressionManager.setValue('relaxed', 0.0); // This was holding the mouth open!
-            }
-        }
-        camera.lookAt(0, -0.05, 0); 
+        camera.lookAt(0, -0.05, 0);
     }
+
     renderer.render(scene, camera);
 }
 
-// ─── WebSocket ──────────────────────────────────────────────────────────────
+// ─── WebSocket ────────────────────────────────────────────────────────────────
 function connectWebSocket() {
-    if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) {
-        return; // Already connected or connecting
-    }
-    
+    if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) return;
+
     ws = new WebSocket('ws://localhost:8000/ws');
+
     ws.onopen = () => {
         log('[WS] Connected.');
-        statusEl.textContent = 'Connected! Say "Risse" or press F2.';
-        if (reconnectTimer) {
-            clearTimeout(reconnectTimer);
-            reconnectTimer = null;
-        }
-        
-        // Startup Greeting
+        const charName = cfg.character_name || 'Risse';
+        statusEl.textContent = `Connected! Say "${charName}" or press F2.`;
+        if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+
         setTimeout(() => {
-            const greeting = "Hello Shinshio!";
+            const greeting = `Hello Master! ${charName} is ready!`;
             showResponse(greeting);
             playTTS(greeting);
             logTerminal(greeting, 'risse');
-            
-            // Smile animation block
-            isSmiling = true;
+            // Happy face + wave on startup
+            currentEmotion = 'happy';
+            emotionTimer = 4.0;
+            setTargetEmotion('happy');
             isWaving = true;
             waveStartTime = clock.elapsedTime;
-            setTimeout(() => {
-                isSmiling = false;
-            }, 3000); // Smile for 3 seconds
-            
-        }, 3000); // Small delay before speaking so things load visibly
+        }, 2500);
     };
+
     ws.onmessage = (event) => {
         const msg = JSON.parse(event.data);
-        if (msg.type === 'speak') { 
-            showResponse(msg.text); 
-            playTTS(msg.text); 
+
+        if (msg.type === 'speak') {
+            hideTypingIndicator();
+            showResponse(msg.text);
+            playTTS(msg.text);
             logTerminal(msg.text, 'risse');
-        }
-        if (msg.type === 'status') { 
+            // Auto-wave when Risse greets
+            const lower = msg.text.toLowerCase();
+            if (/\b(hello|hi|hey|ohayo|konnichiwa|welcome back|good morning|good evening|good afternoon)\b/.test(lower)) {
+                isWaving = true;
+                waveStartTime = clock.elapsedTime;
+            }
+            // Reset status light back to idle when response arrives
             const indicator = document.getElementById('status-indicator');
             if (indicator) {
-                if (msg.text === 'Listening...') {
-                    indicator.style.backgroundColor = '#00ffcc';
-                    indicator.style.boxShadow = '0 0 10px #00ffcc';
+                indicator.style.backgroundColor = 'rgba(255,255,255,0.2)';
+                indicator.style.boxShadow = 'none';
+            }
+            const charName = cfg.character_name || 'Risse';
+            if (statusEl) statusEl.textContent = `Say "${charName}" or press F2.`;
+        }
+
+        if (msg.type === 'user_input') {
+            logTerminal(msg.text, 'user');
+        }
+
+        if (msg.type === 'emotion') {
+            currentEmotion = msg.emotion;
+            emotionTimer = 5.0;
+            setTargetEmotion(msg.emotion);
+            logTerminal(`Emotion detected: ${msg.emotion}`, 'emotion');
+        }
+
+        if (msg.type === 'config_reloaded') {
+            loadCfg();
+            if (msg.character_file && msg.character_file !== (cfg.character_file || '')) {
+                loadVRM(msg.character_file);
+            }
+        }
+
+        if (msg.type === 'status') {
+            const indicator = document.getElementById('status-indicator');
+            if (indicator) {
+                if (msg.text === 'Listening...' || msg.text === 'Triggered') {
+                    indicator.style.backgroundColor = '#00ff00';
+                    indicator.style.boxShadow = '0 0 12px #00ff00';
                 } else if (msg.text === 'Processing...' || msg.text === 'Thinking...') {
                     indicator.style.backgroundColor = '#ffcc00';
-                    indicator.style.boxShadow = '0 0 10px #ffcc00';
+                    indicator.style.boxShadow = '0 0 8px #ffcc00';
+                    // Show typing indicator
+                    showTypingIndicator();
                 } else {
-                    // Turn OFF indicator for idle/other states
                     indicator.style.backgroundColor = 'rgba(255,255,255,0.2)';
                     indicator.style.boxShadow = 'none';
+                    hideTypingIndicator();
                 }
             }
         }
     };
+
     ws.onclose = () => {
         log('[WS] Disconnected. Reconnecting in 3s...');
-        statusEl.textContent = 'Reconnecting...';
+        if (statusEl) statusEl.textContent = 'Reconnecting...';
         if (!reconnectTimer) {
-            reconnectTimer = setTimeout(() => {
-                reconnectTimer = null;
-                connectWebSocket();
-            }, 3000);
+            reconnectTimer = setTimeout(() => { reconnectTimer = null; connectWebSocket(); }, 3000);
         }
     };
-    ws.onerror = (err) => {
-        log('[WS] Error: ' + (err.message || 'connection failed'));
-    };
+
+    ws.onerror = (err) => log('[WS] Error: ' + (err.message || 'connection failed'));
+}
+
+// ─── Typing Indicator ─────────────────────────────────────────────────────────
+let typingEl = null;
+
+function showTypingIndicator() {
+    if (typingEl) return; // already showing
+    typingEl = document.createElement('div');
+    typingEl.id = 'typing-indicator';
+    typingEl.innerHTML = `${cfg.character_name || 'Risse'} is thinking<span class="typing-dots"><span>.</span><span>.</span><span>.</span></span>`;
+    // Style it like the response bubble
+    Object.assign(typingEl.style, {
+        maxWidth: '90%',
+        background: 'rgba(20, 20, 35, 0.88)',
+        color: 'rgba(167, 119, 227, 0.8)',
+        padding: '8px 14px',
+        borderRadius: '14px',
+        fontSize: '11px',
+        textAlign: 'center',
+        border: '1px solid rgba(110, 142, 251, 0.3)',
+        backdropFilter: 'blur(10px)',
+        fontStyle: 'italic',
+        pointerEvents: 'none',
+    });
+    const overlay = document.getElementById('ui-overlay');
+    if (overlay) overlay.insertBefore(typingEl, responseBubble);
+}
+
+function hideTypingIndicator() {
+    if (typingEl) {
+        typingEl.remove();
+        typingEl = null;
+    }
 }
 
 function showResponse(text) {
-    responseBubble.textContent = text;
     responseBubble.classList.remove('hidden');
-    setTimeout(() => responseBubble.classList.add('hidden'), 8000);
+    responseBubble.textContent = '';
+    // Typewriter effect
+    clearTimeout(responseBubble._hideTimer);
+    clearInterval(responseBubble._typeTimer);
+    let i = 0;
+    const speed = Math.max(18, Math.min(40, Math.round(20000 / text.length))); // adaptive speed
+    responseBubble._typeTimer = setInterval(() => {
+        if (i < text.length) {
+            responseBubble.textContent += text[i++];
+        } else {
+            clearInterval(responseBubble._typeTimer);
+            // Auto-hide: ~1s per 15 chars, clamped 5s–20s
+            const duration = Math.max(5000, Math.min(20000, text.length * 65));
+            responseBubble._hideTimer = setTimeout(() => responseBubble.classList.add('hidden'), duration);
+        }
+    }, speed);
 }
 
-// ─── TTS with Smart Fallback ────────────────────────────────────────────────
-let murfApiFailed = false; // Cache so we don't keep hitting a dead API
+// ─── TTS Voice Cache — EXACT Short Phrases Only (Free, Instant) ──────────────
+// ONLY exact, very short phrases use free browser TTS.
+// Everything else goes through paid APIs for quality voice.
+const CACHED_PHRASES = new Set([
+    'hai',
+    'hai!',
+    'yes master',
+    'yes master!',
+    'got it',
+    'got it!',
+    'on it',
+    'on it!',
+    'sure thing',
+    'sure thing!',
+    'right away',
+    'right away!',
+    'of course',
+    'of course!',
+    'baka',
+    'baka!',
+    'arigato',
+    'arigato!',
+]);
+
+function isCachedPhrase(text) {
+    // ONLY exact matches on very short phrases (under 25 chars)
+    const normalized = text.toLowerCase().trim().replace(/[~✦💫🎵❤️]/g, '').trim();
+    if (normalized.length > 25) return false;  // Anything long → use real TTS
+    return CACHED_PHRASES.has(normalized);
+}
+
+// ─── TTS — Cache → ElevenLabs → Murf → Browser ──────────────────────────────
+let murfApiFailed = false;
+let elevenApiFailed = false;
 
 async function playTTS(text) {
     if (isSpeaking) return;
-    isSpeaking = true;
 
-    // Try Murf AI first (unless previously failed permanently)
-    if (!murfApiFailed) {
-        try {
-            const response = await fetch('https://api.murf.ai/v1/speech/generate', {
-                method: 'POST',
-                headers: {
-                    'api-key': 'ap2_7128ab65-3e5d-4b29-a89b-628c0db26fce',
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    voiceId: 'ja-JP-kimi',
-                    style: 'Conversational',
-                    text: text,
-                    format: 'MP3',
-                    rate: -2,
-                    pitch: 4
-                })
-            });
-
-            if (response.status === 401 || response.status === 403 || response.status === 429) {
-                log(`[TTS] Murf API returned ${response.status} — key exhausted or invalid. Switching to fallback permanently.`);
-                murfApiFailed = true;
-                throw new Error('API key exhausted');
-            }
-
-            if (!response.ok) {
-                log(`[TTS] Murf API returned ${response.status}`);
-                throw new Error('Murf API error');
-            }
-
-            const data = await response.json();
-            const audioUrl = data.encodedAudio || data.audioFile;
-            if (!audioUrl) throw new Error('No audio URL in response');
-
-            const audio = new Audio(audioUrl);
-            
-            // Lip-Sync Hookup
-            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            const source = audioCtx.createMediaElementSource(audio);
-            audioAnalyzer = audioCtx.createAnalyser();
-            audioAnalyzer.fftSize = 32;
-            audioDataArray = new Uint8Array(audioAnalyzer.frequencyBinCount);
-            source.connect(audioAnalyzer);
-            audioAnalyzer.connect(audioCtx.destination);
-
-            audio.onended = () => { isSpeaking = false; audioCtx.close(); };
-            audio.onerror = () => { isSpeaking = false; audioCtx.close(); fallbackTTS(text); };
-            await audio.play();
-            return;
-        } catch (e) {
-            log('[TTS] Murf failed: ' + e.message + ' — using browser speech.');
-        }
+    // ── 0. Check voice cache — free & instant ──────────────────────────────────
+    if (isCachedPhrase(text)) {
+        log('[TTS] Using cached browser voice for: ' + text.substring(0, 40));
+        fallbackTTS(text);
+        return;
     }
 
-    // Fallback: Web Speech API (free, built-in)
+    try {
+        const elevenKey   = cfg.elevenlabs_api_key || '';
+        const elevenVoice = cfg.elevenlabs_voice_id || 'EXAVITQu4vr4xnSDxMaL';
+        const murfKey     = cfg.murf_api_key || '';
+        const voiceId     = cfg.voice_id || 'ja-JP-kimi';
+        const voiceStyle  = cfg.voice_style || 'Conversational';
+        const voiceRate   = cfg.voice_rate !== undefined ? cfg.voice_rate : -2;
+        const voicePitch  = cfg.voice_pitch !== undefined ? cfg.voice_pitch : 4;
+
+        log(`[TTS] Requesting voice. MurfKey length: ${murfKey.length}, ElevenLabsKey length: ${elevenKey.length}`);
+
+        // ── 1. ElevenLabs ──────────────────────────────────────────────────────────
+        if (elevenKey && !elevenApiFailed) {
+            try {
+                const response = await fetch(
+                    `https://api.elevenlabs.io/v1/text-to-speech/${elevenVoice}/stream`,
+                    {
+                        method: 'POST',
+                        headers: { 'xi-api-key': elevenKey, 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            text,
+                            model_id: 'eleven_turbo_v2_5',
+                            voice_settings: { stability: 0.35, similarity_boost: 0.90, style: 0.55, use_speaker_boost: true },
+                        }),
+                        signal: AbortSignal.timeout(6000)
+                    }
+                );
+
+                if (response.status === 401 || response.status === 403) {
+                    elevenApiFailed = true;
+                    throw new Error('ElevenLabs auth failed');
+                }
+                if (response.status === 429) {
+                    elevenApiFailed = true;
+                    throw new Error('ElevenLabs quota');
+                }
+                if (!response.ok) throw new Error(`ElevenLabs ${response.status}`);
+
+                // Decode fully before playing — lip sync starts exactly when audio starts
+                const arrayBuffer = await response.arrayBuffer();
+                const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+                const source = audioCtx.createBufferSource();
+                source.buffer = audioBuffer;
+                audioAnalyzer = audioCtx.createAnalyser();
+                audioAnalyzer.fftSize = 64;
+                audioDataArray = new Uint8Array(audioAnalyzer.frequencyBinCount);
+                source.connect(audioAnalyzer);
+                audioAnalyzer.connect(audioCtx.destination);
+                source.onended = () => { isSpeaking = false; audioCtx.close(); };
+                isSpeaking = true; // set JUST before playback starts
+                source.start(0);
+                return;
+            } catch (e) {
+                log('[TTS] ElevenLabs failed: ' + e.message);
+            }
+        }
+
+        // ── 2. Murf AI ─────────────────────────────────────────────────────────────
+        if (murfKey && !murfApiFailed) {
+            try {
+                const response = await fetch('https://api.murf.ai/v1/speech/generate', {
+                    method: 'POST',
+                    headers: { 'api-key': murfKey, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ voiceId, style: voiceStyle, text, format: 'MP3', rate: voiceRate, pitch: voicePitch }),
+                    signal: AbortSignal.timeout(6000)
+                });
+
+                if (response.status === 401 || response.status === 403 || response.status === 429) {
+                    murfApiFailed = true;
+                    const errText = await response.text();
+                    throw new Error(`Murf Exhausted or Auth Failed (${response.status}): ${errText}`);
+                }
+                if (!response.ok) {
+                    const errText = await response.text();
+                    throw new Error(`Murf API ${response.status}: ${errText}`);
+                }
+
+                const data = await response.json();
+                const audioUrl = data.encodedAudio || data.audioFile;
+                if (!audioUrl) throw new Error('No audio URL in Murf response');
+
+                const audio = new Audio(audioUrl);
+                audio.onended = () => { isSpeaking = false; };
+                audio.onerror = (err) => { 
+                    log('[TTS] Murf audio playback error: ' + (err.message || 'unknown error'));
+                    isSpeaking = false; fallbackTTS(text); 
+                };
+                isSpeaking = true; // set JUST before playback
+                audioAnalyzer = null; // force simulated lip-sync due to CORS
+                
+                try {
+                    await audio.play();
+                } catch (playErr) {
+                    log('[TTS] Murf audio.play() failed (autoplay policy?): ' + playErr.message);
+                    isSpeaking = false;
+                    fallbackTTS(text);
+                }
+                return;
+            } catch (e) {
+                log('[TTS] Murf failed completely: ' + e.message);
+            }
+        }
+    } catch (globalErr) {
+        log('[TTS] Unexpected error in playTTS: ' + globalErr.stack);
+    }
+
+    // ── 3. Browser speech synthesis ────────────────────────────────────────────
+    log('[TTS] Falling back to browser TTS');
     fallbackTTS(text);
 }
 
 function fallbackTTS(text) {
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
-    
-    // Try to pick a nice female English voice
     const voices = window.speechSynthesis.getVoices();
-    const preferred = voices.find(v =>
-        v.lang.startsWith('en') && v.name.toLowerCase().includes('zira')
-    ) || voices.find(v =>
-        v.lang.startsWith('en') && (v.name.toLowerCase().includes('female') || v.name.toLowerCase().includes('samantha'))
-    ) || voices.find(v =>
-        v.lang.startsWith('en')
-    );
-
-    if (preferred) {
-        utterance.voice = preferred;
-        log(`[TTS] Using fallback voice: ${preferred.name}`);
-    }
-
+    const preferred = voices.find(v => v.lang.startsWith('en') && v.name.toLowerCase().includes('zira'))
+        || voices.find(v => v.lang.startsWith('en') && v.name.toLowerCase().includes('samantha'))
+        || voices.find(v => v.lang.startsWith('en'));
+    if (preferred) { utterance.voice = preferred; }
     utterance.rate = 1.0;
     utterance.pitch = 1.1;
+    utterance.onstart = () => { isSpeaking = true; };  // lip sync starts with speech
     utterance.onend = () => { isSpeaking = false; };
     utterance.onerror = () => { isSpeaking = false; };
     window.speechSynthesis.speak(utterance);
 }
 
-// Pre-load voices (Chrome-based browsers load them async)
 if (window.speechSynthesis) {
     window.speechSynthesis.onvoiceschanged = () => {
         log('[TTS] Browser voices loaded: ' + window.speechSynthesis.getVoices().length);
     };
 }
 
-// ─── Keyboard Shortcuts ─────────────────────────────────────────────────────
+// ─── Keyboard Shortcuts ───────────────────────────────────────────────────────
 document.addEventListener('keydown', (e) => {
     if (e.altKey && e.shiftKey) {
-        if (!currentVrm) return;
-        const scaleStep = 0.1;
-        // User asked for Alt+Shift+P to increase size, we use e.code to avoid shift-casing issues
-        if (e.code === 'KeyP') {
-            const newScale = currentVrm.scene.scale.x + scaleStep;
-            currentVrm.scene.scale.set(newScale, newScale, newScale);
-            log(`[Scale] Increased to ${newScale.toFixed(2)}`);
-        } else if (e.code === 'KeyO') {
-            const newScale = Math.max(0.1, currentVrm.scene.scale.x - scaleStep);
-            currentVrm.scene.scale.set(newScale, newScale, newScale);
-            log(`[Scale] Decreased to ${newScale.toFixed(2)}`);
-        } else if (e.code === 'KeyQ') {
-            log(`[Exit] User requested quit.`);
-            ipcRenderer.send('quit-app');
-        } else if (e.code === 'KeyT') {
-            const terminal = document.getElementById('terminal-overlay');
-            if (terminal) {
-                const isHidden = window.getComputedStyle(terminal).display === 'none';
-                terminal.style.display = isHidden ? 'flex' : 'none';
-                log(`[Terminal] Toggled to ${isHidden ? 'visible' : 'hidden'}`);
-            }
-        } else if (e.code === 'KeyK') {
-            log(`[Refresh] User requested manual reload.`);
-            window.location.reload();
-        }
+        if (e.code === 'KeyP') { ipcRenderer.send('scale-up'); }
+        else if (e.code === 'KeyO') { ipcRenderer.send('scale-down'); }
+        else if (e.code === 'KeyQ') { ipcRenderer.send('quit-app'); }
+        else if (e.code === 'KeyT') { toggleTerminal(); }
+        else if (e.code === 'KeyK') { window.location.reload(); }
+        else if (e.code === 'KeyS') { openSettings(); }
     }
 });
 
-// ─── Handle window resize ───────────────────────────────────────────────────
+// ─── Window resize ────────────────────────────────────────────────────────────
 window.addEventListener('resize', () => {
     if (camera && renderer) {
         camera.aspect = window.innerWidth / window.innerHeight;
