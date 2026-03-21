@@ -1,0 +1,100 @@
+[2026-03-20 21:35:14,083] [WAKE] Listen mode triggered
+[2026-03-20 21:35:14,084] [TRIGGER] Processing voice command...
+[2026-03-20 21:35:14,084] [MIC] Starting recording...
+[2026-03-20 21:35:20,525] [MIC] Recording finished. Processing...
+[2026-03-20 21:35:22,407] [MIC] Recognized: 'open Notepad'
+[2026-03-20 21:35:22,408] [COMMAND] Processing: 'open Notepad'
+[2026-03-20 21:35:22,410] [ACTION] Launching: notepad.exe
+[2026-03-20 21:35:22,420] [RESPONSE] Speaking: Opening notepad for you right away!
+[2026-03-20 21:35:42,522] [WAKE] Heard: 'darling'
+[2026-03-20 21:35:42,523] [WAKE] TRIGGER: 'darling' matched 'darling'
+[2026-03-20 21:35:42,523] [WAKE] Listen mode triggered
+[2026-03-20 21:35:42,524] [TRIGGER] Processing voice command...
+[2026-03-20 21:35:42,524] [MIC] Starting recording...
+[2026-03-20 21:35:48,966] [MIC] Recording finished. Processing...
+[2026-03-20 21:35:55,740] [MIC] Recognized: 'write more about yourself in the Notepad'
+[2026-03-20 21:35:55,742] [COMMAND] Processing: 'write more about yourself in the Notepad'
+[2026-03-20 21:35:55,743] [AI] Generating response (gemini)...
+[2026-03-20 21:35:57,693] AFC is enabled with max remote calls: 10.
+[2026-03-20 21:35:59,849] HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent "HTTP/1.1 200 OK"
+[2026-03-20 21:35:59,854] [ACTION] Note saved: I'm Risse, your super loyal and totally adorable AI assistant! I love helping you, Shisho, and making sure your PC is running as smoothly as a shonen hero's power-up! I can open apps, search the web, and even control your volume – like a true magical girl! Let's conquer the digital world together!
+[2026-03-20 21:35:59,864] [RESPONSE] Speaking: Hai, Shisho! Risse will open Notepad right away!  And here's a little about me: (Note saved to Desktop!)
+[2026-03-20 21:36:51,060] [WAKE] Heard: 'call daddy kannada'
+[2026-03-20 21:36:57,414] [WAKE] Heard: 'should i call you'
+[2026-03-20 21:37:13,444] [WAKE] Heard: 'chaman nadu'
+[2026-03-20 21:37:28,907] [WAKE] Heard: 'hand'
+[2026-03-20 21:37:47,391] [WAKE] Heard: 'rice rice'
+[2026-03-20 21:37:47,392] [WAKE] TRIGGER: 'rice rice' matched 'rice'
+[2026-03-20 21:37:47,392] [WAKE] Instant Command: 'rice'
+[2026-03-20 21:37:47,393] [TRIGGER] Processing voice command...
+[2026-03-20 21:37:47,393] [COMMAND] Processing: 'rice'
+[2026-03-20 21:37:47,393] [AI] Generating response (gemini)...
+[2026-03-20 21:37:47,873] AFC is enabled with max remote calls: 10.
+[2026-03-20 21:37:49,470] HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent "HTTP/1.1 200 OK"
+[2026-03-20 21:37:49,472] [RESPONSE] Speaking: Eh? Risse, not rice, Shisho! But thank you for thinking of me! Did you need something, or were you perhaps just craving some delicious onigiri? ✨🍙
+[2026-03-20 21:39:10,363] [WAKE] Heard: 'google'
+[2026-03-20 21:39:32,091] [WAKE] Heard: 'who is hirakud'
+[2026-03-20 21:46:34,402] [WS] Client disconnected.
+[2026-03-20 21:46:42,415] [WS] Client connected.
+[2026-03-20 21:47:18,475] [CONFIG] Reloaded from disk.
+[2026-03-20 21:47:41,824] [TRIGGER] Processing voice command...
+[2026-03-20 21:47:41,824] [MIC] Starting recording...
+[2026-03-20 21:47:46,826] [TRIGGER] Processing voice command...
+[2026-03-20 21:47:46,826] [MIC] Starting recording...
+[2026-03-20 21:47:47,167] [MIC] Recording finished. Processing...
+[2026-03-20 21:47:48,224] [MIC] Recognized: 'open YouTube and brave search'
+[2026-03-20 21:47:48,225] [COMMAND] Processing: 'open YouTube and brave search'
+[2026-03-20 21:47:48,226] [AI] Generating response (gemini)...
+[2026-03-20 21:47:48,714] [MIC] Recording finished. Processing...
+[2026-03-20 21:47:48,716] AFC is enabled with max remote calls: 10.
+[2026-03-20 21:47:49,360] [MIC] Could not understand audio.
+[2026-03-20 21:47:49,360] [TRIGGER] No command text, going IDLE.
+[2026-03-20 21:47:50,215] HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent "HTTP/1.1 200 OK"
+[2026-03-20 21:47:50,217] [RESPONSE] Speaking: Hai, Shisho! Opening YouTube and Brave search right away! [ACTION: OPEN YouTube] [ACTION: OPEN Brave] What adventure are we starting today? Perhaps a new anime trailer or a cool tech review? Risse is ready!
+[2026-03-20 21:50:56,717] [WS] Client disconnected.
+[2026-03-20 21:51:33,183] ==================================================
+[2026-03-20 21:51:33,184] [SERVER] Starting Risse backend on port 8000...
+[2026-03-20 21:51:33,184] [SERVER] AI Model: gemini
+[2026-03-20 21:51:33,185] ==================================================
+[2026-03-20 21:51:33,320] [SERVER] Zero-PyAudio Mode: Mic calibration disabled.
+[2026-03-20 21:51:33,321] [HOTKEY] Listening for 'f2'...
+[2026-03-20 21:51:33,322] [WAKE] Wake words: ['bakkaa', 'risse', 'rise', 'rice', 'reese', 'resse', 'rize', 'darling', 'baka']
+[2026-03-20 21:51:33,322] [SERVER] Risse is awake and listening!
+[2026-03-20 21:51:33,325] [SERVER] AI Model: gemini | Say wake word or press F2.
+[2026-03-20 21:51:33,590] [WS] Client connected.
+[2026-03-20 21:51:46,911] [WS] Client disconnected.
+[2026-03-20 21:53:03,158] [WS] Client connected.
+[2026-03-20 21:53:13,018] [CONFIG] Reloaded from disk.
+[2026-03-20 21:53:42,113] [WAKE] Heard: 'karachi'
+[2026-03-20 21:56:34,706] [WS] Client disconnected.
+[2026-03-20 21:56:59,950] ==================================================
+[2026-03-20 21:56:59,950] [SERVER] Starting Risse backend on port 8000...
+[2026-03-20 21:56:59,951] [SERVER] AI Model: gemini
+[2026-03-20 21:56:59,951] ==================================================
+[2026-03-20 21:57:00,030] [SERVER] Zero-PyAudio Mode: Mic calibration disabled.
+[2026-03-20 21:57:00,032] [HOTKEY] Listening for 'f2'...
+[2026-03-20 21:57:00,032] [WAKE] Wake words (29): ['bakkaa', 'risse', 'rise', 'rice', 'reese', 'resse', 'rize', 'darling']... + phonetic variants
+[2026-03-20 21:57:00,033] [SERVER] Risse is awake and listening!
+[2026-03-20 21:57:00,033] [SERVER] AI Model: gemini | Say wake word or press F2.
+[2026-03-20 21:57:00,416] [WS] Client connected.
+[2026-03-20 21:57:09,049] [WS] Client disconnected.
+[2026-03-20 21:57:47,294] [WAKE] Heard: 'big brother'
+[2026-03-20 21:57:59,857] [WAKE] Heard: 'lenovo morning'
+[2026-03-20 21:58:10,544] [WAKE] Heard: '10:30 11 ki list'
+[2026-03-20 21:58:42,997] [WAKE] Heard: 'shankar'
+[2026-03-20 21:59:07,831] [WAKE] Heard: 'subtitles online'
+[2026-03-20 21:59:29,966] [WS] Client connected.
+[2026-03-20 21:59:37,513] [CONFIG] Reloaded from disk.
+[2026-03-20 21:59:54,198] [WAKE] Heard: 'stylish'
+[2026-03-20 22:00:38,390] [TRIGGER] Processing voice command...
+[2026-03-20 22:00:38,391] [MIC] Starting recording...
+[2026-03-20 22:00:42,201] [TRIGGER] Processing voice command...
+[2026-03-20 22:00:42,201] [MIC] Starting recording...
+[2026-03-20 22:00:42,536] [MIC] Recording finished. Processing...
+[2026-03-20 22:00:43,610] [MIC] Could not understand audio.
+[2026-03-20 22:00:43,610] [TRIGGER] No command text, going IDLE.
+[2026-03-20 22:00:43,732] [MIC] Recording finished. Processing...
+[2026-03-20 22:00:44,442] [MIC] Could not understand audio.
+[2026-03-20 22:00:44,443] [TRIGGER] No command text, going IDLE.
+[2026-03-20 22:01:31,417] [WS] Client disconnected.
+[2026-03-20 22:02:17,260] [WAKE] Heard: 'set alarm'

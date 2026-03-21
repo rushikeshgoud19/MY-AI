@@ -9,5 +9,6 @@ pyautogui
 keyboard
 google-generativeai
 google-genai
+openai
 pipwin
 pyaudio

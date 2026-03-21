@@ -17,7 +17,6 @@ body {
 #container {
     width: 100vw;
     height: 100vh;
-    /* pointer-events: auto so we can click/drag on the canvas */
     pointer-events: auto;
     cursor: grab;
 }
@@ -26,16 +25,62 @@ body {
     cursor: grabbing;
 }
 
+/* ─── Status dot ─────────────────────────────────── */
+#status-indicator {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background-color: rgba(255,255,255,0.2);
+    z-index: 9999;
+    transition: all 0.3s ease;
+    pointer-events: none;
+}
+
+/* ─── Settings button ───────────────────────────── */
+#settings-btn {
+    position: absolute;
+    top: 6px;
+    left: 6px;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    border: none;
+    background: rgba(110, 142, 251, 0.15);
+    color: rgba(110, 142, 251, 0.5);
+    font-size: 11px;
+    cursor: pointer;
+    z-index: 9999;
+    opacity: 0;
+    transition: opacity 0.3s, background 0.2s, color 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: auto;
+    -webkit-app-region: no-drag;
+}
+
+body:hover #settings-btn {
+    opacity: 1;
+}
+
+#settings-btn:hover {
+    background: rgba(110, 142, 251, 0.35);
+    color: #6e8efb;
+}
+
 /* ─── UI Overlay ────────────────────────────────── */
 #ui-overlay {
     position: absolute;
-    bottom: 20px;
+    bottom: 44px; /* above chat bar */
     left: 0;
     right: 0;
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 12px;
+    gap: 8px;
     pointer-events: none;
     z-index: 10;
 }
@@ -43,11 +88,11 @@ body {
 /* Response speech bubble */
 #response-bubble {
     max-width: 90%;
-    background: rgba(20, 20, 35, 0.85);
+    background: rgba(20, 20, 35, 0.88);
     color: #e0e0ff;
-    padding: 12px 18px;
-    border-radius: 16px;
-    font-size: 14px;
+    padding: 10px 14px;
+    border-radius: 14px;
+    font-size: 12px;
     line-height: 1.5;
     -webkit-backdrop-filter: blur(10px);
     backdrop-filter: blur(10px);
@@ -59,21 +104,21 @@ body {
 
 #response-bubble.hidden {
     opacity: 0;
-    transform: translateY(10px);
+    transform: translateY(8px);
     pointer-events: none;
 }
 
 /* Status pill */
 #status {
-    background: rgba(0, 0, 0, 0.55);
+    background: rgba(0, 0, 0, 0.5);
     color: #aaa;
-    padding: 6px 14px;
+    padding: 4px 12px;
     border-radius: 20px;
-    font-size: 12px;
+    font-size: 11px;
     -webkit-backdrop-filter: blur(5px);
     backdrop-filter: blur(5px);
     pointer-events: none;
-    transition: color 0.3s ease, border-color 0.3s ease;
+    transition: color 0.3s ease;
 }
 
 #status.listening {
@@ -81,69 +126,94 @@ body {
     border: 1px solid rgba(255, 107, 107, 0.4);
 }
 
-#status.connected {
-    color: #6bffb8;
+/* ─── Text Chat Input Bar ───────────────────────── */
+#chat-bar {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 36px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 6px;
+    background: rgba(10, 10, 20, 0.75);
+    border-top: 1px solid rgba(110, 142, 251, 0.15);
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
+    z-index: 100;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+    -webkit-app-region: no-drag;
 }
 
-/* Talk button */
-#talk-btn {
-    display: none !important; /* Hidden — voice only */
-    background: linear-gradient(135deg, #6e8efb, #a777e3);
+body:hover #chat-bar {
+    opacity: 1;
+}
+
+#chat-input {
+    flex: 1;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(110, 142, 251, 0.2);
+    border-radius: 10px;
+    color: #e0e0ff;
+    font-size: 11px;
+    padding: 4px 8px;
+    outline: none;
+    font-family: inherit;
+    -webkit-user-select: text;
+    user-select: text;
+    transition: border-color 0.2s;
+}
+
+#chat-input:focus {
+    border-color: rgba(110, 142, 251, 0.5);
+}
+
+#chat-input::placeholder {
+    color: rgba(255,255,255,0.25);
+}
+
+#chat-send {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
     border: none;
+    background: linear-gradient(135deg, #6e8efb, #a777e3);
     color: white;
-    padding: 10px 26px;
-    border-radius: 25px;
-    font-size: 16px;
-    font-weight: bold;
+    font-size: 13px;
     cursor: pointer;
-    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
-    transition: transform 0.2s, box-shadow 0.2s;
-    pointer-events: auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: opacity 0.2s, transform 0.1s;
+    flex-shrink: 0;
 }
 
-#talk-btn:hover {
-    transform: scale(1.05);
-    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
-}
+#chat-send:hover { opacity: 0.85; }
+#chat-send:active { transform: scale(0.92); }
 
-#talk-btn:active {
-    transform: scale(0.95);
-}
-
-#talk-btn.active {
-    background: linear-gradient(135deg, #ff416c, #ff4b2b);
-    animation: pulse 1.5s infinite;
-}
-
-@keyframes pulse {
-    0%   { transform: scale(1);    box-shadow: 0 0 0 0 rgba(255, 75, 43, 0.7); }
-    70%  { transform: scale(1.05); box-shadow: 0 0 0 10px rgba(255, 75, 43, 0); }
-    100% { transform: scale(1);    box-shadow: 0 0 0 0 rgba(255, 75, 43, 0); }
-}
-
-/* Drag-handle hint — visible on hover */
+/* ─── Drag hint ──────────────────────────────────── */
 #drag-hint {
     position: absolute;
-    top: 8px;
-    right: 8px;
-    background: rgba(110, 142, 251, 0.15);
-    color: rgba(110, 142, 251, 0.6);
-    font-size: 10px;
-    padding: 2px 8px;
+    top: 6px;
+    right: 24px;
+    background: rgba(110, 142, 251, 0.12);
+    color: rgba(110, 142, 251, 0.5);
+    font-size: 9px;
+    padding: 2px 7px;
     border-radius: 10px;
     pointer-events: none;
     opacity: 0;
     transition: opacity 0.3s ease;
     z-index: 20;
-    -webkit-backdrop-filter: blur(4px);
-    backdrop-filter: blur(4px);
 }
 
 body:hover #drag-hint {
     opacity: 1;
 }
 
-/* ─── Terminal Overlay ───────────────────────── */
+/* ─── Terminal Overlay ───────────────────────────── */
 #terminal-overlay {
     position: absolute;
     top: 50%;
@@ -151,11 +221,11 @@ body:hover #drag-hint {
     transform: translate(-50%, -50%);
     width: 90%;
     height: 80%;
-    background: rgba(10, 10, 20, 0.95);
+    background: rgba(10, 10, 20, 0.96);
     border: 1px solid rgba(110, 142, 251, 0.4);
     border-radius: 12px;
     z-index: 1000;
-    display: none; /* Hidden by default, toggled via hotkey */
+    display: none;
     flex-direction: column;
     overflow: hidden;
     box-shadow: 0 20px 50px rgba(0, 0, 0, 0.8);
@@ -164,43 +234,70 @@ body:hover #drag-hint {
 }
 
 .terminal-header {
-    background: rgba(110, 142, 251, 0.2);
+    background: rgba(110, 142, 251, 0.18);
     color: #6e8efb;
-    padding: 10px 15px;
-    font-size: 11px;
+    padding: 8px 12px;
+    font-size: 10px;
     font-weight: bold;
     text-transform: uppercase;
     letter-spacing: 1px;
     border-bottom: 1px solid rgba(110, 142, 251, 0.2);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    -webkit-app-region: no-drag;
 }
+
+.terminal-close {
+    background: none;
+    border: none;
+    color: rgba(110,142,251,0.5);
+    cursor: pointer;
+    font-size: 12px;
+    padding: 0 2px;
+    line-height: 1;
+}
+
+.terminal-close:hover { color: #ff5555; }
 
 #terminal-content {
     flex: 1;
-    padding: 15px;
+    padding: 12px;
     font-family: 'Consolas', 'Monaco', monospace;
-    font-size: 13px;
+    font-size: 12px;
     color: #c0c0ff;
     overflow-y: auto;
     scroll-behavior: smooth;
 }
 
-#terminal-content::-webkit-scrollbar {
-    width: 6px;
-}
-
+#terminal-content::-webkit-scrollbar { width: 4px; }
 #terminal-content::-webkit-scrollbar-thumb {
     background: rgba(110, 142, 251, 0.3);
     border-radius: 3px;
 }
 
 .terminal-line {
-    margin-bottom: 8px;
+    margin-bottom: 6px;
     line-height: 1.4;
-    word-break: break-all;
+    word-break: break-word;
 }
 
-.terminal-user { color: #f8f8f2; }
-.terminal-risse { color: #6e8efb; font-weight: 500; }
-.terminal-system { color: #888; font-style: italic; }
-.terminal-error { color: #ff5555; }
+.terminal-user   { color: #f8f8f2; }
+.terminal-risse  { color: #6e8efb; font-weight: 500; }
+.terminal-system { color: #555; font-style: italic; }
+.terminal-error  { color: #ff5555; }
+.terminal-emotion { color: #a777e3; font-style: italic; }
+
+/* ─── Typing indicator animation ────────────── */
+.typing-dots span {
+    animation: typingBlink 1.4s infinite both;
+    font-weight: bold;
+}
+.typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+.typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes typingBlink {
+    0%, 80%, 100% { opacity: 0.2; }
+    40% { opacity: 1; }
+}
 

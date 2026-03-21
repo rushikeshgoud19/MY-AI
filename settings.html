@@ -1,0 +1,767 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Risse — Settings</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            background: #0d0d1a;
+            color: #c0c0ff;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            font-size: 13px;
+            overflow-y: auto;
+        }
+
+        .title-bar {
+            background: rgba(110, 142, 251, 0.15);
+            border-bottom: 1px solid rgba(110, 142, 251, 0.3);
+            padding: 12px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            -webkit-app-region: drag;
+        }
+
+        .title-bar h1 {
+            font-size: 14px;
+            color: #6e8efb;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+        }
+
+        .title-bar .version {
+            font-size: 11px;
+            color: #555;
+        }
+
+        .container {
+            padding: 20px;
+            max-width: 600px;
+            margin: 0 auto;
+        }
+
+        .section {
+            margin-bottom: 24px;
+            background: rgba(255,255,255,0.03);
+            border: 1px solid rgba(110, 142, 251, 0.15);
+            border-radius: 10px;
+            overflow: hidden;
+        }
+
+        .section-header {
+            background: rgba(110, 142, 251, 0.1);
+            padding: 10px 16px;
+            font-size: 11px;
+            font-weight: bold;
+            color: #6e8efb;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .section-body {
+            padding: 14px 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .field {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .field label {
+            font-size: 11px;
+            color: #888;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .field input[type="text"],
+        .field input[type="password"],
+        .field select,
+        .field textarea {
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(110, 142, 251, 0.25);
+            border-radius: 6px;
+            color: #e0e0ff;
+            padding: 8px 10px;
+            font-size: 12px;
+            font-family: inherit;
+            outline: none;
+            transition: border-color 0.2s;
+            width: 100%;
+        }
+
+        .field input:focus,
+        .field select:focus,
+        .field textarea:focus {
+            border-color: rgba(110, 142, 251, 0.6);
+        }
+
+        .field select option {
+            background: #0d0d1a;
+        }
+
+        .field textarea {
+            resize: vertical;
+            min-height: 80px;
+        }
+
+        .field-row {
+            display: flex;
+            gap: 12px;
+        }
+
+        .field-row .field {
+            flex: 1;
+        }
+
+        .field input[type="range"] {
+            width: 100%;
+            accent-color: #6e8efb;
+        }
+
+        .field .range-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .field .range-val {
+            font-size: 12px;
+            color: #6e8efb;
+            min-width: 30px;
+            text-align: right;
+        }
+
+        .field .toggle-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .toggle {
+            position: relative;
+            width: 36px;
+            height: 20px;
+            flex-shrink: 0;
+        }
+
+        .toggle input { display: none; }
+
+        .toggle-slider {
+            position: absolute;
+            inset: 0;
+            background: rgba(255,255,255,0.1);
+            border-radius: 20px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .toggle-slider::before {
+            content: '';
+            position: absolute;
+            width: 14px;
+            height: 14px;
+            left: 3px;
+            top: 3px;
+            background: #888;
+            border-radius: 50%;
+            transition: transform 0.2s, background 0.2s;
+        }
+
+        .toggle input:checked + .toggle-slider { background: rgba(110, 142, 251, 0.4); }
+        .toggle input:checked + .toggle-slider::before {
+            transform: translateX(16px);
+            background: #6e8efb;
+        }
+
+        .hint {
+            font-size: 10px;
+            color: #555;
+            line-height: 1.4;
+        }
+
+        .character-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
+            gap: 8px;
+        }
+
+        .char-card {
+            background: rgba(255,255,255,0.04);
+            border: 1px solid rgba(110, 142, 251, 0.2);
+            border-radius: 8px;
+            padding: 8px 6px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 10px;
+            color: #888;
+            word-break: break-all;
+        }
+
+        .char-card:hover { border-color: rgba(110, 142, 251, 0.5); color: #c0c0ff; }
+        .char-card.active { border-color: #6e8efb; color: #6e8efb; background: rgba(110,142,251,0.08); }
+
+        .char-card .char-icon { font-size: 24px; margin-bottom: 4px; }
+
+        .btn-row {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            padding: 16px 20px;
+            border-top: 1px solid rgba(110, 142, 251, 0.15);
+        }
+
+        button {
+            padding: 9px 22px;
+            border-radius: 8px;
+            border: none;
+            font-size: 12px;
+            cursor: pointer;
+            font-family: inherit;
+            transition: all 0.2s;
+        }
+
+        .btn-save {
+            background: linear-gradient(135deg, #6e8efb, #a777e3);
+            color: white;
+            font-weight: bold;
+        }
+
+        .btn-save:hover { opacity: 0.9; transform: translateY(-1px); }
+
+        .btn-cancel {
+            background: rgba(255,255,255,0.06);
+            color: #888;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .btn-cancel:hover { background: rgba(255,255,255,0.1); color: #c0c0ff; }
+
+        .status-msg {
+            position: fixed;
+            bottom: 60px;
+            right: 20px;
+            background: rgba(110, 142, 251, 0.2);
+            border: 1px solid rgba(110, 142, 251, 0.4);
+            color: #6e8efb;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 12px;
+            opacity: 0;
+            transition: opacity 0.3s;
+            pointer-events: none;
+        }
+
+        .status-msg.show { opacity: 1; }
+
+        #tab-bar {
+            display: flex;
+            gap: 0;
+            border-bottom: 1px solid rgba(110, 142, 251, 0.2);
+            padding: 0 20px;
+            background: rgba(0,0,0,0.2);
+        }
+
+        .tab {
+            padding: 10px 16px;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: #555;
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            transition: all 0.2s;
+        }
+
+        .tab:hover { color: #888; }
+        .tab.active { color: #6e8efb; border-bottom-color: #6e8efb; }
+
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        
+        .hide-model-field { display: none; }
+        .fallback-msg { color: #555; font-size: 11px; }
+        .btn-reset { width: 100%; text-align: center; }
+    </style>
+</head>
+<body>
+    <div class="title-bar">
+        <h1>⚙ Risse Settings</h1>
+        <span class="version">v2.0</span>
+    </div>
+
+    <div id="tab-bar">
+        <div class="tab active" data-tab="ai">AI / Models</div>
+        <div class="tab" data-tab="voice">Voice</div>
+        <div class="tab" data-tab="character">Character</div>
+        <div class="tab" data-tab="behavior">Behavior</div>
+        <div class="tab" data-tab="advanced">Advanced</div>
+    </div>
+
+    <div class="container">
+
+        <!-- ── AI / Models Tab ── -->
+        <div class="tab-content active" id="tab-ai">
+            <div class="section">
+                <div class="section-header">AI Provider</div>
+                <div class="section-body">
+                    <div class="field">
+                        <label>Active AI Model</label>
+                        <select id="ai_model" title="Select AI Provider">
+                            <option value="gemini">Google Gemini (Recommended)</option>
+                            <option value="openai">OpenAI GPT-4o</option>
+                            <option value="anthropic">Anthropic Claude</option>
+                            <option value="openrouter">OpenRouter (Multi-Model)</option>
+                        </select>
+                    </div>
+                    <div class="field" id="gemini-model-field">
+                        <label>Gemini Model</label>
+                        <select id="gemini_model" title="Select Gemini Model">
+                            <option value="gemini-2.5-flash">Gemini 2.5 Flash (Fast)</option>
+                            <option value="gemini-2.5-pro">Gemini 2.5 Pro (Smart)</option>
+                            <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
+                        </select>
+                    </div>
+                    <div class="field hide-model-field" id="openai-model-field">
+                        <label>OpenAI Model</label>
+                        <select id="openai_model" title="Select OpenAI Model">
+                            <option value="gpt-4o">GPT-4o</option>
+                            <option value="gpt-4o-mini">GPT-4o Mini (Cheaper)</option>
+                            <option value="gpt-4-turbo">GPT-4 Turbo</option>
+                        </select>
+                    </div>
+                    <div class="field hide-model-field" id="anthropic-model-field">
+                        <label>Claude Model</label>
+                        <select id="anthropic_model" title="Select Claude Model">
+                            <option value="claude-3-opus-20240229">Claude 3 Opus (Smartest)</option>
+                            <option value="claude-3-sonnet-20240229">Claude 3 Sonnet (Balanced)</option>
+                            <option value="claude-3-haiku-20240307">Claude 3 Haiku (Fast)</option>
+                        </select>
+                    </div>
+                    <div class="field hide-model-field" id="openrouter-model-field">
+                        <label>OpenRouter Model</label>
+                        <select id="openrouter_model" title="Select OpenRouter Model">
+                            <option value="anthropic/claude-3-opus">Claude 3 Opus (via OpenRouter)</option>
+                            <option value="anthropic/claude-3-sonnet">Claude 3 Sonnet (via OpenRouter)</option>
+                            <option value="anthropic/claude-3-haiku">Claude 3 Haiku (via OpenRouter)</option>
+                            <option value="google/gemini-2.0-flash-001">Gemini 2.0 Flash (Free)</option>
+                            <option value="meta-llama/llama-3.3-70b-instruct:free">Llama 3.3 70B (Free)</option>
+                            <option value="mistralai/mistral-small-3.1-24b-instruct:free">Mistral Small 3.1 (Free)</option>
+                            <option value="qwen/qwen-2.5-72b-instruct:free">Qwen 2.5 72B (Free)</option>
+                        </select>
+                        <span class="hint">Models marked (Free) cost $0. Others use your OpenRouter credits.</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="section">
+                <div class="section-header">API Keys</div>
+                <div class="section-body">
+                    <div class="field">
+                        <label>Google Gemini API Key</label>
+                        <input type="password" id="gemini_api_key" placeholder="AIza..." />
+                        <span class="hint">Get yours free at aistudio.google.com</span>
+                    </div>
+                    <div class="field">
+                        <label>OpenAI API Key</label>
+                        <input type="password" id="openai_api_key" placeholder="sk-..." />
+                    </div>
+                    <div class="field">
+                        <label>Anthropic Claude API Key</label>
+                        <input type="password" id="anthropic_api_key" placeholder="sk-ant-..." />
+                    </div>
+                    <div class="field">
+                        <label>OpenRouter API Key</label>
+                        <input type="password" id="openrouter_api_key" placeholder="sk-or-v1-..." />
+                        <span class="hint">Get your key at openrouter.ai — many free models available!</span>
+                    </div>
+                    <div class="field">
+                        <label>ElevenLabs API Key (Best Voice — Recommended)</label>
+                        <input type="password" id="elevenlabs_api_key" placeholder="sk_..." />
+                        <span class="hint">Get a free key at elevenlabs.io — 10,000 chars/month free. Used first if set.</span>
+                    </div>
+                    <div class="field">
+                        <label>ElevenLabs Voice ID</label>
+                        <select id="elevenlabs_voice_id" title="Select ElevenLabs Voice">
+                            <option value="EXAVITQu4vr4xnSDxMaL">Sarah — warm, natural female</option>
+                            <option value="21m00Tcm4TlvDq8ikWAM">Rachel — calm, clear female</option>
+                            <option value="AZnzlk1XvdvUeBnXmlld">Domi — confident female</option>
+                            <option value="MF3mGyEYCl7XYWbV9V6O">Elli — young, bright anime female (active)</option>
+                            <option value="TxGEqnHWrfWFTfGW9XjX">Josh — deep male</option>
+                            <option value="VR6AewLTigWG4xSOukaG">Arnold — authoritative male</option>
+                        </select>
+                        <span class="hint">Or paste any custom Voice ID from your ElevenLabs account.</span>
+                    </div>
+                    <div class="field">
+                        <label>Custom ElevenLabs Voice ID (overrides dropdown)</label>
+                        <input type="text" id="elevenlabs_voice_id_custom" placeholder="Paste voice ID here..." />
+                    </div>
+                    <div class="field">
+                        <label>Murf AI TTS Key (fallback if ElevenLabs not set)</label>
+                        <input type="password" id="murf_api_key" placeholder="ap2_..." />
+                        <span class="hint">Used as second fallback. Browser speech synthesis is used last.</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── Voice Tab ── -->
+        <div class="tab-content" id="tab-voice">
+            <div class="section">
+                <div class="section-header">Text-to-Speech</div>
+                <div class="section-body">
+                    <div class="field">
+                        <label>Murf Voice ID</label>
+                        <select id="voice_id" title="Select Murf Voice">
+                            <option value="ja-JP-kimi">ja-JP-kimi (Japanese — Kimi)</option>
+                            <option value="en-US-natalie">en-US-natalie (English — Natalie)</option>
+                            <option value="en-US-julia">en-US-julia (English — Julia)</option>
+                            <option value="en-US-melissa">en-US-melissa (English — Melissa)</option>
+                            <option value="en-GB-hazel">en-GB-hazel (British — Hazel)</option>
+                            <option value="ko-KR-sua">ko-KR-sua (Korean — Sua)</option>
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label>Voice Style</label>
+                        <select id="voice_style" title="Select Voice Style">
+                            <option value="Conversational">Conversational</option>
+                            <option value="Promo">Promo</option>
+                            <option value="Narration">Narration</option>
+                            <option value="Cheerful">Cheerful</option>
+                        </select>
+                    </div>
+                    <div class="field-row">
+                        <div class="field">
+                            <label>Speed</label>
+                            <div class="range-row">
+                                <input type="range" id="voice_rate" min="-10" max="10" step="1" />
+                                <span class="range-val" id="voice_rate_val">-2</span>
+                            </div>
+                        </div>
+                        <div class="field">
+                            <label>Pitch</label>
+                            <div class="range-row">
+                                <input type="range" id="voice_pitch" min="-10" max="10" step="1" />
+                                <span class="range-val" id="voice_pitch_val">4</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── Character Tab ── -->
+        <div class="tab-content" id="tab-character">
+            <div class="section">
+                <div class="section-header">Active Character</div>
+                <div class="section-body">
+                    <div class="field">
+                        <label>Character Name</label>
+                        <input type="text" id="character_name" placeholder="Risse" />
+                    </div>
+                    <div class="field">
+                        <label>VRM Model File</label>
+                        <input type="text" id="character_file" placeholder="character/model.vrm" />
+                        <span class="hint">Put your .vrm files in the /character folder. Enter the relative path.</span>
+                    </div>
+                    <div class="field">
+                        <label>Available Characters (in /character folder)</label>
+                        <div class="character-grid" id="char-grid">
+                            <div class="fallback-msg">Loading...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── Behavior Tab ── -->
+        <div class="tab-content" id="tab-behavior">
+            <div class="section">
+                <div class="section-header">Wake Words</div>
+                <div class="section-body">
+                    <div class="field">
+                        <label>Custom Wake Word (leave blank for defaults)</label>
+                        <input type="text" id="custom_wake_word" placeholder="e.g. nova, luna, aria..." />
+                        <span class="hint">Your custom word is added on top of defaults (risse, rise, darling...).</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="section">
+                <div class="section-header">Personality</div>
+                <div class="section-body">
+                    <div class="field">
+                        <label>System Prompt (her personality)</label>
+                        <textarea id="personality" rows="5"></textarea>
+                        <span class="hint">This is the instruction that defines how she talks and behaves.</span>
+                    </div>
+                    <div class="field">
+                        <label>Memory Size (conversation turns to remember)</label>
+                        <div class="range-row">
+                            <input type="range" id="memory_size" min="6" max="60" step="2" />
+                            <span class="range-val" id="memory_size_val">30</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="section">
+                <div class="section-header">Streamer Mode</div>
+                <div class="section-body">
+                    <div class="field">
+                        <label>Streamer Mode (Twitch Chat)</label>
+                        <div class="toggle-row">
+                            <label class="toggle">
+                                <input type="checkbox" id="streamer_mode" />
+                                <span class="toggle-slider"></span>
+                            </label>
+                            <span>Read and respond to Twitch chat commands</span>
+                        </div>
+                    </div>
+                    <div class="field">
+                        <label>Twitch Channel Name</label>
+                        <input type="text" id="twitch_channel" placeholder="yourchannelname" />
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── Advanced Tab ── -->
+        <div class="tab-content" id="tab-advanced">
+            <div class="section">
+                <div class="section-header">Window</div>
+                <div class="section-body">
+                    <div class="field">
+                        <label>Always on Top</label>
+                        <div class="toggle-row">
+                            <label class="toggle">
+                                <input type="checkbox" id="always_on_top" />
+                                <span class="toggle-slider"></span>
+                            </label>
+                            <span>Keep Risse above all other windows</span>
+                        </div>
+                    </div>
+                    <div class="field">
+                        <label>Default Window Scale</label>
+                        <div class="range-row">
+                            <input type="range" id="window_scale" min="0.5" max="3.0" step="0.1" />
+                            <span class="range-val" id="window_scale_val">1.0x</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="section">
+                <div class="section-header">Danger Zone</div>
+                <div class="section-body">
+                    <div class="field">
+                        <button type="button" class="btn-cancel btn-reset" onclick="resetConfig()">
+                            Reset All Settings to Default
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div><!-- /container -->
+
+    <div class="btn-row">
+        <button type="button" class="btn-cancel" onclick="cancelSettings()">Cancel</button>
+        <button type="button" class="btn-save" onclick="saveSettings()">Save &amp; Restart</button>
+    </div>
+
+    <div class="status-msg" id="status-msg">Settings saved!</div>
+
+    <script>
+        const { ipcRenderer } = window.require('electron');
+        const fs = window.require('fs');
+        const path = window.require('path');
+
+        const CONFIG_PATH = path.join(process.cwd(), 'config.json');
+        let config = {};
+
+        // ── Load config ──
+        function loadConfig() {
+            try {
+                config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+            } catch(e) {
+                config = {};
+            }
+            applyToForm(config);
+            loadCharacterGrid();
+        }
+
+        function applyToForm(cfg) {
+            const set = (id, val) => {
+                const el = document.getElementById(id);
+                if (!el || val === undefined || val === null) return;
+                if (el.type === 'checkbox') el.checked = val;
+                else el.value = val;
+            };
+
+            set('ai_model', cfg.ai_model);
+            set('gemini_model', cfg.gemini_model);
+            set('openai_model', cfg.openai_model);
+            set('anthropic_model', cfg.anthropic_model);
+            set('gemini_api_key', cfg.gemini_api_key);
+            set('openai_api_key', cfg.openai_api_key);
+            set('anthropic_api_key', cfg.anthropic_api_key);
+            set('openrouter_api_key', cfg.openrouter_api_key);
+            set('openrouter_model', cfg.openrouter_model);
+            set('elevenlabs_api_key', cfg.elevenlabs_api_key);
+            set('elevenlabs_voice_id', cfg.elevenlabs_voice_id);
+            set('elevenlabs_voice_id_custom', cfg.elevenlabs_voice_id_custom);
+            set('murf_api_key', cfg.murf_api_key);
+            set('voice_id', cfg.voice_id);
+            set('voice_style', cfg.voice_style);
+            set('voice_rate', cfg.voice_rate);
+            set('voice_pitch', cfg.voice_pitch);
+            set('character_name', cfg.character_name);
+            set('character_file', cfg.character_file);
+            set('custom_wake_word', cfg.custom_wake_word);
+            set('personality', cfg.personality);
+            set('memory_size', cfg.memory_size);
+            set('streamer_mode', cfg.streamer_mode);
+            set('twitch_channel', cfg.twitch_channel);
+            set('always_on_top', cfg.always_on_top);
+            set('window_scale', cfg.window_scale);
+
+            updateRangeDisplays();
+            updateModelFields();
+        }
+
+        function updateRangeDisplays() {
+            const rateEl = document.getElementById('voice_rate');
+            const pitchEl = document.getElementById('voice_pitch');
+            const memEl = document.getElementById('memory_size');
+            const scaleEl = document.getElementById('window_scale');
+            if (rateEl) document.getElementById('voice_rate_val').textContent = rateEl.value;
+            if (pitchEl) document.getElementById('voice_pitch_val').textContent = pitchEl.value;
+            if (memEl) document.getElementById('memory_size_val').textContent = memEl.value;
+            if (scaleEl) document.getElementById('window_scale_val').textContent = parseFloat(scaleEl.value).toFixed(1) + 'x';
+        }
+
+        ['voice_rate','voice_pitch','memory_size','window_scale'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.addEventListener('input', updateRangeDisplays);
+        });
+
+        function updateModelFields() {
+            const model = document.getElementById('ai_model').value;
+            document.getElementById('gemini-model-field').style.display = model === 'gemini' ? '' : 'none';
+            document.getElementById('openai-model-field').style.display = model === 'openai' ? '' : 'none';
+            document.getElementById('anthropic-model-field').style.display = model === 'anthropic' ? '' : 'none';
+            document.getElementById('openrouter-model-field').style.display = model === 'openrouter' ? '' : 'none';
+        }
+        document.getElementById('ai_model').addEventListener('change', updateModelFields);
+
+        // ── Character grid ──
+        function loadCharacterGrid() {
+            const charDir = path.join(process.cwd(), 'character');
+            const grid = document.getElementById('char-grid');
+            grid.innerHTML = '';
+            try {
+                const files = fs.readdirSync(charDir).filter(f => f.endsWith('.vrm'));
+                if (files.length === 0) {
+                    grid.innerHTML = '<div style="color:#555;font-size:11px;">No .vrm files found in /character</div>';
+                    return;
+                }
+                files.forEach(f => {
+                    const card = document.createElement('div');
+                    card.className = 'char-card';
+                    const currentFile = document.getElementById('character_file').value;
+                    if (currentFile.includes(f)) card.classList.add('active');
+                    card.innerHTML = `<div class="char-icon">🧝</div>${f.length > 12 ? f.substring(0,10)+'...' : f}`;
+                    card.title = f;
+                    card.onclick = () => {
+                        document.getElementById('character_file').value = 'character/' + f;
+                        document.querySelectorAll('.char-card').forEach(c => c.classList.remove('active'));
+                        card.classList.add('active');
+                    };
+                    grid.appendChild(card);
+                });
+            } catch(e) {
+                grid.innerHTML = '<div style="color:#ff5555;font-size:11px;">Could not read /character folder</div>';
+            }
+        }
+
+        // ── Tabs ──
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+                tab.classList.add('active');
+                document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
+            });
+        });
+
+        // ── Save ──
+        function saveSettings() {
+            const get = (id) => {
+                const el = document.getElementById(id);
+                if (!el) return undefined;
+                if (el.type === 'checkbox') return el.checked;
+                if (el.type === 'range') return parseFloat(el.value);
+                return el.value;
+            };
+
+            const newCfg = {
+                ...config,
+                ai_model: get('ai_model'),
+                gemini_model: get('gemini_model'),
+                openai_model: get('openai_model'),
+                anthropic_model: get('anthropic_model'),
+                gemini_api_key: get('gemini_api_key'),
+                openai_api_key: get('openai_api_key'),
+                anthropic_api_key: get('anthropic_api_key'),
+                openrouter_api_key: get('openrouter_api_key'),
+                openrouter_model: get('openrouter_model'),
+                elevenlabs_api_key: get('elevenlabs_api_key'),
+                elevenlabs_voice_id: get('elevenlabs_voice_id_custom') || get('elevenlabs_voice_id'),
+                elevenlabs_voice_id_custom: get('elevenlabs_voice_id_custom'),
+                murf_api_key: get('murf_api_key'),
+                voice_id: get('voice_id'),
+                voice_style: get('voice_style'),
+                voice_rate: get('voice_rate'),
+                voice_pitch: get('voice_pitch'),
+                character_name: get('character_name'),
+                character_file: get('character_file'),
+                custom_wake_word: get('custom_wake_word'),
+                personality: get('personality'),
+                memory_size: get('memory_size'),
+                streamer_mode: get('streamer_mode'),
+                twitch_channel: get('twitch_channel'),
+                always_on_top: get('always_on_top'),
+                window_scale: get('window_scale'),
+            };
+
+            fs.writeFileSync(CONFIG_PATH, JSON.stringify(newCfg, null, 2));
+            ipcRenderer.send('settings-saved', newCfg);
+
+            const msg = document.getElementById('status-msg');
+            msg.classList.add('show');
+            setTimeout(() => msg.classList.remove('show'), 2000);
+        }
+
+        function cancelSettings() {
+            ipcRenderer.send('close-settings');
+        }
+
+        function resetConfig() {
+            if (confirm('Reset all settings to defaults? Your API keys will be cleared.')) {
+                ipcRenderer.send('reset-config');
+            }
+        }
+
+        loadConfig();
+    </script>
+</body>
+</html>

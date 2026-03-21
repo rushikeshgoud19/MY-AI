@@ -551,12 +551,10 @@ function connectWebSocket() {
             showResponse(greeting);
             playTTS(greeting);
             logTerminal(greeting, 'risse');
-            // Happy face + wave on startup
+            // Happy face on startup
             currentEmotion = 'happy';
             emotionTimer = 4.0;
             setTargetEmotion('happy');
-            isWaving = true;
-            waveStartTime = clock.elapsedTime;
         }, 2500);
     };
 
@@ -568,12 +566,6 @@ function connectWebSocket() {
             showResponse(msg.text);
             playTTS(msg.text);
             logTerminal(msg.text, 'risse');
-            // Auto-wave when Risse greets
-            const lower = msg.text.toLowerCase();
-            if (/\b(hello|hi|hey|ohayo|konnichiwa|welcome back|good morning|good evening|good afternoon)\b/.test(lower)) {
-                isWaving = true;
-                waveStartTime = clock.elapsedTime;
-            }
             // Reset status light back to idle when response arrives
             const indicator = document.getElementById('status-indicator');
             if (indicator) {
