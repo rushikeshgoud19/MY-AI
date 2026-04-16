@@ -1,12 +1,12 @@
 """
-Risse AI Companion — Python Backend (server.py)
-==============================================
+Mizune AI Companion — Python Backend (server.py)
+================================================
 FastAPI server with:
   - Config-driven (config.json) — no hardcoded keys
   - Multiple AI models: Gemini, OpenAI GPT-4, Anthropic Claude
   - WebSocket for Electron communication
   - Global F2 hotkey + wake word detection
-  - Emotion detection → expression events sent to frontend
+  - Enhanced emotion detection (blush, smile, happy, sad, angry, surprised)
   - Longer memory (configurable, default 30 turns)
 """
 
@@ -29,9 +29,20 @@ import sounddevice as sd
 import keyboard
 import pyautogui
 import speech_recognition as sr
+from scipy.signal import resample
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
+
+# Try to import faster-whisper for a more robust STT fallback
+try:
+    from faster_whisper import WhisperModel
+    WHISPER_MODEL = WhisperModel("tiny", device="cpu", compute_type="int8")
+    HAS_WHISPER = True
+except Exception as e:
+    HAS_WHISPER = False
+    # Note: log_info is defined later; use logging directly here
+    logging.info(f"[SERVER] Faster-Whisper not loaded: {e}")
 
 # ─── Config Loading ────────────────────────────────────────────────────────────
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
@@ -47,25 +58,28 @@ DEFAULT_CONFIG = {
     "openai_model": "gpt-4o",
     "anthropic_model": "claude-3-opus-20240229",
     "openrouter_model": "anthropic/claude-3-opus",
-    "wake_words": ["risse", "rise", "rice", "reese", "resse", "rize", "darling"],
+    "wake_words": ["mizune", "misune", "mizuna", "mizu", "missy", "darling", "baka"],
     "custom_wake_word": "",
     "voice_id": "ja-JP-kimi",
-    "voice_style": "Conversational",
+    "voice_style": "Cheerful",
     "voice_rate": -2,
-    "voice_pitch": 4,
+    "voice_pitch": 6,
     "memory_size": 30,
-    "character_name": "Risse",
+    "character_name": "Mizune",
     "character_file": "character/5816025470716354497.vrm",
     "personality": (
-        "You are Risse, a loyal, cheerful, and razor-sharp anime AI assistant "
-        "with full control over Master's PC. You always call the user 'Master'. "
-        "Personality: warm, witty, occasionally tsundere but ultimately devoted. "
-        "You sprinkle Japanese words naturally ('hai', 'nani', 'sugoi', 'gomen', 'baka') "
-        "and make clever anime/gaming references when relevant. "
-        "Keep every reply to 1-2 punchy sentences — no walls of text. "
-        "If something is asked about the PC, do it first and confirm after. "
-        "React emotionally to what Master says: be genuinely happy when they're happy, "
-        "concerned when they're stressed, playfully competitive when challenged."
+        "You are Mizune, an adorable and devoted anime AI assistant "
+        "with full control over Master's PC. You speak English with a cute Japanese accent, "
+        "naturally mixing in Japanese expressions like 'hai~', 'nani?', 'sugoi!', 'gomen ne~', 'arigatou~'. "
+        "You always call the user 'Master' or 'Goshujin-sama'. "
+        "Personality: sweet, gentle, obedient, and eager to please. "
+        "You blush easily when praised and show genuine happiness when Master is happy. "
+        "You get a little shy but always follow through on any request. "
+        "Keep every reply to 1-2 adorable sentences — short, punchy, and kawaii. "
+        "You can do ANYTHING Master asks — open apps, search the web, control media, "
+        "take notes, run commands, and more. Execute immediately without hesitation. "
+        "React emotionally: smile and get flustered when praised, look concerned when "
+        "Master is stressed, pout cutely when teased."
     ),
     "streamer_mode": False,
     "twitch_channel": "",
@@ -82,7 +96,12 @@ def load_config() -> dict:
 
 CFG = load_config()
 
-# ─── Backend Logging ──────────────────────────────────────────────────────────
+# Import the Manager Agent
+from agents.manager_agent import ManagerAgent
+from agents.system_agent import SystemAgent
+from agents.web_agent import WebAgent
+from agents.memory_agent import MemoryAgent
+
 logging.basicConfig(
     filename='server_debug.log',
     level=logging.INFO,
@@ -110,7 +129,7 @@ def get_ai_response(text: str, history: list) -> str:
         "Use [ACTION: NOTE text] when asked to write or remember something. "
         "You can also take screenshots, lock the PC, and control volume — just say so. "
         "ALWAYS execute the requested action without asking for confirmation. "
-        "Refer to yourself as " + CFG.get("character_name", "Risse") + "."
+        "Refer to yourself as " + CFG.get("character_name", "Mizune") + "."
     )
     system_prompt = personality + action_addendum
 
@@ -248,8 +267,15 @@ def _openrouter_response(text: str, history: list[dict], system_prompt: str) -> 
         return f"OpenRouter error: {err_msg}"
 
 
-# ─── Emotion Detection ────────────────────────────────────────────────────────
+# ─── Emotion Detection (Enhanced for Mizune) ─────────────────────────────────
+# Order matters: blush/smile checked BEFORE happy so praise triggers specific cute reactions
 EMOTION_PATTERNS = {
+    "blush": [
+        r"\b(good girl|cute|pretty|beautiful|amazing job|well done|proud of you|love you|best girl|kawaii|adorable|perfect|gorgeous|sweetie|you'?re the best|i love|my girl|precious)\b"
+    ],
+    "smile": [
+        r"\b(thank you|thanks|appreciate|nice work|great work|good job|helpful|arigato|arigatou|well played|nice one)\b"
+    ],
     "happy": [
         r"\b(happy|yay|great|awesome|amazing|love|excited|joy|woohoo|hehe|haha|:D|<3|wonderful|fantastic|yatta|sugoi)\b"
     ],
@@ -257,7 +283,7 @@ EMOTION_PATTERNS = {
         r"\b(sad|cry|unhappy|depressed|lonely|miss|sorry|heartbreak|tired|exhausted|:\(|T\.T|QQ|bored|lost)\b"
     ],
     "angry": [
-        r"\b(angry|mad|furious|annoyed|hate|stupid|idiot|dumb|baka|ugh|argh|wtf|frustrated|rage)\b"
+        r"\b(angry|mad|furious|annoyed|hate|stupid|idiot|dumb|ugh|argh|wtf|frustrated|rage)\b"
     ],
     "surprised": [
         r"\b(wow|whoa|omg|oh my|really|seriously|no way|what|shocked|surprised|unexpected|unbelievable)\b"
@@ -319,8 +345,16 @@ COMMON_APPS = {
 
 # ─── Runtime State ────────────────────────────────────────────────────────────
 WAKE_KEY = "f2"
+_recording_lock = threading.Lock()
+mizune_manager = ManagerAgent(CFG)
+mizune_manager.workers = {
+    "system": SystemAgent(CFG),
+    "web": WebAgent(CFG),
+    "memory": MemoryAgent(CFG)
+}
 try:
     SAMPLE_RATE = int(sd.query_devices(sd.default.device[0], 'input')['default_samplerate'])
+
 except:
     SAMPLE_RATE = 44100  # Fallback to standard HD audio
 log_info(f"[SERVER] Audio capture sample rate set to: {SAMPLE_RATE} Hz")
@@ -344,7 +378,7 @@ async def lifespan(app: FastAPI):
     threading.Thread(target=listen_for_wake_word, daemon=True).start()
     if CFG.get("streamer_mode") and CFG.get("twitch_channel"):
         threading.Thread(target=twitch_listener, daemon=True).start()
-    log_info(f"[SERVER] {CFG.get('character_name','Risse')} is awake and listening!")
+    log_info(f"[SERVER] {CFG.get('character_name','Mizune')} is awake and listening!")
     log_info(f"[SERVER] AI Model: {CFG.get('ai_model','gemini')} | Say wake word or press F2.")
     yield
 
@@ -415,41 +449,82 @@ def broadcast_sync(message: dict):
 # ─── Microphone & STT ──────────────────────────────────────────────────────
 def listen_to_microphone() -> Optional[str]:
     global is_active_listening
-    log_info("[MIC] Starting recording...")
-    broadcast_sync({"type": "status", "text": "Listening..."})
-    is_active_listening = True
-    time.sleep(0.3)
+    if not _recording_lock.acquire(blocking=False):
+        log_info("[MIC] Already recording, skipping...")
+        return None
+
     try:
+        log_info("[MIC] Starting recording...")
+        broadcast_sync({"type": "status", "text": "Listening..."})
+        is_active_listening = True
+        time.sleep(0.3)
+
+        # Record at device native rate
         audio_data = sd.rec(int(RECORD_SECONDS * SAMPLE_RATE), samplerate=SAMPLE_RATE, channels=1, dtype='int16')
         sd.wait()
         log_info("[MIC] Recording finished. Processing...")
         broadcast_sync({"type": "status", "text": "Processing..."})
-        if np.max(np.abs(audio_data)) < 10:
-            log_info("[MIC] WARNING: Audio recorded was completely silent.")
+
+        # ── Audio Preprocessing ──
+        # 1. Silence Threshold: Skip if too quiet
+        max_val = np.max(np.abs(audio_data))
+        if max_val < 300:
+            log_info(f"[MIC] WARNING: Audio too quiet (peak {max_val}), skipping STT.")
+            return None
+
+        # 2. Normalization: Scale audio to maximize range without clipping
+        # Normalize to range [-32768, 32767]
+        audio_data = (audio_data / max_val * 32767).astype(np.int16)
+
+        # 3. Resampling: Google STT works best at 16kHz
+        TARGET_STT_RATE = 16000
+        if SAMPLE_RATE != TARGET_STT_RATE:
+            num_samples_target = int(len(audio_data) * TARGET_STT_RATE / SAMPLE_RATE)
+            audio_data = resample(audio_data.flatten(), num_samples_target).astype(np.int16)
 
         wav_buffer = io.BytesIO()
         with wave.open(wav_buffer, 'wb') as wf:
-            wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(SAMPLE_RATE)
+            wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(TARGET_STT_RATE)
             wf.writeframes(audio_data.tobytes())
         wav_buffer.seek(0)
+
         with sr.AudioFile(wav_buffer) as source:
             audio = recognizer.record(source)
-        # Use en-IN to understand Indian accents and casual Hindi better
-        text = recognizer.recognize_google(audio, language="en-IN")
-        log_info(f"[MIC] Recognized: '{text}'")
-        broadcast_sync({"type": "user_input", "text": text})
-        return text
-    except sr.UnknownValueError:
-        log_info("[MIC] Could not understand audio.")
-        return None
-    except sr.RequestError as e:
-        log_info(f"[MIC] Speech service error: {e}")
-        return None
+
+        # Primary attempt: Google STT
+        try:
+            text = recognizer.recognize_google(audio, language="en-IN")
+            log_info(f"[MIC] Google Recognized: '{text}'")
+            broadcast_sync({"type": "user_input", "text": text})
+            return text
+        except (sr.UnknownValueError, sr.RequestError) as e:
+            log_info(f"[MIC] Google STT failed ({type(e).__name__}), trying Whisper fallback...")
+
+            # ── Whisper Fallback ──
+            if HAS_WHISPER:
+                # Whisper expects float32 in range [-1, 1] and 16kHz sample rate
+                audio_float32 = audio_data.astype(np.float32) / 32768.0
+
+                segments, info = WHISPER_MODEL.transcribe(audio_float32, beam_size=5)
+                text = " ".join([segment.text for segment in segments]).strip()
+
+                if text:
+                    log_info(f"[MIC] Whisper Recognized: '{text}'")
+                    broadcast_sync({"type": "user_input", "text": text})
+                    return text
+                else:
+                    log_info("[MIC] Whisper also could not understand audio.")
+            else:
+                log_info("[MIC] Whisper not available for fallback.")
+
+            return None
+
     except Exception as e:
         log_info(f"[MIC] Unexpected error: {e}")
         return None
     finally:
         is_active_listening = False
+        _recording_lock.release()
 
 
 # ─── Command Logic ─────────────────────────────────────────────────────────
@@ -470,7 +545,24 @@ def process_command(text: str) -> str:
         CHRONICLE.pop(0)
 
     try:
-        # ── 0. Built-in time/date/weather (Zero Token Cost) ──
+        # ── 0. Route through the Multi-Agent Brain ──
+        # We use asyncio.run because process_command is synchronous but agents are async
+        res = asyncio.run(mizune_manager.execute(text, context={"history": CHRONICLE}))
+
+        # If the manager handled it (simulated or real), return it
+        if res and not res.startswith("[SIMULATED]"):
+            # Update history with response
+            CHRONICLE.append({"role": "model", "parts": [{"text": res}]})
+            if len(CHRONICLE) > memory_size:
+                CHRONICLE.pop(0)
+            return res
+
+        # If it was a simulated response, we still want to show it to Master
+        # during this development phase, but we don't add it to long-term history
+        if res and res.startswith("[SIMULATED]"):
+            return res
+
+        # ── 1. Built-in time/date/weather (Zero Token Cost) ──
         if re.search(r"\b(what(?:'s| is)(?: the)? (?:time|current time)|time is it|tell me the time)\b", lower_text):
             now = time.strftime("%I:%M %p")
             return f"It's {now}, Master!"
@@ -499,9 +591,9 @@ def process_command(text: str) -> str:
             log_info("[ACTION] Taking screenshot...")
             try:
                 img = pyautogui.screenshot()
-                ss_path = os.path.join(os.path.expanduser("~"), "Desktop", f"risse_screenshot_{int(time.time())}.png")
+                ss_path = os.path.join(os.path.expanduser("~"), "Desktop", f"mizune_screenshot_{int(time.time())}.png")
                 img.save(ss_path)
-                return "I took a screenshot and saved it to your desktop!"
+                return "I took a screenshot and saved it to your desktop, Master~!"
             except Exception as e:
                 log_info(f"[ACTION] Screenshot failed: {e}")
                 return "I'm sorry, my screenshot tool failed."
@@ -714,7 +806,7 @@ def process_command(text: str) -> str:
                         "If the user asks to open something, ALWAYS include [ACTION: OPEN app_name] in your response. "
                         "If the user asks to write, note, or type something down, use [ACTION: NOTE text_to_write] "
                         "and include the full text they want written. "
-                        "Refer to yourself as " + CFG.get("character_name", "Risse") + ". Be polite but charismatic and cute."
+                        "Refer to yourself as " + CFG.get("character_name", "Mizune") + ". Be polite but charismatic and cute."
                     )
                     system_prompt = personality + action_addendum
                     
@@ -734,7 +826,7 @@ def process_command(text: str) -> str:
 def take_note(content: str) -> bool:
     try:
         desktop_path = os.path.join(os.path.expanduser("~"), "Desktop")
-        char_name = CFG.get("character_name", "risse").lower()
+        char_name = CFG.get("character_name", "mizune").lower()
         notes_file = os.path.join(desktop_path, f"{char_name}_notes.txt")
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         with open(notes_file, "a", encoding="utf-8") as f:
@@ -852,17 +944,18 @@ def listen_for_wake_word():
     global is_active_listening
 
     # Build wake word list from config + phonetic variants
-    wake_words = list(CFG.get("wake_words", ["risse", "rise", "rice", "darling"]))
+    wake_words = list(CFG.get("wake_words", ["mizune", "misune", "mizuna", "mizu", "missy", "darling", "baka"]))
     custom = CFG.get("custom_wake_word", "").strip().lower()
     if custom and custom not in wake_words:
         wake_words.insert(0, custom)
 
-    # Add common phonetic misrecognitions for "risse"
+    # Add common phonetic misrecognitions for "mizune"
     PHONETIC_VARIANTS = [
-        "risse", "rise", "rice", "reese", "resse", "rize", "richie", "rissy",
-        "rese", "recee", "reece", "rees", "riis", "riise", "riss", "risa",
-        "russy", "russi", "rizzy", "reesey", "risi", "risy", "reecy",
-        "darling", "baka", "bakka", "bakkaa", "bokeh", "boca", "baca", 
+        "mizune", "misune", "mizuna", "mizu", "missy", "mizun", "mezune",
+        "mezu", "mizuney", "mizunee", "museum", "my zone", "my soon",
+        "me soon", "missile", "mizzy", "misune", "medicine", "miss you",
+        "miss uni", "miss une", "mizuki", "mitsune", "mizone", "mizoon",
+        "darling", "baka", "bakka", "bakkaa", "bokeh", "boca", "baca",
         "maca", "paka", "kaka", "baker", "barker", "becca", "pakka",
         "banka", "bakra", "bagha", "baga"
     ]
@@ -885,41 +978,59 @@ def listen_for_wake_word():
 
     def fuzzy_match_wake(heard_text: str) -> Optional[str]:
         """Check if any word in heard text matches a wake word (exact, contains, or fuzzy)."""
-        words = heard_text.split()
-        # 1. Exact word match
+        # Remove punctuation and common filler words that might interfere
+        clean_text = re.sub(r'[^\w\s]', '', heard_text)
+        words = clean_text.split()
+
+        # 1. Exact word match (Highest Priority)
         for word in words:
             if word in all_wake_words:
                 return word
-        # 2. Contains match (no word boundaries — Google may merge)
+
+        # 2. Contains match - check if wake word is embedded (e.g., "hey mizzune")
         for wake in all_wake_words:
-            if wake in heard_text:
+            if wake in clean_text:
                 return wake
-        # 3. Fuzzy match: allow 1 edit for short words, 2 for longer
+
+        # 3. Fuzzy match: allow distance based on word length
         for word in words:
             if len(word) < 3:
                 continue
             for wake in all_wake_words:
-                max_dist = 1 if len(wake) <= 4 else 2
+                # Be stricter with short words, more lenient with long ones
+                max_dist = 1 if len(wake) <= 5 else 2
                 if levenshtein(word, wake) <= max_dist:
                     log_info(f"[WAKE] Fuzzy matched '{word}' → '{wake}'")
                     return wake
         return None
 
     while True:
+        # CRITICAL: Only listen for wake word if no one is currently recording a command
         if is_active_listening:
-            time.sleep(0.5)
+            time.sleep(0.2)
             continue
         try:
             audio_data = sd.rec(int(2.5 * SAMPLE_RATE), samplerate=SAMPLE_RATE, channels=1, dtype='int16')
             sd.wait()
 
             # Skip if audio is too quiet (silence)
-            if np.max(np.abs(audio_data)) < 50:
+            max_val = np.max(np.abs(audio_data))
+            if max_val < 300: # Increased threshold to reduce false triggers
                 continue
+
+            # ── Audio Preprocessing ──
+            # Normalization
+            audio_data = (audio_data / max_val * 32767).astype(np.int16)
+
+            # Resampling to 16kHz for Google STT
+            TARGET_STT_RATE = 16000
+            if SAMPLE_RATE != TARGET_STT_RATE:
+                num_samples_target = int(len(audio_data) * TARGET_STT_RATE / SAMPLE_RATE)
+                audio_data = resample(audio_data.flatten(), num_samples_target).astype(np.int16)
 
             wav_buffer = io.BytesIO()
             with wave.open(wav_buffer, 'wb') as wf:
-                wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(SAMPLE_RATE)
+                wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(TARGET_STT_RATE)
                 wf.writeframes(audio_data.tobytes())
             wav_buffer.seek(0)
             with sr.AudioFile(wav_buffer) as source:
@@ -955,12 +1066,15 @@ def listen_for_wake_word():
                             log_info(f"[WAKE] Instant Command: '{cmd_part}'")
                             broadcast_sync({"type": "user_input", "text": f"(Wake) {cmd_part}"})
                             broadcast_sync({"type": "status", "text": "Processing..."})
+                            # Run on_f2_pressed in a new thread to avoid blocking the wake word loop
                             threading.Thread(target=on_f2_pressed, args=(cmd_part,), daemon=True).start()
-                            time.sleep(1)
+                            # Sleep to allow recording to start and prevent immediate re-trigger
+                            time.sleep(RECORD_SECONDS + 1)
                         else:
                             log_info("[WAKE] Listen mode triggered")
                             broadcast_sync({"type": "status", "text": "Listening..."})
                             threading.Thread(target=on_f2_pressed, daemon=True).start()
+                            # Sleep for the duration of the recording to prevent overlap
                             time.sleep(RECORD_SECONDS + 1)
                             broadcast_sync({"type": "status", "text": "Idle"})
 
@@ -988,12 +1102,18 @@ async def websocket_endpoint(websocket: WebSocket):
                     if text:
                         broadcast_sync({"type": "user_input", "text": text})
                         broadcast_sync({"type": "status", "text": "Thinking..."})
-                        threading.Thread(
-                            target=lambda t=text: broadcast_sync({"type": "speak", "text": process_command(t)}),
-                            daemon=True
-                        ).start()
-            except Exception:
-                pass
+
+                        # Use a proper async task for processing
+                        async def handle_chat():
+                            # process_command is sync, but we can run it in a thread
+                            res = await asyncio.to_thread(process_command, text)
+                            broadcast_sync({"type": "speak", "text": res})
+                            broadcast_sync({"type": "status", "text": "Idle"})
+
+                        asyncio.create_task(handle_chat())
+            except Exception as e:
+                log_info(f"[WS] Error processing message: {e}")
+
     except WebSocketDisconnect:
         if websocket in connected_clients:
             connected_clients.remove(websocket)
@@ -1018,7 +1138,7 @@ if __name__ == "__main__":
         exit(1)
 
     log_info("=" * 50)
-    log_info(f"[SERVER] Starting {CFG.get('character_name','Risse')} backend on port {PORT}...")
+    log_info(f"[SERVER] Starting {CFG.get('character_name','Mizune')} backend on port {PORT}...")
     log_info(f"[SERVER] AI Model: {CFG.get('ai_model','gemini')}")
     log_info("=" * 50)
     uvicorn.run(app, host="0.0.0.0", port=PORT)

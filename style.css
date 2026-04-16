@@ -48,7 +48,7 @@ body {
     height: 22px;
     border-radius: 50%;
     border: none;
-    background: rgba(110, 142, 251, 0.15);
+    background: rgba(255, 183, 197, 0.15);
     color: rgba(110, 142, 251, 0.5);
     font-size: 11px;
     cursor: pointer;
@@ -67,8 +67,8 @@ body:hover #settings-btn {
 }
 
 #settings-btn:hover {
-    background: rgba(110, 142, 251, 0.35);
-    color: #6e8efb;
+    background: rgba(255, 183, 197, 0.35);
+    color: #ffb7c5;
 }
 
 /* ─── UI Overlay ────────────────────────────────── */
@@ -96,7 +96,7 @@ body:hover #settings-btn {
     line-height: 1.5;
     -webkit-backdrop-filter: blur(10px);
     backdrop-filter: blur(10px);
-    border: 1px solid rgba(110, 142, 251, 0.3);
+    border: 1px solid rgba(255, 183, 197, 0.3);  /* sakura pink */
     text-align: center;
     transition: opacity 0.3s ease, transform 0.3s ease;
     pointer-events: none;
@@ -138,7 +138,7 @@ body:hover #settings-btn {
     gap: 4px;
     padding: 4px 6px;
     background: rgba(10, 10, 20, 0.75);
-    border-top: 1px solid rgba(110, 142, 251, 0.15);
+    border: 1px solid rgba(255, 183, 197, 0.15);
     -webkit-backdrop-filter: blur(8px);
     backdrop-filter: blur(8px);
     z-index: 100;
@@ -154,7 +154,7 @@ body:hover #chat-bar {
 #chat-input {
     flex: 1;
     background: rgba(255,255,255,0.06);
-    border: 1px solid rgba(110, 142, 251, 0.2);
+    border: 1px solid rgba(255, 183, 197, 0.2);
     border-radius: 10px;
     color: #e0e0ff;
     font-size: 11px;
@@ -167,7 +167,7 @@ body:hover #chat-bar {
 }
 
 #chat-input:focus {
-    border-color: rgba(110, 142, 251, 0.5);
+    border-color: rgba(255, 183, 197, 0.6);
 }
 
 #chat-input::placeholder {
@@ -179,7 +179,7 @@ body:hover #chat-bar {
     height: 24px;
     border-radius: 50%;
     border: none;
-    background: linear-gradient(135deg, #6e8efb, #a777e3);
+    background: linear-gradient(135deg, #ff9eb5, #ffc2d1);  /* pink gradient */
     color: white;
     font-size: 13px;
     cursor: pointer;
@@ -198,7 +198,7 @@ body:hover #chat-bar {
     position: absolute;
     top: 6px;
     right: 24px;
-    background: rgba(110, 142, 251, 0.12);
+    background: rgba(255, 183, 197, 0.12);
     color: rgba(110, 142, 251, 0.5);
     font-size: 9px;
     padding: 2px 7px;
@@ -222,7 +222,7 @@ body:hover #drag-hint {
     width: 90%;
     height: 80%;
     background: rgba(10, 10, 20, 0.96);
-    border: 1px solid rgba(110, 142, 251, 0.4);
+    border: 1px solid rgba(255, 183, 197, 0.4);
     border-radius: 12px;
     z-index: 1000;
     display: none;
@@ -234,14 +234,14 @@ body:hover #drag-hint {
 }
 
 .terminal-header {
-    background: rgba(110, 142, 251, 0.18);
-    color: #6e8efb;
+    background: rgba(255, 183, 197, 0.18);
+    color: #ffb7c5;
     padding: 8px 12px;
     font-size: 10px;
     font-weight: bold;
     text-transform: uppercase;
     letter-spacing: 1px;
-    border-bottom: 1px solid rgba(110, 142, 251, 0.2);
+    border-bottom: 1px solid rgba(255, 183, 197, 0.2);
     display: flex;
     justify-content: space-between;
     align-items: center;

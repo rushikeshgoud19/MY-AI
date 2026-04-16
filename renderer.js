@@ -39,6 +39,13 @@ let emotionTimer = 0;
 let emotionBlends = { happy: 0, sad: 0, angry: 0, surprised: 0, relaxed: 0 };
 let targetBlends  = { happy: 0, sad: 0, angry: 0, surprised: 0, relaxed: 0.2 };
 
+// Blush system for Mizune
+let blushIntensity = 0;
+let targetBlush = 0;
+let blushDecayTimer = 0;
+let shyTiltActive = false;
+let shyTiltValue = 0;
+
 // Blink system — independent of emotions
 let blinkTimer = 0;
 let blinkInterval = 3.5 + Math.random() * 2.5; // random 3.5–6s
@@ -100,7 +107,7 @@ function logTerminal(text, type = 'system') {
     if (!terminalContent) return;
     const line = document.createElement('div');
     line.className = `terminal-line terminal-${type}`;
-    const prefix = type === 'user' ? 'You: ' : type === 'risse' ? `${cfg.character_name || 'Risse'}: ` : type === 'emotion' ? '✦ ' : '> ';
+    const prefix = type === 'user' ? 'You: ' : type === 'risse' ? `${cfg.character_name || 'Mizune'}: ` : type === 'emotion' ? '✦ ' : '> ';
     line.textContent = prefix + text;
     terminalContent.appendChild(line);
     terminalContent.scrollTop = terminalContent.scrollHeight;
@@ -183,9 +190,9 @@ function init() {
     log('Initializing Three.js scene...');
     scene = new THREE.Scene();
 
-    camera = new THREE.PerspectiveCamera(35.0, window.innerWidth / window.innerHeight, 0.1, 20.0);
-    camera.position.set(0.0, -0.05, 1.55);
-    camera.lookAt(0, -0.05, 0);
+    camera = new THREE.PerspectiveCamera(45.0, window.innerWidth / window.innerHeight, 0.1, 20.0);
+    camera.position.set(0.0, 1.3, 1.3);
+    camera.lookAt(0, 1.1, 0);
 
     renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
@@ -230,18 +237,39 @@ function loadVRM(vrmPath) {
             const vrm = gltf.userData.vrm;
             vrm.scene.scale.set(1.0, 1.0, 1.0);
             vrm.scene.rotation.y = Math.PI;
-            vrm.scene.position.set(0, -1.48, 0);
+            // Ensure model is centered and slightly raised to avoid floor clipping
+            vrm.scene.position.set(0, 0, 0);
             scene.add(vrm.scene);
             currentVrm = vrm;
-            log('[VRM] Model loaded.');
+            log('[VRM] Model loaded and added to scene.');
         },
-        null,
-        (error) => log('[VRM] Error: ' + error.message)
+        (xhr) => {
+            log(`[VRM] Loading progress: ${(xhr.loaded / xhr.total * 100).toFixed(2)}%`);
+        },
+        (error) => {
+            log('[VRM] Critical Error loading model: ' + error.message);
+            console.error('[VRM] Error:', error);
+        }
     );
 }
 
 // ─── Smooth lerp helper ───────────────────────────────────────────────────────
-function lerp(a, b, t) { return a + (b - a) * t; }
+function updateBlush(deltaTime) {
+    blushIntensity = lerp(blushIntensity, targetBlush, deltaTime * 2.5);
+    if (blushDecayTimer > 0) {
+        blushDecayTimer -= deltaTime;
+        if (blushDecayTimer <= 0) targetBlush = 0;
+    }
+    if (currentVrm && currentVrm.expressionManager) {
+        const em = currentVrm.expressionManager;
+        // Try blush blendshape first, otherwise fallback to subtle red tint (simulation)
+        if (em.prototype && em.prototype.setValue) {
+            em.setValue('blush', blushIntensity);
+        }
+    }
+    // Update shy tilt based on blush
+    shyTiltValue = lerp(shyTiltValue, blushIntensity * 0.5, deltaTime * 2.0);
+}
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
 // ─── Blink System (independent, natural timing) ───────────────────────────────
@@ -280,11 +308,15 @@ function updateBlink(deltaTime) {
 // ─── Emotion Blend System (smooth transitions) ────────────────────────────────
 function setTargetEmotion(emotion) {
     targetBlends = { happy: 0, sad: 0, angry: 0, surprised: 0, relaxed: 0 };
-    if (emotion === 'happy')     targetBlends.happy = 1.0;
-    else if (emotion === 'sad')  targetBlends.sad = 0.8;
-    else if (emotion === 'angry') targetBlends.angry = 0.8;
-    else if (emotion === 'surprised') targetBlends.surprised = 1.0;
-    else                         targetBlends.relaxed = 0.2;
+    targetBlush = 0;
+
+    if (emotion === 'happy')     { targetBlends.happy = 1.0; }
+    else if (emotion === 'blush') { targetBlends.happy = 0.6; targetBlush = 1.0; blushDecayTimer = 6.0; }
+    else if (emotion === 'smile') { targetBlends.happy = 0.7; targetBlends.relaxed = 0.3; }
+    else if (emotion === 'sad')   { targetBlends.sad = 0.8; }
+    else if (emotion === 'angry') { targetBlends.angry = 0.5; targetBlends.sad = 0.2; }
+    else if (emotion === 'surprised') { targetBlends.surprised = 1.0; }
+    else                          { targetBlends.relaxed = 0.2; }
 }
 
 function updateEmotionBlends(deltaTime) {
@@ -371,8 +403,9 @@ function animate() {
         // ── Independent blink ──
         updateBlink(deltaTime);
 
-        // ── Smooth emotion blends ──
+        // ── Emotion blends ──
         updateEmotionBlends(deltaTime);
+        updateBlush(deltaTime);
 
         // ── Lip sync ──
         updateLipSync(deltaTime, time);
@@ -432,8 +465,8 @@ function animate() {
                 speakNodValue = Math.max(speakNodValue - deltaTime * 3, 0.0);
             }
             head.rotation.y = headY;
-            head.rotation.z = headZ;
-            head.rotation.x = headX;
+            head.rotation.z = headZ + shyTiltValue * 0.12; // shy tilt when blushing
+            head.rotation.x = headX + shyTiltValue * 0.06; // slight downward look when shy
         }
 
         // ── Neck subtle tilt ──
@@ -528,7 +561,7 @@ function animate() {
         const rThumb = humanoid.getRawBoneNode('rightThumbProximal');
         if (rThumb) { rThumb.rotation.set(0.2, -0.3, -0.15); }
 
-        camera.lookAt(0, -0.05, 0);
+        camera.lookAt(0, 0.35, 0);
     }
 
     renderer.render(scene, camera);
@@ -542,12 +575,12 @@ function connectWebSocket() {
 
     ws.onopen = () => {
         log('[WS] Connected.');
-        const charName = cfg.character_name || 'Risse';
+        const charName = cfg.character_name || 'Mizune';
         statusEl.textContent = `Connected! Say "${charName}" or press F2.`;
         if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
 
         setTimeout(() => {
-            const greeting = `Hello Master! ${charName} is ready!`;
+            const greeting = `Hai~ Master! ${charName} is ready to serve you~!`;
             showResponse(greeting);
             playTTS(greeting);
             logTerminal(greeting, 'risse');
@@ -572,7 +605,7 @@ function connectWebSocket() {
                 indicator.style.backgroundColor = 'rgba(255,255,255,0.2)';
                 indicator.style.boxShadow = 'none';
             }
-            const charName = cfg.character_name || 'Risse';
+            const charName = cfg.character_name || 'Mizune';
             if (statusEl) statusEl.textContent = `Say "${charName}" or press F2.`;
         }
 
@@ -603,8 +636,13 @@ function connectWebSocket() {
                 } else if (msg.text === 'Processing...' || msg.text === 'Thinking...') {
                     indicator.style.backgroundColor = '#ffcc00';
                     indicator.style.boxShadow = '0 0 8px #ffcc00';
-                    // Show typing indicator
                     showTypingIndicator();
+                } else if (msg.text.toLowerCase().includes('installing') || msg.text.toLowerCase().includes('searching') || msg.text.toLowerCase().includes('processing')) {
+                    // Active Work Status
+                    indicator.style.backgroundColor = '#00ccff';
+                    indicator.style.boxShadow = '0 0 8px #00ccff';
+                    showTypingIndicator();
+                    if (statusEl) statusEl.textContent = msg.text;
                 } else {
                     indicator.style.backgroundColor = 'rgba(255,255,255,0.2)';
                     indicator.style.boxShadow = 'none';
@@ -632,7 +670,7 @@ function showTypingIndicator() {
     if (typingEl) return; // already showing
     typingEl = document.createElement('div');
     typingEl.id = 'typing-indicator';
-    typingEl.innerHTML = `${cfg.character_name || 'Risse'} is thinking<span class="typing-dots"><span>.</span><span>.</span><span>.</span></span>`;
+    typingEl.innerHTML = `${cfg.character_name || 'Mizune'} is thinking<span class="typing-dots"><span>.</span><span>.</span><span>.</span></span>`;
     // Style it like the response bubble
     Object.assign(typingEl.style, {
         maxWidth: '90%',
@@ -682,24 +720,16 @@ function showResponse(text) {
 // ONLY exact, very short phrases use free browser TTS.
 // Everything else goes through paid APIs for quality voice.
 const CACHED_PHRASES = new Set([
-    'hai',
-    'hai!',
-    'yes master',
-    'yes master!',
-    'got it',
-    'got it!',
-    'on it',
-    'on it!',
-    'sure thing',
-    'sure thing!',
-    'right away',
-    'right away!',
-    'of course',
-    'of course!',
-    'baka',
-    'baka!',
-    'arigato',
-    'arigato!',
+    'hai', 'hai~', 'hai!',
+    'yes master', 'yes master!', 'yes goshujin-sama',
+    'got it', 'got it!',
+    'on it', 'on it!',
+    'right away', 'right away!',
+    'of course', 'of course!',
+    'arigatou', 'arigatou!', 'arigatou gozaimasu',
+    'gomen', 'gomen ne',
+    'sugoi', 'sugoi!',
+    'wakarimashita',
 ]);
 
 function isCachedPhrase(text) {
@@ -728,9 +758,9 @@ async function playTTS(text) {
         const elevenVoice = cfg.elevenlabs_voice_id || 'EXAVITQu4vr4xnSDxMaL';
         const murfKey     = cfg.murf_api_key || '';
         const voiceId     = cfg.voice_id || 'ja-JP-kimi';
-        const voiceStyle  = cfg.voice_style || 'Conversational';
+        const voiceStyle  = cfg.voice_style || 'Cheerful';
         const voiceRate   = cfg.voice_rate !== undefined ? cfg.voice_rate : -2;
-        const voicePitch  = cfg.voice_pitch !== undefined ? cfg.voice_pitch : 4;
+        const voicePitch  = cfg.voice_pitch !== undefined ? cfg.voice_pitch : 6;
 
         log(`[TTS] Requesting voice. MurfKey length: ${murfKey.length}, ElevenLabsKey length: ${elevenKey.length}`);
 
@@ -745,7 +775,7 @@ async function playTTS(text) {
                         body: JSON.stringify({
                             text,
                             model_id: 'eleven_turbo_v2_5',
-                            voice_settings: { stability: 0.35, similarity_boost: 0.90, style: 0.55, use_speaker_boost: true },
+                            voice_settings: { stability: 0.30, similarity_boost: 0.85, style: 0.65, use_speaker_boost: true },
                         }),
                         signal: AbortSignal.timeout(6000)
                     }
@@ -839,7 +869,8 @@ function fallbackTTS(text) {
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
     const voices = window.speechSynthesis.getVoices();
-    const preferred = voices.find(v => v.lang.startsWith('en') && v.name.toLowerCase().includes('zira'))
+    const preferred = voices.find(v => v.lang.startsWith('ja'))
+        || voices.find(v => v.lang.startsWith('en') && v.name.toLowerCase().includes('zira'))
         || voices.find(v => v.lang.startsWith('en') && v.name.toLowerCase().includes('samantha'))
         || voices.find(v => v.lang.startsWith('en'));
     if (preferred) { utterance.voice = preferred; }

@@ -9,14 +9,14 @@ const CONFIG_PATH = path.join(__dirname, 'config.json');
 
 const DEFAULT_CONFIG = {
   gemini_api_key: '', openai_api_key: '', anthropic_api_key: '', openrouter_api_key: '', murf_api_key: '',
-  elevenlabs_api_key: '', elevenlabs_voice_id: 'EXAVITQu4vr4xnSDxMaL', elevenlabs_voice_id_custom: '',
+  elevenlabs_api_key: '', elevenlabs_voice_id: 'MF3mGyEYCl7XYWbV9V6O', elevenlabs_voice_id_custom: '',
   ai_model: 'gemini', gemini_model: 'gemini-2.5-flash',
   openai_model: 'gpt-4o', anthropic_model: 'claude-3-opus-20240229', openrouter_model: 'anthropic/claude-3-opus',
-  wake_words: ['risse', 'rise', 'rice', 'reese', 'darling'],
-  custom_wake_word: '', voice_id: 'ja-JP-kimi', voice_style: 'Conversational',
-  voice_rate: -2, voice_pitch: 4, memory_size: 30,
-  character_name: 'Risse', character_file: 'character/5816025470716354497.vrm',
-  personality: 'You are Risse, a loyal and cheerful anime AI assistant.',
+  wake_words: ['mizune', 'misune', 'mizuna', 'mizu', 'missy', 'darling', 'baka'],
+  custom_wake_word: '', voice_id: 'ja-JP-kimi', voice_style: 'Cheerful',
+  voice_rate: -2, voice_pitch: 6, memory_size: 30,
+  character_name: 'Mizune', character_file: 'character/5816025470716354497.vrm',
+  personality: 'You are Mizune, an adorable and devoted anime AI assistant.',
   streamer_mode: false, twitch_channel: '', window_scale: 1.0, always_on_top: true,
 };
 
@@ -37,8 +37,8 @@ let settingsWin = null;
 let cfg = loadConfig();
 
 // ─── Base window size (scales with config) ───────────────────────────────────
-const BASE_W = 120;
-const BASE_H = 150;
+const BASE_W = 350;
+const BASE_H = 400;
 
 function scaledSize() {
   const s = cfg.window_scale || 1.0;
@@ -46,14 +46,14 @@ function scaledSize() {
 }
 
 function createWindow() {
-  const { width, height } = screen.getPrimaryDisplay().workAreaSize;
+  const { width } = screen.getPrimaryDisplay().workAreaSize;
   const { w, h } = scaledSize();
 
   win = new BrowserWindow({
     width: w,
     height: h,
-    x: 20,
-    y: height - h - 50,
+    x: Math.round((width - w) / 2),
+    y: 0,
     transparent: true,
     frame: false,
     alwaysOnTop: cfg.always_on_top !== false,
