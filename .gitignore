@@ -32,3 +32,9 @@ temp_*.txt
 last_err.txt
 server_debug_ascii.txt
 server_debug_utf8.log
+
+# Exclude local databases and caches
+.chroma_db/
+.claude/
+lumina/
+package-lock.json

@@ -152,7 +152,9 @@ def _gemini_response(text: str, history: list, system_prompt: str) -> str:
     from google import genai
     from google.genai import types
     client = genai.Client(api_key=api_key)
-    model = CFG.get("gemini_model", "gemini-2.5-flash")
+    primary_model = CFG.get("gemini_model", "gemini-2.5-flash")
+    # Fallback chain: if primary is overloaded, try these in order
+    fallback_models = ["gemini-2.0-flash", "gemini-2.0-flash-lite"]
     
     # Ensure history is in the correct format for the SDK
     formatted_history = []
@@ -165,12 +167,57 @@ def _gemini_response(text: str, history: list, system_prompt: str) -> str:
                 parts.append(types.Part.from_text(text=p["text"]))
         formatted_history.append(types.Content(role=role, parts=parts))
 
-    response = client.models.generate_content(
-        model=model,
-        contents=formatted_history,
-        config=types.GenerateContentConfig(system_instruction=system_prompt)
-    )
-    return response.text or "I'm speechless!"
+    # Try primary model with retries, then fallback models
+    models_to_try = [primary_model] + [m for m in fallback_models if m != primary_model]
+    
+    for model in models_to_try:
+        for attempt in range(3):  # 3 retries per model
+            try:
+                log_info(f"[AI] Trying {model} (attempt {attempt + 1})...")
+                response = client.models.generate_content(
+                    model=model,
+                    contents=formatted_history,
+                    config=types.GenerateContentConfig(system_instruction=system_prompt)
+                )
+                return response.text or "I'm speechless!"
+            except Exception as e:
+                err_str = str(e).lower()
+                if "503" in err_str or "unavailable" in err_str or "overloaded" in err_str:
+                    wait_time = (attempt + 1) * 1.5  # 1.5s, 3s, 4.5s
+                    log_info(f"[AI] {model} unavailable (503), retrying in {wait_time}s...")
+                    time.sleep(wait_time)
+                    continue
+                elif "429" in err_str or "quota" in err_str or "exhausted" in err_str:
+                    log_info(f"[AI] {model} quota exhausted, trying next model...")
+                    break  # Skip to next model
+                else:
+                    raise  # Re-raise non-retryable errors
+        log_info(f"[AI] {model} failed after retries, trying next fallback...")
+    
+    # ── Last resort: Groq (free tier, fast) ──
+    groq_key = CFG.get("groq_api_key", "")
+    if groq_key:
+        try:
+            from openai import OpenAI
+            log_info("[AI] All Gemini models exhausted, trying Groq...")
+            groq_client = OpenAI(api_key=groq_key, base_url="https://api.groq.com/openai/v1")
+            groq_messages = [{"role": "system", "content": system_prompt}]
+            for turn in history:
+                role = turn.get("role", "user")
+                if role == "model": role = "assistant"
+                parts_text = " ".join(p.get("text", "") for p in turn.get("parts", []))
+                if parts_text:
+                    groq_messages.append({"role": role, "content": parts_text})
+            resp = groq_client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=groq_messages,
+                max_tokens=300
+            )
+            return resp.choices[0].message.content or "I'm speechless!"
+        except Exception as e:
+            log_info(f"[AI] Groq also failed: {e}")
+    
+    return "All my brain models are busy right now, Master! Please try again in a moment~"
 
 
 def _openai_response(text: str, history: list[dict], system_prompt: str) -> str:  # type: ignore[type-arg]
@@ -373,7 +420,7 @@ WAKE_COOLDOWN = 3.0   # Seconds to ignore re-triggers after a wake event
 async def lifespan(app: FastAPI):
     global main_loop
     main_loop = asyncio.get_running_loop()
-    log_info("[SERVER] Zero-PyAudio Mode: Mic calibration disabled.")
+    log_info("[SERVER] Backend initialized.")
     threading.Thread(target=hotkey_listener, daemon=True).start()
     threading.Thread(target=listen_for_wake_word, daemon=True).start()
     if CFG.get("streamer_mode") and CFG.get("twitch_channel"):
@@ -457,41 +504,45 @@ def listen_to_microphone() -> Optional[str]:
         log_info("[MIC] Starting recording...")
         broadcast_sync({"type": "status", "text": "Listening..."})
         is_active_listening = True
-        time.sleep(0.3)
 
-        # Record at device native rate
-        audio_data = sd.rec(int(RECORD_SECONDS * SAMPLE_RATE), samplerate=SAMPLE_RATE, channels=1, dtype='int16')
-        sd.wait()
+        with sr.Microphone() as source:
+            # Disable dynamic thresholding which mutes quiet hardware
+            recognizer.dynamic_energy_threshold = False
+            recognizer.energy_threshold = 150 # Very sensitive
+
+            log_info("[MIC] Ready and listening for speech...")
+            audio = recognizer.listen(source, timeout=6.0, phrase_time_limit=15.0)
+
         log_info("[MIC] Recording finished. Processing...")
         broadcast_sync({"type": "status", "text": "Processing..."})
 
-        # ── Audio Preprocessing ──
-        # 1. Silence Threshold: Skip if too quiet
-        max_val = np.max(np.abs(audio_data))
-        if max_val < 300:
-            log_info(f"[MIC] WARNING: Audio too quiet (peak {max_val}), skipping STT.")
-            return None
+        # ── Primary attempt: Groq STT ──
+        groq_api_key = CFG.get("groq_api_key")
+        if groq_api_key and len(groq_api_key) > 5:
+            try:
+                import requests
+                log_info("[MIC] Trying Groq STT...")
+                wav_data = audio.get_wav_data(convert_rate=16000, convert_width=2)
+                files = {'file': ('audio.wav', wav_data, 'audio/wav')}
+                data = {'model': 'whisper-large-v3', 'language': 'en'}
+                headers = {'Authorization': f'Bearer {groq_api_key}'}
+                response = requests.post("https://api.groq.com/openai/v1/audio/transcriptions", files=files, data=data, headers=headers, timeout=7)
+                if response.status_code == 200:
+                    text = response.json().get('text', '').strip()
+                    if text:
+                        hallucinations = ["Thank you.", "Thank you", "Thanks.", "You're welcome.", "Bye.", "Amém", "Amen.", "Thank you!", "Good.", "Good"]
+                        if text in hallucinations:
+                            log_info(f"[MIC] Ignored hallucination: '{text}'")
+                            return None
+                        log_info(f"[MIC] Groq Recognized: '{text}'")
+                        broadcast_sync({"type": "user_input", "text": text})
+                        return text
+                else:
+                    log_info(f"[MIC] Groq STT error: {response.status_code} {response.text}")
+            except Exception as e:
+                log_info(f"[MIC] Groq STT exception: {e}")
 
-        # 2. Normalization: Scale audio to maximize range without clipping
-        # Normalize to range [-32768, 32767]
-        audio_data = (audio_data / max_val * 32767).astype(np.int16)
-
-        # 3. Resampling: Google STT works best at 16kHz
-        TARGET_STT_RATE = 16000
-        if SAMPLE_RATE != TARGET_STT_RATE:
-            num_samples_target = int(len(audio_data) * TARGET_STT_RATE / SAMPLE_RATE)
-            audio_data = resample(audio_data.flatten(), num_samples_target).astype(np.int16)
-
-        wav_buffer = io.BytesIO()
-        with wave.open(wav_buffer, 'wb') as wf:
-            wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(TARGET_STT_RATE)
-            wf.writeframes(audio_data.tobytes())
-        wav_buffer.seek(0)
-
-        with sr.AudioFile(wav_buffer) as source:
-            audio = recognizer.record(source)
-
-        # Primary attempt: Google STT
+        # ── Secondary attempt: Google STT ──
         try:
             text = recognizer.recognize_google(audio, language="en-IN")
             log_info(f"[MIC] Google Recognized: '{text}'")
@@ -502,8 +553,15 @@ def listen_to_microphone() -> Optional[str]:
 
             # ── Whisper Fallback ──
             if HAS_WHISPER:
-                # Whisper expects float32 in range [-1, 1] and 16kHz sample rate
-                audio_float32 = audio_data.astype(np.float32) / 32768.0
+                import numpy as np
+                import io
+                wav_bytes = audio.get_wav_data(convert_rate=16000, convert_width=2)
+                wav_stream = io.BytesIO(wav_bytes)
+                with sr.AudioFile(wav_stream) as src:
+                    audio_for_whisper = recognizer.record(src)
+
+                audio_np = np.frombuffer(audio_for_whisper.frame_data, np.int16)
+                audio_float32 = audio_np.astype(np.float32) / 32768.0
 
                 segments, info = WHISPER_MODEL.transcribe(audio_float32, beam_size=5)
                 text = " ".join([segment.text for segment in segments]).strip()
@@ -518,7 +576,9 @@ def listen_to_microphone() -> Optional[str]:
                 log_info("[MIC] Whisper not available for fallback.")
 
             return None
-
+    except sr.WaitTimeoutError:
+        log_info("[MIC] WaitTimeoutError: No speech detected.")
+        return None
     except Exception as e:
         log_info(f"[MIC] Unexpected error: {e}")
         return None
@@ -528,6 +588,154 @@ def listen_to_microphone() -> Optional[str]:
 
 
 # ─── Command Logic ─────────────────────────────────────────────────────────
+# ─── Coding Coach Monitor ──────────────────────────────────────────────────
+_coding_monitor_running = threading.Event()
+_coding_monitor_paused = threading.Event()
+_last_coding_feedback = ""
+
+CODING_COACH_PROMPT = """You are Mizune, an adorable anime AI coding coach watching Master's screen.
+Analyze the screenshot and respond with ONE of these:
+
+1. If you see a BUG or MISTAKE in the code: Point it out kindly in 1-2 sentences. Be specific about the line/issue.
+2. If the code looks GOOD or they just SOLVED something: Praise them enthusiastically in 1 sentence!  
+3. If they're IDLE or on a non-coding page: Say "[SKIP]" (nothing to comment on).
+4. If the screen looks the SAME as before: Say "[SKIP]" (avoid repeating yourself).
+
+Rules:
+- Keep responses to 1-2 short sentences MAX (this will be spoken aloud)
+- Use cute expressions like "Master~", "sugoi!", "gambatte!", "ara~"
+- For hints: Give a gentle nudge, NOT the full solution
+- Be encouraging, never harsh
+- Say [SKIP] if there's nothing meaningful to say"""
+
+CODING_HINT_PROMPT = """You are Mizune, an adorable anime AI coding coach. Master is stuck and asked for a hint.
+Look at the screenshot and give ONE helpful hint in 1-2 sentences. 
+Don't give the full solution — just a nudge in the right direction.
+Use cute expressions like "Master~", "I think you should try...", "Hint: "
+Keep it short since this will be spoken aloud."""
+
+
+def _capture_screen_for_gemini():
+    """Take a screenshot and return as bytes for Gemini Vision."""
+    try:
+        screenshot = pyautogui.screenshot()
+        buf = io.BytesIO()
+        screenshot.save(buf, format='PNG')
+        buf.seek(0)
+        return buf.read()
+    except Exception as e:
+        log_info(f"[CODING] Screenshot failed: {e}")
+        return None
+
+
+def _analyze_screen_now(mode="review"):
+    """Take a screenshot and analyze it with Gemini Vision immediately."""
+    global _last_coding_feedback
+    
+    image_bytes = _capture_screen_for_gemini()
+    if not image_bytes:
+        return
+    
+    api_key = CFG.get("gemini_api_key", "")
+    prompt = CODING_HINT_PROMPT if mode == "hint" else CODING_COACH_PROMPT
+    feedback = None
+    
+    # ── Try 1: Groq Vision (free, fast, reliable) ──
+    groq_key = CFG.get("groq_api_key", "")
+    if groq_key and not feedback:
+        try:
+            import base64
+            from openai import OpenAI
+            
+            b64_img = base64.b64encode(image_bytes).decode("utf-8")
+            groq_client = OpenAI(api_key=groq_key, base_url="https://api.groq.com/openai/v1")
+            
+            resp = groq_client.chat.completions.create(
+                model="llama-3.2-11b-vision-preview",
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64_img}"}}
+                    ]
+                }],
+                max_tokens=200
+            )
+            feedback = (resp.choices[0].message.content or "").strip()
+            log_info(f"[CODING] Groq Vision success!")
+        except Exception as e:
+            log_info(f"[CODING] Groq Vision failed: {e}")
+    
+    # ── Try 2: Gemini Vision (fallback) ──
+    api_key = CFG.get("gemini_api_key", "")
+    if api_key and not feedback:
+        try:
+            from google import genai
+            from google.genai import types
+            
+            client = genai.Client(api_key=api_key)
+            for model in ["gemini-2.0-flash", "gemini-2.5-flash"]:
+                try:
+                    response = client.models.generate_content(
+                        model=model,
+                        contents=[
+                            types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
+                            types.Part.from_text(text=prompt)
+                        ]
+                    )
+                    feedback = (response.text or "").strip()
+                    log_info(f"[CODING] {model} success!")
+                    break
+                except Exception as model_err:
+                    err_str = str(model_err).lower()
+                    if "503" in err_str or "429" in err_str or "quota" in err_str:
+                        continue
+                    raise
+        except Exception as e:
+            log_info(f"[CODING] Gemini Vision failed: {e}")
+    
+    if not feedback or "[SKIP]" in feedback:
+        return
+    
+    # Avoid repeating the same feedback
+    if feedback == _last_coding_feedback:
+        return
+    
+    _last_coding_feedback = feedback
+    log_info(f"[CODING] Feedback: {feedback}")
+    broadcast_sync({"type": "speak", "text": feedback})
+
+
+def _coding_monitor_loop():
+    """Background loop: captures screen every 30s → Gemini Vision → feedback."""
+    log_info("[CODING] Monitor loop started — watching Master's screen!")
+    interval = 30  # seconds between screen reads (balanced: not too spammy, not too slow)
+    
+    while _coding_monitor_running.is_set():
+        # Check if paused
+        if _coding_monitor_paused.is_set():
+            time.sleep(2)
+            continue
+        
+        # Wait the interval, but check for stop every second
+        for _ in range(interval):
+            if not _coding_monitor_running.is_set():
+                break
+            time.sleep(1)
+        
+        if not _coding_monitor_running.is_set():
+            break
+        if _coding_monitor_paused.is_set():
+            continue
+        
+        _analyze_screen_now("review")
+    
+    log_info("[CODING] Monitor loop stopped")
+
+
+
+
+
 def process_command(text: str) -> str:
     global CHRONICLE
     log_info(f"[COMMAND] Processing: '{text}'")
@@ -549,17 +757,39 @@ def process_command(text: str) -> str:
         # We use asyncio.run because process_command is synchronous but agents are async
         res = asyncio.run(mizune_manager.execute(text, context={"history": CHRONICLE}))
 
-        # If the manager handled it (simulated or real), return it
-        if res and not res.startswith("[SIMULATED]"):
+        # Broadcast current mode to frontend
+        broadcast_sync({"type": "mode", "mode": mizune_manager.current_mode})
+
+        # If the manager handled it, return the result
+        if res is not None:
+            # Handle coding mode special commands
+            if "[CODING_PAUSE]" in str(res):
+                _coding_monitor_paused.set()
+                res = res.replace("[CODING_PAUSE] ", "")
+            elif "[CODING_RESUME]" in str(res):
+                _coding_monitor_paused.clear()
+                res = res.replace("[CODING_RESUME] ", "")
+            elif "[CODING_REVIEW_NOW]" in str(res):
+                res = res.replace("[CODING_REVIEW_NOW] ", "")
+                threading.Thread(target=_analyze_screen_now, daemon=True).start()
+            elif "[CODING_HINT]" in str(res):
+                res = res.replace("[CODING_HINT] ", "")
+                threading.Thread(target=_analyze_screen_now, args=("hint",), daemon=True).start()
+
+            # Start/stop coding monitor on mode change
+            if mizune_manager.current_mode == "coding" and not _coding_monitor_running.is_set():
+                _coding_monitor_running.set()
+                _coding_monitor_paused.clear()
+                threading.Thread(target=_coding_monitor_loop, daemon=True).start()
+                log_info("[CODING] Screen monitor started!")
+            elif mizune_manager.current_mode != "coding" and _coding_monitor_running.is_set():
+                _coding_monitor_running.clear()
+                log_info("[CODING] Screen monitor stopped.")
+
             # Update history with response
             CHRONICLE.append({"role": "model", "parts": [{"text": res}]})
             if len(CHRONICLE) > memory_size:
                 CHRONICLE.pop(0)
-            return res
-
-        # If it was a simulated response, we still want to show it to Master
-        # during this development phase, but we don't add it to long-term history
-        if res and res.startswith("[SIMULATED]"):
             return res
 
         # ── 1. Built-in time/date/weather (Zero Token Cost) ──
@@ -570,13 +800,86 @@ def process_command(text: str) -> str:
             today = time.strftime("%A, %B %d, %Y")
             return f"Today is {today}, Master!"
         elif re.search(r"\b(weather|temperature|how(?:'s| is)(?: the)? weather|forecast)\b", lower_text):
-            # Extract optional city from query
-            city_match = re.search(r"(?:weather|forecast)\s+(?:in|at|for)\s+([a-zA-Z\s]+)", lower_text)
-            city = city_match.group(1).strip() if city_match else "my location"
-            query = city if city != "my location" else ""
-            url = f"https://www.google.com/search?q=weather+{query}" if query else "https://www.google.com/search?q=weather+today"
-            webbrowser.open(url)
-            return f"Here's the weather for {city}! Opening it in your browser."
+            # Extract city/location from the full query
+            # Handles: "weather hyderabad chevella", "weather in tokyo", "how's the weather in london"
+            city_match = re.search(r"(?:weather|forecast|temperature)\s+(?:in|at|for|of)?\s*([a-zA-Z\s]+)", lower_text)
+            if not city_match:
+                # Try extracting everything after "weather"
+                city_match = re.search(r"(?:weather|forecast|temperature)\s+(.+)", lower_text)
+            city = city_match.group(1).strip() if city_match else "Hyderabad"
+            city = city if city else "Hyderabad"  # Default fallback
+            
+            log_info(f"[WEATHER] Fetching weather for: {city}")
+            try:
+                import requests
+                
+                # ── Primary: Open-Meteo (free, no API key, very reliable) ──
+                # Step 1: Geocode the city name to lat/lon
+                geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={city.replace(' ', '+')}&count=1&language=en"
+                log_info(f"[WEATHER] Geocoding: {geo_url}")
+                geo_resp = requests.get(geo_url, timeout=5)
+                
+                if geo_resp.status_code == 200:
+                    geo_data = geo_resp.json()
+                    results = geo_data.get("results", [])
+                    
+                    if results:
+                        loc = results[0]
+                        lat = loc["latitude"]
+                        lon = loc["longitude"]
+                        loc_name = loc.get("name", city)
+                        loc_region = loc.get("admin1", "")
+                        loc_country = loc.get("country", "")
+                        
+                        # Step 2: Fetch current weather
+                        weather_url = (
+                            f"https://api.open-meteo.com/v1/forecast?"
+                            f"latitude={lat}&longitude={lon}"
+                            f"&current=temperature_2m,relative_humidity_2m,apparent_temperature,"
+                            f"weather_code,wind_speed_10m"
+                            f"&timezone=auto"
+                        )
+                        w_resp = requests.get(weather_url, timeout=5)
+                        
+                        if w_resp.status_code == 200:
+                            w_data = w_resp.json()
+                            current = w_data.get("current", {})
+                            temp = current.get("temperature_2m", "?")
+                            feels = current.get("apparent_temperature", "?")
+                            humidity = current.get("relative_humidity_2m", "?")
+                            wind = current.get("wind_speed_10m", "?")
+                            wmo_code = current.get("weather_code", 0)
+                            
+                            # WMO weather codes to descriptions
+                            wmo_desc = {
+                                0: "Clear sky", 1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast",
+                                45: "Foggy", 48: "Icy fog", 51: "Light drizzle", 53: "Drizzle",
+                                55: "Heavy drizzle", 61: "Light rain", 63: "Rain", 65: "Heavy rain",
+                                71: "Light snow", 73: "Snow", 75: "Heavy snow", 80: "Light showers",
+                                81: "Showers", 82: "Heavy showers", 95: "Thunderstorm",
+                                96: "Thunderstorm with hail", 99: "Heavy thunderstorm with hail",
+                            }
+                            desc = wmo_desc.get(wmo_code, "Unknown conditions")
+                            
+                            location_str = loc_name
+                            if loc_region:
+                                location_str += f", {loc_region}"
+                            
+                            weather_msg = (
+                                f"The weather in {location_str} right now: "
+                                f"{desc}, {temp}°C (feels like {feels}°C). "
+                                f"Humidity is {humidity}% and wind is {wind} km/h, Master~!"
+                            )
+                            return weather_msg
+                    
+                    log_info(f"[WEATHER] No geocoding results for '{city}'")
+                    return f"I couldn't find a place called '{city}', Master. Could you try a different name?"
+                
+                log_info(f"[WEATHER] Geocoding API returned {geo_resp.status_code}")
+                return f"I couldn't look up the weather right now, Master. The service seems down!"
+            except Exception as e:
+                log_info(f"[WEATHER] Error: {e}")
+                return f"Gomen ne, Master! I had trouble checking the weather: {e}"
 
         # ── 1. System & Media Commands (Zero Token Cost) ──
         if re.search(r"\b(lock|lock screen|lock pc)\b", lower_text):
@@ -650,6 +953,47 @@ def process_command(text: str) -> str:
             except Exception as e: pass
             return f"Playing {song_query} on Spotify right now!"
 
+        # ── 3b. Netflix / Streaming Service Search (Zero Token Cost) ──
+        import urllib.parse
+        
+        # Netflix: "search sakamoto days on netflix", "find one piece on netflix"
+        netflix_search = re.search(
+            r"(?:search|find|play|watch|look for|open)\s+(.+?)\s+(?:on|in)\s+netflix",
+            lower_text
+        )
+        if not netflix_search:
+            netflix_search = re.search(r"netflix\s+(?:search|find|play|watch)\s+(.+)", lower_text)
+        if netflix_search:
+            query = netflix_search.group(1).strip()
+            encoded = urllib.parse.quote(query)
+            log_info(f"[ACTION] Searching Netflix for: {query}")
+            webbrowser.open(f"https://www.netflix.com/search?q={encoded}")
+            return f"Searching for {query} on Netflix, Master~!"
+
+        # Crunchyroll: "search naruto on crunchyroll"
+        cr_search = re.search(
+            r"(?:search|find|play|watch|look for)\s+(.+?)\s+(?:on|in)\s+crunchyroll",
+            lower_text
+        )
+        if cr_search:
+            query = cr_search.group(1).strip()
+            encoded = urllib.parse.quote(query)
+            log_info(f"[ACTION] Searching Crunchyroll for: {query}")
+            webbrowser.open(f"https://www.crunchyroll.com/search?q={encoded}")
+            return f"Searching for {query} on Crunchyroll, Master~!"
+
+        # Amazon Prime: "search reacher on prime", "find it on amazon prime"
+        prime_search = re.search(
+            r"(?:search|find|play|watch|look for)\s+(.+?)\s+(?:on|in)\s+(?:prime|amazon prime|prime video)",
+            lower_text
+        )
+        if prime_search:
+            query = prime_search.group(1).strip()
+            encoded = urllib.parse.quote(query)
+            log_info(f"[ACTION] Searching Prime Video for: {query}")
+            webbrowser.open(f"https://www.primevideo.com/search?phrase={encoded}")
+            return f"Searching for {query} on Prime Video, Master~!"
+
         # ── 4. App Launch / Close (Zero Token Cost) ──
         app_match = re.search(r"open\s+([a-zA-Z0-9\s]+)", lower_text)
         if app_match and not re.search(r"youtube|google|browser", lower_text):
@@ -660,7 +1004,9 @@ def process_command(text: str) -> str:
                 return f"Opening {target} for you right away!"
             else:
                 # Partial match: e.g. "open brave browser" → matches "brave"
-                partial = next((k for k in COMMON_APPS if k in target or target in k), None)
+                # Sort by longest key first and require min 3 chars to avoid false positives
+                sorted_keys = sorted(COMMON_APPS.keys(), key=len, reverse=True)
+                partial = next((k for k in sorted_keys if len(k) >= 3 and (k in target or target in k)), None)
                 if partial:
                     launch_app(partial)
                     return f"Opening {partial} for you right away!"
@@ -672,10 +1018,11 @@ def process_command(text: str) -> str:
                 close_app(target)
                 return f"Closing {target} now!"
             else:
-                partial = next((k for k in COMMON_APPS if k in target or target in k), None)
+                sorted_keys = sorted(COMMON_APPS.keys(), key=len, reverse=True)
+                partial = next((k for k in sorted_keys if len(k) >= 3 and (k in target or target in k)), None)
                 if partial:
                     close_app(partial)
-                    return f"Closing {partial} now!"
+                    return f"Closing {target} now!"
 
         # ── 5. AI Text Generation ──
         log_info(f"[AI] Generating response ({CFG.get('ai_model','gemini')})...")
@@ -702,7 +1049,8 @@ def process_command(text: str) -> str:
             
         note_match = re.search(r"\[ACTION:\s*NOTE\s+([^\]]+)\]", original_res, re.IGNORECASE)
         if not note_match:
-            note_match = re.search(r"(?:write|note|type|save)\s+(?:down\s+)?(?:that\s+)?(.+)", lower_text)
+            # Only match explicit note-taking requests, not random words
+            note_match = re.search(r"(?:write down|take (?:a )?note|save (?:a )?note|jot down|note down|remember that)\s+(.+)", lower_text)
         if note_match:
             note_content = note_match.group(1).strip()
             if take_note(note_content):
@@ -717,12 +1065,12 @@ def process_command(text: str) -> str:
         # Pattern: "search <query> on youtube in brave" or "play <query> on youtube"
         smart_search = re.search(
             r"(?:search|search for|look up|find|play)\s+(.+?)\s+(?:on|in)\s+(youtube|google|reddit|bing)"
-            r"(?:\s+(?:on|in|using)\s+(brave|chrome|firefox|edge|opera))?",
+            r"(?:\s+(?:on|in)\s+(brave|chrome|firefox|edge|opera))?",
             lower_text
         )
         if not smart_search:
             smart_search = re.search(
-                r"(?:search|search for|look up|find|play)\s+(.+?)\s+(?:on|in|using)\s+(brave|chrome|firefox|edge|opera)"
+                r"(?:search|search for|look up|find|play)\s+(.+?)\s+(?:on|in)\s+(brave|chrome|firefox|edge|opera)"
                 r"(?:\s+(?:on|in)\s+(youtube|google|reddit|bing))?",
                 lower_text
             )
@@ -1007,34 +1355,16 @@ def listen_for_wake_word():
     while True:
         # CRITICAL: Only listen for wake word if no one is currently recording a command
         if is_active_listening:
-            time.sleep(0.2)
+            time.sleep(0.5)
             continue
         try:
-            audio_data = sd.rec(int(2.5 * SAMPLE_RATE), samplerate=SAMPLE_RATE, channels=1, dtype='int16')
-            sd.wait()
+            with sr.Microphone() as source:
+                # Disable dynamic thresholding which mutes quiet hardware
+                recognizer.dynamic_energy_threshold = False
+                recognizer.energy_threshold = 150 # Very sensitive
 
-            # Skip if audio is too quiet (silence)
-            max_val = np.max(np.abs(audio_data))
-            if max_val < 300: # Increased threshold to reduce false triggers
-                continue
-
-            # ── Audio Preprocessing ──
-            # Normalization
-            audio_data = (audio_data / max_val * 32767).astype(np.int16)
-
-            # Resampling to 16kHz for Google STT
-            TARGET_STT_RATE = 16000
-            if SAMPLE_RATE != TARGET_STT_RATE:
-                num_samples_target = int(len(audio_data) * TARGET_STT_RATE / SAMPLE_RATE)
-                audio_data = resample(audio_data.flatten(), num_samples_target).astype(np.int16)
-
-            wav_buffer = io.BytesIO()
-            with wave.open(wav_buffer, 'wb') as wf:
-                wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(TARGET_STT_RATE)
-                wf.writeframes(audio_data.tobytes())
-            wav_buffer.seek(0)
-            with sr.AudioFile(wav_buffer) as source:
-                audio = recognizer.record(source)
+                # Listen in chunks so we can check is_active_listening frequently
+                audio = recognizer.listen(source, timeout=0.1, phrase_time_limit=3)
 
             try:
                 # Use en-IN to drastically improve accuracy for Indian accents & transliterated Hindi/Telugu words
@@ -1069,7 +1399,7 @@ def listen_for_wake_word():
                             # Run on_f2_pressed in a new thread to avoid blocking the wake word loop
                             threading.Thread(target=on_f2_pressed, args=(cmd_part,), daemon=True).start()
                             # Sleep to allow recording to start and prevent immediate re-trigger
-                            time.sleep(RECORD_SECONDS + 1)
+                            time.sleep(1)
                         else:
                             log_info("[WAKE] Listen mode triggered")
                             broadcast_sync({"type": "status", "text": "Listening..."})
@@ -1080,6 +1410,10 @@ def listen_for_wake_word():
 
             except sr.UnknownValueError:
                 pass
+            except sr.RequestError as e:
+                pass
+        except sr.WaitTimeoutError:
+            pass
         except Exception as e:
             log_info(f"[WAKE] Error: {e}")
             time.sleep(1)

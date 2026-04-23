@@ -36,9 +36,9 @@ let win;
 let settingsWin = null;
 let cfg = loadConfig();
 
-// ─── Base window size (scales with config) ───────────────────────────────────
-const BASE_W = 350;
-const BASE_H = 400;
+// ─── Base window size (Face focus) ──────────────────────────────────────────
+const BASE_W = 150;
+const BASE_H = 150;
 
 function scaledSize() {
   const s = cfg.window_scale || 1.0;
@@ -60,9 +60,10 @@ function createWindow() {
     skipTaskbar: false,
     resizable: true,
     hasShadow: false,
-    webPreferences: {
+      webPreferences: {
       nodeIntegration: true,
       contextIsolation: false,
+      webSecurity: false,
     }
   });
 
@@ -71,24 +72,7 @@ function createWindow() {
     ipcMain.emit('open-settings');
   });
 
-  // ─── Drag-to-move ────────────────────────────────────────────────────────
-  ipcMain.on('drag-start', () => {
-    const [x, y] = win.getPosition();
-    win._dragStartX = x;
-    win._dragStartY = y;
-  });
-
-  ipcMain.on('drag-move', (_event, deltaX, deltaY) => {
-    if (win._dragStartX !== undefined) {
-      const [currentX, currentY] = win.getPosition();
-      win.setPosition(currentX + deltaX, currentY + deltaY);
-    }
-  });
-
-  ipcMain.on('drag-end', () => {
-    delete win._dragStartX;
-    delete win._dragStartY;
-  });
+  // ─── Drag-to-move Disabled per User Request ──────────────────────────────
 
   ipcMain.on('quit-app', () => app.quit());
 
@@ -114,6 +98,7 @@ function createWindow() {
       webPreferences: {
         nodeIntegration: true,
         contextIsolation: false,
+        webSecurity: false,
       }
     });
 

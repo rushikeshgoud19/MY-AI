@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader';
-import { VRMLoaderPlugin } from '@pixiv/three-vrm';
+import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
 
 // Node built-ins in Electron
 const { ipcRenderer } = window.require('electron');
@@ -8,6 +8,7 @@ const fs = window.require('fs');
 const path = window.require('path');
 
 const logFile = path.join(process.cwd(), 'renderer.log');
+const lerp = (x, y, a) => x * (1 - a) + y * a;
 const log = (msg) => {
     const timestamp = new Date().toISOString();
     try { fs.appendFileSync(logFile, `[${timestamp}] ${msg}\n`); } catch(e) {}
@@ -27,6 +28,7 @@ loadCfg();
 
 // ─── Scene globals ────────────────────────────────────────────────────────────
 let scene, camera, renderer, clock, currentVrm;
+let cameraAdjusted = false;
 let ws = null;
 let reconnectTimer = null;
 let isSpeaking = false;
@@ -37,12 +39,12 @@ let waveStartTime = 0;
 let currentEmotion = 'neutral';
 let emotionTimer = 0;
 let emotionBlends = { happy: 0, sad: 0, angry: 0, surprised: 0, relaxed: 0 };
-let targetBlends  = { happy: 0, sad: 0, angry: 0, surprised: 0, relaxed: 0.2 };
+let targetBlends  = { happy: 0.8, sad: 0, angry: 0, surprised: 0, relaxed: 0.2 };
 
 // Blush system for Mizune
 let blushIntensity = 0;
-let targetBlush = 0;
-let blushDecayTimer = 0;
+let targetBlush = 0.8;
+let blushDecayTimer = 999999; // Never decay default blush
 let shyTiltActive = false;
 let shyTiltValue = 0;
 
@@ -154,45 +156,38 @@ function toggleTerminal() {
     terminal.style.display = isHidden ? 'flex' : 'none';
 }
 
-// ─── Drag-to-Move ─────────────────────────────────────────────────────────────
+// ─── Drag-to-Move Disabled per User Request ────────────────────────────────────
 let isDragging = false;
-let dragLastX = 0;
-let dragLastY = 0;
 
-container.addEventListener('mousedown', (e) => {
-    isDragging = true;
-    dragLastX = e.screenX;
-    dragLastY = e.screenY;
-    container.classList.add('dragging');
-    ipcRenderer.send('drag-start');
-    e.preventDefault();
-});
-
-document.addEventListener('mousemove', (e) => {
-    if (!isDragging) return;
-    const deltaX = e.screenX - dragLastX;
-    const deltaY = e.screenY - dragLastY;
-    dragLastX = e.screenX;
-    dragLastY = e.screenY;
-    ipcRenderer.send('drag-move', deltaX, deltaY);
-});
-
-document.addEventListener('mouseup', () => {
-    if (isDragging) {
-        isDragging = false;
-        container.classList.remove('dragging');
-        ipcRenderer.send('drag-end');
+// ─── Audio Unlock (Fix C) ───────────────────────────────────────────────────
+let audioCtx = null;
+async function resumeAudio() {
+    if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     }
-});
+    if (audioCtx.state === 'suspended') {
+        await audioCtx.resume();
+        log('[AUDIO] Context resumed on user gesture.');
+    }
+}
+
+// Global unlock on any interaction
+document.body.addEventListener('mousedown', () => {
+    resumeAudio().catch(e => log('Audio resume failed: ' + e));
+}, { once: true });
+
+if (chatInput) {
+    chatInput.addEventListener('focus', () => resumeAudio());
+}
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 function init() {
     log('Initializing Three.js scene...');
     scene = new THREE.Scene();
 
-    camera = new THREE.PerspectiveCamera(45.0, window.innerWidth / window.innerHeight, 0.1, 20.0);
-    camera.position.set(0.0, 1.3, 1.3);
-    camera.lookAt(0, 1.1, 0);
+    camera = new THREE.PerspectiveCamera(35.0, window.innerWidth / window.innerHeight, 0.1, 20.0);
+    camera.position.set(0.0, 1.45, 0.70);
+    camera.lookAt(0, 1.45, 0);
 
     renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
@@ -201,6 +196,17 @@ function init() {
     renderer.domElement.style.position = 'absolute';
     renderer.domElement.style.zIndex = '1';
     container.appendChild(renderer.domElement);
+
+    // FIX FOR ELECTRON RESIZE RACE CONDITION
+    let resizeTicks = 0;
+    const resizeInterval = setInterval(() => {
+        if (resizeTicks++ > 15) clearInterval(resizeInterval);
+        if (window.innerWidth > 10 && camera && renderer) {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+    }, 200);
 
     const ambientLight = new THREE.AmbientLight(0xffffff, 2.0);
     scene.add(ambientLight);
@@ -226,25 +232,32 @@ function loadVRM(vrmPath) {
     smoothMouthA = 0;
     smoothMouthOh = 0;
     blinkValue = 0;
+    cameraAdjusted = false;
 
     const loader = new GLTFLoader();
-    loader.register((parser) => new VRMLoaderPlugin(parser));
+    loader.register((parser) => new VRMLoaderPlugin(parser)); // ← CRITICAL LINE: ensures VRM features are parsed
     log(`[VRM] Loading: ${vrmPath}`);
 
+    // Path is relative to index.html
     loader.load(
         vrmPath,
         (gltf) => {
+            VRMUtils.removeUnnecessaryJoints(gltf.scene);
             const vrm = gltf.userData.vrm;
+            if (!vrm) {
+                log('[VRM] gltf loaded but no VRM data found');
+                return;
+            }
             vrm.scene.scale.set(1.0, 1.0, 1.0);
             vrm.scene.rotation.y = Math.PI;
-            // Ensure model is centered and slightly raised to avoid floor clipping
             vrm.scene.position.set(0, 0, 0);
             scene.add(vrm.scene);
             currentVrm = vrm;
             log('[VRM] Model loaded and added to scene.');
         },
         (xhr) => {
-            log(`[VRM] Loading progress: ${(xhr.loaded / xhr.total * 100).toFixed(2)}%`);
+            const pct = (xhr.loaded / xhr.total * 100).toFixed(1);
+            log(`[VRM] Loading progress: ${pct}%`);
         },
         (error) => {
             log('[VRM] Critical Error loading model: ' + error.message);
@@ -330,51 +343,94 @@ function updateEmotionBlends(deltaTime) {
     }
 }
 
-// ─── Lip Sync with smooth interpolation ──────────────────────────────────────
+// ─── Lip Sync with multi-vowel frequency mapping ─────────────────────────────
+let smoothMouthIh = 0;
+let smoothMouthEe = 0;
+let smoothMouthOu = 0;
+
 function updateLipSync(deltaTime, time) {
     if (!currentVrm || !currentVrm.expressionManager) return;
     const em = currentVrm.expressionManager;
-    const lerpSpeed = deltaTime * 18.0; // snappy but not jarring
+    const lerpSpeed = deltaTime * 14.0; // smooth but responsive
 
     if (isSpeaking) {
-        let rawVolume = 0;
+        let lowBand = 0, midBand = 0, highBand = 0, rawVolume = 0;
+
         if (audioAnalyzer) {
             audioAnalyzer.getByteFrequencyData(audioDataArray);
-            let sum = 0;
-            // Focus on speech-frequency bins (roughly 300Hz–3kHz)
-            const start = 1;
-            const end = Math.min(8, audioDataArray.length);
-            for (let i = start; i < end; i++) sum += audioDataArray[i];
-            rawVolume = sum / (end - start) / 255;
+            const len = audioDataArray.length;
+
+            // Split into 3 frequency bands for vowel mapping
+            // Low (vowels like 'aa', 'oh'): bins 1-4
+            // Mid (vowels like 'ih', 'ou'): bins 4-10
+            // High (vowels like 'ee', consonants): bins 10-20
+            let lowSum = 0, midSum = 0, highSum = 0;
+            const lowEnd = Math.min(4, len);
+            const midEnd = Math.min(10, len);
+            const highEnd = Math.min(20, len);
+
+            for (let i = 1; i < lowEnd; i++) lowSum += audioDataArray[i];
+            for (let i = lowEnd; i < midEnd; i++) midSum += audioDataArray[i];
+            for (let i = midEnd; i < highEnd; i++) highSum += audioDataArray[i];
+
+            lowBand  = lowSum / Math.max(1, lowEnd - 1) / 255;
+            midBand  = midSum / Math.max(1, midEnd - lowEnd) / 255;
+            highBand = highSum / Math.max(1, highEnd - midEnd) / 255;
+            rawVolume = (lowBand + midBand + highBand) / 3;
         } else {
-            // Fallback: simulate varied mouth movement
+            // Fallback: simulate varied mouth movement with multiple frequencies
             rawVolume = 0.25
                 + 0.25 * Math.sin(time * 18.0)
                 + 0.10 * Math.sin(time * 31.0 + 1.2)
                 + 0.05 * Math.sin(time * 47.0 + 2.4);
+            lowBand  = 0.3 + 0.3 * Math.sin(time * 14.0);
+            midBand  = 0.2 + 0.2 * Math.sin(time * 22.0 + 0.8);
+            highBand = 0.1 + 0.15 * Math.sin(time * 35.0 + 1.5);
         }
 
         mouthVolume = clamp(rawVolume, 0, 1);
-        const targetA  = clamp(mouthVolume * 2.8, 0, 1.0);
-        const targetOh = clamp(mouthVolume * 0.4, 0, 0.5);
 
-        smoothMouthA  = lerp(smoothMouthA,  targetA,  Math.min(lerpSpeed, 1.0));
-        smoothMouthOh = lerp(smoothMouthOh, targetOh, Math.min(lerpSpeed * 0.6, 1.0));
+        // Map frequency bands to vowel shapes
+        // aa = wide open mouth (dominant low frequencies)
+        // oh = rounded mouth (low + some mid)
+        // ih = slight open (mid frequencies)
+        // ee = wide smile (high frequencies)
+        // ou = pursed lips (mid with low support)
+        const targetA  = clamp(lowBand * 2.2, 0, 1.0);
+        const targetOh = clamp(lowBand * 0.8 - highBand * 0.3, 0, 0.6);
+        const targetIh = clamp(midBand * 1.5 - lowBand * 0.5, 0, 0.5);
+        const targetEe = clamp(highBand * 1.8 - lowBand * 0.4, 0, 0.5);
+        const targetOu = clamp(midBand * 0.9 + lowBand * 0.3 - highBand * 0.5, 0, 0.4);
+
+        // Add subtle micro-variation for naturalness
+        const micro = 0.03 * Math.sin(time * 25.0 + 0.7);
+
+        smoothMouthA  = lerp(smoothMouthA,  targetA + micro,  Math.min(lerpSpeed, 1.0));
+        smoothMouthOh = lerp(smoothMouthOh, targetOh,         Math.min(lerpSpeed * 0.8, 1.0));
+        smoothMouthIh = lerp(smoothMouthIh, targetIh,         Math.min(lerpSpeed * 0.9, 1.0));
+        smoothMouthEe = lerp(smoothMouthEe, targetEe,         Math.min(lerpSpeed * 0.7, 1.0));
+        smoothMouthOu = lerp(smoothMouthOu, targetOu,         Math.min(lerpSpeed * 0.7, 1.0));
 
         em.setValue('aa', smoothMouthA);
         em.setValue('oh', smoothMouthOh);
+        em.setValue('ih', smoothMouthIh);
+        em.setValue('ee', smoothMouthEe);
+        em.setValue('ou', smoothMouthOu);
     } else {
         mouthVolume   = 0;
         smoothMouthA  = lerp(smoothMouthA,  0, Math.min(lerpSpeed, 1.0));
         smoothMouthOh = lerp(smoothMouthOh, 0, Math.min(lerpSpeed, 1.0));
+        smoothMouthIh = lerp(smoothMouthIh, 0, Math.min(lerpSpeed, 1.0));
+        smoothMouthEe = lerp(smoothMouthEe, 0, Math.min(lerpSpeed, 1.0));
+        smoothMouthOu = lerp(smoothMouthOu, 0, Math.min(lerpSpeed, 1.0));
         em.setValue('aa', smoothMouthA);
         em.setValue('oh', smoothMouthOh);
-        em.setValue('ih', 0);
-        em.setValue('ou', 0);
-        em.setValue('ee', 0);
+        em.setValue('ih', smoothMouthIh);
+        em.setValue('ee', smoothMouthEe);
+        em.setValue('ou', smoothMouthOu);
 
         // Release analyzer only after mouth is fully closed
-        if (smoothMouthA < 0.01 && smoothMouthOh < 0.01) {
+        if (smoothMouthA < 0.01 && smoothMouthOh < 0.01 && smoothMouthIh < 0.01) {
             audioAnalyzer = null;
         }
     }
@@ -469,6 +525,19 @@ function animate() {
             head.rotation.x = headX + shyTiltValue * 0.06; // slight downward look when shy
         }
 
+        // ── Absolute Magnetic Camera Lock (Eye-Level) ──
+        const headNode = humanoid.getRawBoneNode('head');
+        if (headNode) {
+            const headPos = new THREE.Vector3();
+            headNode.getWorldPosition(headPos);
+            // Ignore (0,0,0) before skeleton loads completely
+            if (headPos.y > 0.5) {
+                // Eye-Level gaze at exact head height, pulled back to Z=0.65 to fit shoulders
+                camera.position.set(headPos.x, headPos.y + 0.05, headPos.z + 0.70);
+                camera.lookAt(headPos.x, headPos.y - 0.05, headPos.z);
+            }
+        }
+
         // ── Neck subtle tilt ──
         const neck = humanoid.getRawBoneNode('neck');
         if (neck) {
@@ -561,7 +630,6 @@ function animate() {
         const rThumb = humanoid.getRawBoneNode('rightThumbProximal');
         if (rThumb) { rThumb.rotation.set(0.2, -0.3, -0.15); }
 
-        camera.lookAt(0, 0.35, 0);
     }
 
     renderer.render(scene, camera);
@@ -581,13 +649,14 @@ function connectWebSocket() {
 
         setTimeout(() => {
             const greeting = `Hai~ Master! ${charName} is ready to serve you~!`;
-            showResponse(greeting);
-            playTTS(greeting);
-            logTerminal(greeting, 'risse');
             // Happy face on startup
             currentEmotion = 'happy';
             emotionTimer = 4.0;
             setTargetEmotion('happy');
+            playTTS(greeting, () => {
+                showResponse(greeting);
+                logTerminal(greeting, 'risse');
+            });
         }, 2500);
     };
 
@@ -596,9 +665,11 @@ function connectWebSocket() {
 
         if (msg.type === 'speak') {
             hideTypingIndicator();
-            showResponse(msg.text);
-            playTTS(msg.text);
-            logTerminal(msg.text, 'risse');
+            // Defer text + lips until audio actually starts
+            playTTS(msg.text, () => {
+                showResponse(msg.text);
+                logTerminal(msg.text, 'risse');
+            });
             // Reset status light back to idle when response arrives
             const indicator = document.getElementById('status-indicator');
             if (indicator) {
@@ -625,6 +696,25 @@ function connectWebSocket() {
             if (msg.character_file && msg.character_file !== (cfg.character_file || '')) {
                 loadVRM(msg.character_file);
             }
+        }
+
+        if (msg.type === 'mode') {
+            const modeColors = {
+                conversation: '#a777e3',
+                writing: '#4ecdc4',
+                focus: '#ff6b6b',
+                entertainment: '#ffd93d',
+                research: '#6bcb77',
+                system: '#4d96ff',
+                coding: '#00d4ff',
+            };
+            const color = modeColors[msg.mode] || '#a777e3';
+            const indicator = document.getElementById('status-indicator');
+            if (indicator && msg.mode !== 'conversation') {
+                indicator.style.backgroundColor = color;
+                indicator.style.boxShadow = `0 0 10px ${color}`;
+            }
+            logTerminal(`Mode: ${msg.mode.toUpperCase()}`, 'system');
         }
 
         if (msg.type === 'status') {
@@ -743,13 +833,14 @@ function isCachedPhrase(text) {
 let murfApiFailed = false;
 let elevenApiFailed = false;
 
-async function playTTS(text) {
+async function playTTS(text, onAudioStart = null) {
     if (isSpeaking) return;
+    const fireStart = () => { if (onAudioStart) onAudioStart(); };
 
     // ── 0. Check voice cache — free & instant ──────────────────────────────────
     if (isCachedPhrase(text)) {
         log('[TTS] Using cached browser voice for: ' + text.substring(0, 40));
-        fallbackTTS(text);
+        fallbackTTS(text, fireStart);
         return;
     }
 
@@ -793,16 +884,19 @@ async function playTTS(text) {
 
                 // Decode fully before playing — lip sync starts exactly when audio starts
                 const arrayBuffer = await response.arrayBuffer();
-                const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                if (audioCtx.state === 'suspended') await audioCtx.resume();
+                
                 const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
                 const source = audioCtx.createBufferSource();
                 source.buffer = audioBuffer;
                 audioAnalyzer = audioCtx.createAnalyser();
-                audioAnalyzer.fftSize = 64;
+                audioAnalyzer.fftSize = 256;
                 audioDataArray = new Uint8Array(audioAnalyzer.frequencyBinCount);
                 source.connect(audioAnalyzer);
                 audioAnalyzer.connect(audioCtx.destination);
-                source.onended = () => { isSpeaking = false; audioCtx.close(); };
+                source.onended = () => { isSpeaking = false; };
+                fireStart();
                 isSpeaking = true; // set JUST before playback starts
                 source.start(0);
                 return;
@@ -811,20 +905,24 @@ async function playTTS(text) {
             }
         }
 
-        // ── 2. Murf AI ─────────────────────────────────────────────────────────────
+        // ── 2. Murf AI (Web Audio API for real lip sync) ─────────────────────────
         if (murfKey && !murfApiFailed) {
             try {
                 const response = await fetch('https://api.murf.ai/v1/speech/generate', {
                     method: 'POST',
                     headers: { 'api-key': murfKey, 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ voiceId, style: voiceStyle, text, format: 'MP3', rate: voiceRate, pitch: voicePitch }),
-                    signal: AbortSignal.timeout(6000)
+                    body: JSON.stringify({
+                        voiceId, style: voiceStyle, text,
+                        format: 'WAV', encodeAsBase64: true,
+                        rate: voiceRate, pitch: voicePitch
+                    }),
+                    signal: AbortSignal.timeout(12000)
                 });
 
                 if (response.status === 401 || response.status === 403 || response.status === 429) {
                     murfApiFailed = true;
                     const errText = await response.text();
-                    throw new Error(`Murf Exhausted or Auth Failed (${response.status}): ${errText}`);
+                    throw new Error(`Murf Auth/Quota (${response.status}): ${errText}`);
                 }
                 if (!response.ok) {
                     const errText = await response.text();
@@ -832,28 +930,45 @@ async function playTTS(text) {
                 }
 
                 const data = await response.json();
-                const audioUrl = data.encodedAudio || data.audioFile;
-                if (!audioUrl) throw new Error('No audio URL in Murf response');
+                const base64Audio = data.encodedAudio;
+                const audioFileUrl = data.audioFile;
 
-                const audio = new Audio(audioUrl);
-                audio.onended = () => { isSpeaking = false; };
-                audio.onerror = (err) => { 
-                    log('[TTS] Murf audio playback error: ' + (err.message || 'unknown error'));
-                    isSpeaking = false; fallbackTTS(text); 
-                };
-                isSpeaking = true; // set JUST before playback
-                audioAnalyzer = null; // force simulated lip-sync due to CORS
-                
-                try {
-                    await audio.play();
-                } catch (playErr) {
-                    log('[TTS] Murf audio.play() failed (autoplay policy?): ' + playErr.message);
-                    isSpeaking = false;
-                    fallbackTTS(text);
+                let arrayBuffer;
+                if (base64Audio) {
+                    // Decode base64 to ArrayBuffer
+                    const binaryString = atob(base64Audio);
+                    const bytes = new Uint8Array(binaryString.length);
+                    for (let i = 0; i < binaryString.length; i++) {
+                        bytes[i] = binaryString.charCodeAt(i);
+                    }
+                    arrayBuffer = bytes.buffer;
+                } else if (audioFileUrl) {
+                    // Fetch the audio URL
+                    const audioResp = await fetch(audioFileUrl);
+                    arrayBuffer = await audioResp.arrayBuffer();
+                } else {
+                    throw new Error('No audio data in Murf response');
                 }
+
+                // Decode with Web Audio API for real lip sync
+                if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                if (audioCtx.state === 'suspended') await audioCtx.resume();
+
+                const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+                const source = audioCtx.createBufferSource();
+                source.buffer = audioBuffer;
+                audioAnalyzer = audioCtx.createAnalyser();
+                audioAnalyzer.fftSize = 256;
+                audioDataArray = new Uint8Array(audioAnalyzer.frequencyBinCount);
+                source.connect(audioAnalyzer);
+                audioAnalyzer.connect(audioCtx.destination);
+                source.onended = () => { isSpeaking = false; };
+                fireStart();
+                isSpeaking = true;
+                source.start(0);
                 return;
             } catch (e) {
-                log('[TTS] Murf failed completely: ' + e.message);
+                log('[TTS] Murf failed: ' + e.message);
             }
         }
     } catch (globalErr) {
@@ -862,21 +977,30 @@ async function playTTS(text) {
 
     // ── 3. Browser speech synthesis ────────────────────────────────────────────
     log('[TTS] Falling back to browser TTS');
-    fallbackTTS(text);
+    fallbackTTS(text, fireStart);
 }
 
-function fallbackTTS(text) {
+function fallbackTTS(text, onAudioStart = null) {
+    if (!text || text.trim() === '') return;
+
     window.speechSynthesis.cancel();
+
     const utterance = new SpeechSynthesisUtterance(text);
-    const voices = window.speechSynthesis.getVoices();
-    const preferred = voices.find(v => v.lang.startsWith('ja'))
-        || voices.find(v => v.lang.startsWith('en') && v.name.toLowerCase().includes('zira'))
-        || voices.find(v => v.lang.startsWith('en') && v.name.toLowerCase().includes('samantha'))
-        || voices.find(v => v.lang.startsWith('en'));
-    if (preferred) { utterance.voice = preferred; }
     utterance.rate = 1.0;
     utterance.pitch = 1.1;
-    utterance.onstart = () => { isSpeaking = true; };  // lip sync starts with speech
+    utterance.volume = 1.0;
+
+    const voices = window.speechSynthesis.getVoices();
+    const preferred = voices.find(v => v.lang === 'en-US' && v.name.includes('Female'))
+        || voices.find(v => v.lang === 'en-US')
+        || voices[0];
+    if (preferred) utterance.voice = preferred;
+
+    utterance.onstart = () => {
+        isSpeaking = true;
+        if (onAudioStart) onAudioStart();
+        console.log('Speaking:', text.substring(0, 40));
+    };
     utterance.onend = () => { isSpeaking = false; };
     utterance.onerror = () => { isSpeaking = false; };
     window.speechSynthesis.speak(utterance);

@@ -15,3 +15,7 @@ pyperclip
 chromadb
 faster-whisper
 playwright
+pyaudio
+requests
+Pillow
+pyscreeze

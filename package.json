@@ -8,7 +8,7 @@
   },
   "dependencies": {
     "@pixiv/three-vrm": "^2.1.0",
-    "three": "^0.162.0"
+    "three": "^0.164.1"
   },
   "devDependencies": {
     "electron": "^29.1.0"
