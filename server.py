@@ -651,7 +651,7 @@ def _analyze_screen_now(mode="review"):
             groq_client = OpenAI(api_key=groq_key, base_url="https://api.groq.com/openai/v1")
             
             resp = groq_client.chat.completions.create(
-                model="llama-3.2-11b-vision-preview",
+                model="meta-llama/llama-4-scout-17b-16e-instruct",
                 messages=[{
                     "role": "user",
                     "content": [
