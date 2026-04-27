@@ -32,6 +32,7 @@ let cameraAdjusted = false;
 let ws = null;
 let reconnectTimer = null;
 let isSpeaking = false;
+let isSpeakingTimeout = null; // Safety: auto-reset isSpeaking if TTS hangs
 let isWaving = false;
 let waveStartTime = 0;
 
@@ -323,13 +324,19 @@ function setTargetEmotion(emotion) {
     targetBlends = { happy: 0, sad: 0, angry: 0, surprised: 0, relaxed: 0 };
     targetBlush = 0;
 
-    if (emotion === 'happy')     { targetBlends.happy = 1.0; }
-    else if (emotion === 'blush') { targetBlends.happy = 0.6; targetBlush = 1.0; blushDecayTimer = 6.0; }
-    else if (emotion === 'smile') { targetBlends.happy = 0.7; targetBlends.relaxed = 0.3; }
-    else if (emotion === 'sad')   { targetBlends.sad = 0.8; }
-    else if (emotion === 'angry') { targetBlends.angry = 0.5; targetBlends.sad = 0.2; }
+    if (emotion === 'happy')          { targetBlends.happy = 1.0; }
+    else if (emotion === 'blush')     { targetBlends.happy = 0.6; targetBlush = 1.0; blushDecayTimer = 6.0; }
+    else if (emotion === 'smile')     { targetBlends.happy = 0.7; targetBlends.relaxed = 0.3; }
+    else if (emotion === 'sad')       { targetBlends.sad = 0.8; }
+    else if (emotion === 'angry')     { targetBlends.angry = 0.5; targetBlends.sad = 0.2; }
     else if (emotion === 'surprised') { targetBlends.surprised = 1.0; }
-    else                          { targetBlends.relaxed = 0.2; }
+    // New emotions
+    else if (emotion === 'thinking')  { targetBlends.happy = 0.15; targetBlends.relaxed = 0.5; }
+    else if (emotion === 'pout')      { targetBlends.sad = 0.25; targetBlends.angry = 0.2; }
+    else if (emotion === 'excited')   { targetBlends.happy = 1.0; targetBlends.surprised = 0.3; }
+    else if (emotion === 'shy')       { targetBlends.happy = 0.4; targetBlush = 1.0; blushDecayTimer = 8.0; }
+    else if (emotion === 'sleepy')    { targetBlends.relaxed = 0.8; targetBlends.sad = 0.15; }
+    else                              { targetBlends.relaxed = 0.2; }
 }
 
 function updateEmotionBlends(deltaTime) {
@@ -378,29 +385,29 @@ function updateLipSync(deltaTime, time) {
             highBand = highSum / Math.max(1, highEnd - midEnd) / 255;
             rawVolume = (lowBand + midBand + highBand) / 3;
         } else {
-            // Fallback: simulate varied mouth movement with multiple frequencies
-            rawVolume = 0.25
-                + 0.25 * Math.sin(time * 18.0)
-                + 0.10 * Math.sin(time * 31.0 + 1.2)
-                + 0.05 * Math.sin(time * 47.0 + 2.4);
-            lowBand  = 0.3 + 0.3 * Math.sin(time * 14.0);
-            midBand  = 0.2 + 0.2 * Math.sin(time * 22.0 + 0.8);
-            highBand = 0.1 + 0.15 * Math.sin(time * 35.0 + 1.5);
+            // Fallback: simulate varied mouth movement with multiple frequencies (subtle)
+            rawVolume = 0.12
+                + 0.12 * Math.sin(time * 18.0)
+                + 0.06 * Math.sin(time * 31.0 + 1.2)
+                + 0.03 * Math.sin(time * 47.0 + 2.4);
+            lowBand  = 0.15 + 0.15 * Math.sin(time * 14.0);
+            midBand  = 0.12 + 0.12 * Math.sin(time * 22.0 + 0.8);
+            highBand = 0.08 + 0.10 * Math.sin(time * 35.0 + 1.5);
         }
 
         mouthVolume = clamp(rawVolume, 0, 1);
 
-        // Map frequency bands to vowel shapes
+        // Map frequency bands to vowel shapes (TUNED: smaller, cuter mouth movements)
         // aa = wide open mouth (dominant low frequencies)
         // oh = rounded mouth (low + some mid)
         // ih = slight open (mid frequencies)
         // ee = wide smile (high frequencies)
         // ou = pursed lips (mid with low support)
-        const targetA  = clamp(lowBand * 2.2, 0, 1.0);
-        const targetOh = clamp(lowBand * 0.8 - highBand * 0.3, 0, 0.6);
-        const targetIh = clamp(midBand * 1.5 - lowBand * 0.5, 0, 0.5);
-        const targetEe = clamp(highBand * 1.8 - lowBand * 0.4, 0, 0.5);
-        const targetOu = clamp(midBand * 0.9 + lowBand * 0.3 - highBand * 0.5, 0, 0.4);
+        const targetA  = clamp(lowBand * 1.1, 0, 0.45);
+        const targetOh = clamp(lowBand * 0.5 - highBand * 0.2, 0, 0.35);
+        const targetIh = clamp(midBand * 1.0 - lowBand * 0.3, 0, 0.30);
+        const targetEe = clamp(highBand * 1.2 - lowBand * 0.3, 0, 0.35);
+        const targetOu = clamp(midBand * 0.6 + lowBand * 0.2 - highBand * 0.3, 0, 0.25);
 
         // Add subtle micro-variation for naturalness
         const micro = 0.03 * Math.sin(time * 25.0 + 0.7);
@@ -462,6 +469,29 @@ function animate() {
         // ── Emotion blends ──
         updateEmotionBlends(deltaTime);
         updateBlush(deltaTime);
+
+        // ── Special emotion animations ──
+        // Thinking: curious head tilt
+        if (currentEmotion === 'thinking') {
+            const thinkTilt = 0.12 * Math.sin(time * 0.5);
+            if (humanoid.getRawBoneNode('head')) {
+                humanoid.getRawBoneNode('head').rotation.z += thinkTilt;
+            }
+        }
+        // Sleepy: gentle head droop
+        if (currentEmotion === 'sleepy') {
+            const droopAmount = 0.06 + 0.03 * Math.sin(time * 0.3);
+            if (humanoid.getRawBoneNode('head')) {
+                humanoid.getRawBoneNode('head').rotation.x += droopAmount;
+            }
+        }
+        // Excited: subtle bounce via spine
+        if (currentEmotion === 'excited') {
+            const bounceVal = Math.abs(Math.sin(time * 6.0)) * 0.008;
+            if (humanoid.getRawBoneNode('spine')) {
+                humanoid.getRawBoneNode('spine').position.y += bounceVal;
+            }
+        }
 
         // ── Lip sync ──
         updateLipSync(deltaTime, time);
@@ -707,6 +737,7 @@ function connectWebSocket() {
                 research: '#6bcb77',
                 system: '#4d96ff',
                 coding: '#00d4ff',
+                vision: '#ff6ec7',
             };
             const color = modeColors[msg.mode] || '#a777e3';
             const indicator = document.getElementById('status-indicator');
@@ -720,7 +751,11 @@ function connectWebSocket() {
         if (msg.type === 'status') {
             const indicator = document.getElementById('status-indicator');
             if (indicator) {
-                if (msg.text === 'Listening...' || msg.text === 'Triggered') {
+                if (msg.text === 'Triggered') {
+                    // Wake word detected — BLUE flash
+                    indicator.style.backgroundColor = '#007bff';
+                    indicator.style.boxShadow = '0 0 14px #007bff';
+                } else if (msg.text === 'Listening...') {
                     indicator.style.backgroundColor = '#00ff00';
                     indicator.style.boxShadow = '0 0 12px #00ff00';
                 } else if (msg.text === 'Processing...' || msg.text === 'Thinking...') {
@@ -837,6 +872,15 @@ async function playTTS(text, onAudioStart = null) {
     if (isSpeaking) return;
     const fireStart = () => { if (onAudioStart) onAudioStart(); };
 
+    // Safety: auto-reset isSpeaking after 30s in case onended never fires
+    if (isSpeakingTimeout) clearTimeout(isSpeakingTimeout);
+    isSpeakingTimeout = setTimeout(() => {
+        if (isSpeaking) {
+            log('[TTS] Safety timeout: resetting isSpeaking after 30s');
+            isSpeaking = false;
+        }
+    }, 30000);
+
     // ── 0. Check voice cache — free & instant ──────────────────────────────────
     if (isCachedPhrase(text)) {
         log('[TTS] Using cached browser voice for: ' + text.substring(0, 40));
@@ -844,18 +888,52 @@ async function playTTS(text, onAudioStart = null) {
         return;
     }
 
+    // Helper: decode audio buffer and play with lip sync
+    async function playAudioBuffer(arrayBuffer) {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') await audioCtx.resume();
+        const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+        const source = audioCtx.createBufferSource();
+        source.buffer = audioBuffer;
+        audioAnalyzer = audioCtx.createAnalyser();
+        audioAnalyzer.fftSize = 256;
+        audioDataArray = new Uint8Array(audioAnalyzer.frequencyBinCount);
+        source.connect(audioAnalyzer);
+        audioAnalyzer.connect(audioCtx.destination);
+        source.onended = () => { isSpeaking = false; };
+        fireStart();
+        isSpeaking = true;
+        source.start(0);
+    }
+
+    // ── 1. Edge-TTS via server (FREE — Ai Hoshino voice!) ─────────────────────
+    // This is the PRIORITY voice — ja-JP-NanamiNeural, sweet Japanese idol sound
+    try {
+        log('[TTS] Trying Edge-TTS (Ai Hoshino voice)...');
+        const edgeResp = await fetch('http://localhost:8000/tts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text }),
+            signal: AbortSignal.timeout(12000)
+        });
+        if (edgeResp.ok) {
+            const arrayBuffer = await edgeResp.arrayBuffer();
+            if (arrayBuffer.byteLength > 100) {
+                await playAudioBuffer(arrayBuffer);
+                log('[TTS] Edge-TTS playing!');
+                return;
+            }
+        }
+        log('[TTS] Edge-TTS returned empty/error, trying fallbacks...');
+    } catch (edgeErr) {
+        log('[TTS] Edge-TTS failed: ' + edgeErr.message);
+    }
+
+    // ── 2. ElevenLabs (paid, high quality) ────────────────────────────────────
     try {
         const elevenKey   = cfg.elevenlabs_api_key || '';
         const elevenVoice = cfg.elevenlabs_voice_id || 'EXAVITQu4vr4xnSDxMaL';
-        const murfKey     = cfg.murf_api_key || '';
-        const voiceId     = cfg.voice_id || 'ja-JP-kimi';
-        const voiceStyle  = cfg.voice_style || 'Cheerful';
-        const voiceRate   = cfg.voice_rate !== undefined ? cfg.voice_rate : -2;
-        const voicePitch  = cfg.voice_pitch !== undefined ? cfg.voice_pitch : 6;
 
-        log(`[TTS] Requesting voice. MurfKey length: ${murfKey.length}, ElevenLabsKey length: ${elevenKey.length}`);
-
-        // ── 1. ElevenLabs ──────────────────────────────────────────────────────────
         if (elevenKey && !elevenApiFailed) {
             try {
                 const response = await fetch(
@@ -882,30 +960,21 @@ async function playTTS(text, onAudioStart = null) {
                 }
                 if (!response.ok) throw new Error(`ElevenLabs ${response.status}`);
 
-                // Decode fully before playing — lip sync starts exactly when audio starts
                 const arrayBuffer = await response.arrayBuffer();
-                if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-                if (audioCtx.state === 'suspended') await audioCtx.resume();
-                
-                const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
-                const source = audioCtx.createBufferSource();
-                source.buffer = audioBuffer;
-                audioAnalyzer = audioCtx.createAnalyser();
-                audioAnalyzer.fftSize = 256;
-                audioDataArray = new Uint8Array(audioAnalyzer.frequencyBinCount);
-                source.connect(audioAnalyzer);
-                audioAnalyzer.connect(audioCtx.destination);
-                source.onended = () => { isSpeaking = false; };
-                fireStart();
-                isSpeaking = true; // set JUST before playback starts
-                source.start(0);
+                await playAudioBuffer(arrayBuffer);
                 return;
             } catch (e) {
                 log('[TTS] ElevenLabs failed: ' + e.message);
             }
         }
 
-        // ── 2. Murf AI (Web Audio API for real lip sync) ─────────────────────────
+        // ── 3. Murf AI (paid) ─────────────────────────────────────────────────────
+        const murfKey    = cfg.murf_api_key || '';
+        const voiceId    = cfg.voice_id || 'ja-JP-kimi';
+        const voiceStyle = cfg.voice_style || 'Cheerful';
+        const voiceRate  = cfg.voice_rate !== undefined ? cfg.voice_rate : -2;
+        const voicePitch = cfg.voice_pitch !== undefined ? cfg.voice_pitch : 6;
+
         if (murfKey && !murfApiFailed) {
             try {
                 const response = await fetch('https://api.murf.ai/v1/speech/generate', {
@@ -935,7 +1004,6 @@ async function playTTS(text, onAudioStart = null) {
 
                 let arrayBuffer;
                 if (base64Audio) {
-                    // Decode base64 to ArrayBuffer
                     const binaryString = atob(base64Audio);
                     const bytes = new Uint8Array(binaryString.length);
                     for (let i = 0; i < binaryString.length; i++) {
@@ -943,29 +1011,13 @@ async function playTTS(text, onAudioStart = null) {
                     }
                     arrayBuffer = bytes.buffer;
                 } else if (audioFileUrl) {
-                    // Fetch the audio URL
                     const audioResp = await fetch(audioFileUrl);
                     arrayBuffer = await audioResp.arrayBuffer();
                 } else {
                     throw new Error('No audio data in Murf response');
                 }
 
-                // Decode with Web Audio API for real lip sync
-                if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-                if (audioCtx.state === 'suspended') await audioCtx.resume();
-
-                const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
-                const source = audioCtx.createBufferSource();
-                source.buffer = audioBuffer;
-                audioAnalyzer = audioCtx.createAnalyser();
-                audioAnalyzer.fftSize = 256;
-                audioDataArray = new Uint8Array(audioAnalyzer.frequencyBinCount);
-                source.connect(audioAnalyzer);
-                audioAnalyzer.connect(audioCtx.destination);
-                source.onended = () => { isSpeaking = false; };
-                fireStart();
-                isSpeaking = true;
-                source.start(0);
+                await playAudioBuffer(arrayBuffer);
                 return;
             } catch (e) {
                 log('[TTS] Murf failed: ' + e.message);
@@ -975,8 +1027,8 @@ async function playTTS(text, onAudioStart = null) {
         log('[TTS] Unexpected error in playTTS: ' + globalErr.stack);
     }
 
-    // ── 3. Browser speech synthesis ────────────────────────────────────────────
-    log('[TTS] Falling back to browser TTS');
+    // ── 4. Browser speech synthesis (absolute last resort) ────────────────────
+    log('[TTS] All APIs failed — falling back to browser TTS');
     fallbackTTS(text, fireStart);
 }
 

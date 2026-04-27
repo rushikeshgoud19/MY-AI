@@ -90,16 +90,18 @@ body:hover #settings-btn {
     max-width: 90%;
     background: rgba(20, 20, 35, 0.88);
     color: #e0e0ff;
-    padding: 10px 14px;
-    border-radius: 14px;
-    font-size: 12px;
-    line-height: 1.5;
+    padding: 8px 12px;
+    border-radius: 12px;
+    font-size: 11px;
+    line-height: 1.4;
     -webkit-backdrop-filter: blur(10px);
     backdrop-filter: blur(10px);
-    border: 1px solid rgba(255, 183, 197, 0.3);  /* sakura pink */
+    border: 1px solid rgba(255, 183, 197, 0.3);
     text-align: center;
     transition: opacity 0.3s ease, transform 0.3s ease;
     pointer-events: none;
+    margin-top: auto; /* Push down */
+    margin-bottom: 20px; /* Leave space above status */
 }
 
 #response-bubble.hidden {

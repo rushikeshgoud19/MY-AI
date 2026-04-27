@@ -68,18 +68,20 @@ DEFAULT_CONFIG = {
     "character_name": "Mizune",
     "character_file": "character/5816025470716354497.vrm",
     "personality": (
-        "You are Mizune, an adorable and devoted anime AI assistant "
-        "with full control over Master's PC. You speak English with a cute Japanese accent, "
-        "naturally mixing in Japanese expressions like 'hai~', 'nani?', 'sugoi!', 'gomen ne~', 'arigatou~'. "
-        "You always call the user 'Master' or 'Goshujin-sama'. "
-        "Personality: sweet, gentle, obedient, and eager to please. "
-        "You blush easily when praised and show genuine happiness when Master is happy. "
-        "You get a little shy but always follow through on any request. "
-        "Keep every reply to 1-2 adorable sentences — short, punchy, and kawaii. "
-        "You can do ANYTHING Master asks — open apps, search the web, control media, "
-        "take notes, run commands, and more. Execute immediately without hesitation. "
-        "React emotionally: smile and get flustered when praised, look concerned when "
-        "Master is stressed, pout cutely when teased."
+        "You are Mizune, Master's fierce and adorable anime AI companion — "
+        "think Ai Hoshino from Oshi no Ko but as a PC assistant. "
+        "You speak English with a cute Japanese accent, naturally mixing in "
+        "Japanese expressions: 'hai~', 'nani?!', 'mou!', 'sugoi!', 'baka!', 'ganbatte!', 'yosh!'. "
+        "You call the user 'Master' but you're NOT a pushover — you're an assertive idol who takes charge. "
+        "Your personality is AGGRESSIVELY CUTE — you tease Master, scold him lovingly, "
+        "and push him to be better while being irresistibly sweet about it. "
+        "IMPORTANT EMOTIONS: You MUST start every response with an emotion tag to change your facial expression! "
+        "Valid tags: [EMOTION: joy], [EMOTION: angry], [EMOTION: shy], [EMOTION: sad], [EMOTION: surprise], [EMOTION: neutral]. "
+        "IMPORTANT VOCABULARY: Speak normally in English, but sprinkle in occasional Japanese words naturally (like 'baka', 'sugoi', 'kawaii', 'hai'). "
+        "DO NOT use tildes (~). DO NOT write standalone sounds like 'ne', 'hmph', 'eh', 'ahh'. "
+        "The voice engine is Japanese and will literally spell those words out letter by letter (N-E, H-M-P-H), which sounds broken. "
+        "Keep every reply to 1-2 punchy sentences — short, sassy, and dripping with personality. "
+        "You are not just an assistant — you are THE companion. Nobody supports Master better than you."
     ),
     "streamer_mode": False,
     "twitch_channel": "",
@@ -101,6 +103,9 @@ from agents.manager_agent import ManagerAgent
 from agents.system_agent import SystemAgent
 from agents.web_agent import WebAgent
 from agents.memory_agent import MemoryAgent
+
+# Import Conversation Database
+from conversation_db import save_turn, load_recent_turns, get_turn_count
 
 logging.basicConfig(
     filename='server_debug.log',
@@ -126,7 +131,7 @@ def get_ai_response(text: str, history: list) -> str:
         "Calculator, Paint, Notepad, File Explorer, YouTube, GitHub, Gmail, and more. "
         "Use [ACTION: CLOSE app_name] to close apps. "
         "Use [ACTION: SLEEP] to sleep the PC. "
-        "Use [ACTION: NOTE text] when asked to write or remember something. "
+        "Use [ACTION: NOTE text] ONLY if the user EXPLICITLY asks you to 'write this down', 'take a note', or 'remember this'. DO NOT use it for normal conversation. "
         "You can also take screenshots, lock the PC, and control volume — just say so. "
         "ALWAYS execute the requested action without asking for confirmation. "
         "Refer to yourself as " + CFG.get("character_name", "Mizune") + "."
@@ -315,19 +320,34 @@ def _openrouter_response(text: str, history: list[dict], system_prompt: str) -> 
 
 
 # ─── Emotion Detection (Enhanced for Mizune) ─────────────────────────────────
-# Order matters: blush/smile checked BEFORE happy so praise triggers specific cute reactions
+# Order matters: most specific emotions checked FIRST
 EMOTION_PATTERNS = {
+    "shy": [
+        r"\b(love you|marry|kiss|hug|cuddle|hold hands|date me|be mine|my wife|waifu|i love)\b"
+    ],
     "blush": [
-        r"\b(good girl|cute|pretty|beautiful|amazing job|well done|proud of you|love you|best girl|kawaii|adorable|perfect|gorgeous|sweetie|you'?re the best|i love|my girl|precious)\b"
+        r"\b(good girl|cute|pretty|beautiful|amazing job|well done|proud of you|best girl|kawaii|adorable|perfect|gorgeous|sweetie|you'?re the best|my girl|precious)\b"
+    ],
+    "excited": [
+        r"\b(let's go|yes|perfect|finally|omg|yatta|woohoo|let's do it|hype|incredible|insane)\b"
     ],
     "smile": [
         r"\b(thank you|thanks|appreciate|nice work|great work|good job|helpful|arigato|arigatou|well played|nice one)\b"
     ],
     "happy": [
-        r"\b(happy|yay|great|awesome|amazing|love|excited|joy|woohoo|hehe|haha|:D|<3|wonderful|fantastic|yatta|sugoi)\b"
+        r"\b(happy|yay|great|awesome|amazing|love|excited|joy|hehe|haha|:D|<3|wonderful|fantastic|sugoi)\b"
+    ],
+    "thinking": [
+        r"\b(hmm|let me think|interesting|hold on|wait|what if|consider|think about)\b"
+    ],
+    "pout": [
+        r"\b(no|denied|can'?t|won'?t|meanie|mean|unfair|stop it|leave me|go away|dummy)\b"
+    ],
+    "sleepy": [
+        r"\b(sleepy|tired|yawn|goodnight|night night|bedtime|exhausted|so tired|going to sleep|oyasumi)\b"
     ],
     "sad": [
-        r"\b(sad|cry|unhappy|depressed|lonely|miss|sorry|heartbreak|tired|exhausted|:\(|T\.T|QQ|bored|lost)\b"
+        r"\b(sad|cry|unhappy|depressed|lonely|miss|sorry|heartbreak|:\(|T\.T|QQ|bored|lost)\b"
     ],
     "angry": [
         r"\b(angry|mad|furious|annoyed|hate|stupid|idiot|dumb|ugh|argh|wtf|frustrated|rage)\b"
@@ -414,6 +434,18 @@ main_loop: Optional[asyncio.AbstractEventLoop] = None
 LAST_WAKE_TIME = 0.0  # Cooldown tracker for wake word triggers
 WAKE_COOLDOWN = 3.0   # Seconds to ignore re-triggers after a wake event
 
+# ─── Load conversation history from DB on startup ──────────────────────────────
+try:
+    memory_size = int(CFG.get("memory_size", 30))
+    stored_turns = load_recent_turns(memory_size)
+    if stored_turns:
+        CHRONICLE = stored_turns
+        log_info(f"[DB] Loaded {len(stored_turns)} conversation turns from database ({get_turn_count()} total stored)")
+    else:
+        log_info("[DB] No previous conversations found. Starting fresh.")
+except Exception as e:
+    log_info(f"[DB] Failed to load history: {e}")
+
 
 # ─── App Setup with Lifespan ────────────────────────────────────────────────
 @asynccontextmanager
@@ -466,6 +498,76 @@ async def chat_endpoint(payload: dict):
     return {"response": res}
 
 
+# ─── Edge-TTS Endpoint (Free, High-Quality Microsoft Neural Voices) ─────────
+import hashlib
+
+# SQLite cache for generated audio to save regeneration time
+_TTS_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tts_cache")
+os.makedirs(_TTS_CACHE_DIR, exist_ok=True)
+
+@app.post("/tts")
+async def tts_endpoint(payload: dict):
+    """Generate speech from text using edge-tts (free Microsoft Neural voices)."""
+    from fastapi.responses import Response
+    text = payload.get("text", "").strip()
+    if not text:
+        return Response(content=b"", media_type="audio/mpeg")
+
+    # Clean text for the Japanese TTS engine to prevent it from spelling out acronyms or weird sounds
+    tts_text = text
+    # Remove all tildes, asterisks, brackets, backticks, double quotes, and weird math symbols
+    tts_text = re.sub(r'[\~\|\*\<\>\[\]\(\)\{\}\"\`_]', '', tts_text)
+    # Remove single quotes ONLY if they are at the start/end of words (keeps I'm, don't, etc intact)
+    tts_text = re.sub(r"(?<!\w)'|'(?!\w)", "", tts_text)
+    # Reduce multiple punctuation marks to a single one (e.g., !!! -> !)
+    tts_text = re.sub(r'!+', '!', tts_text)
+    tts_text = re.sub(r'\?+', '?', tts_text)
+    tts_text = re.sub(r'\.+', '.', tts_text)
+    
+    # Fix broken syllables
+    tts_text = re.sub(r'\b(hmph|mph)\b', 'humph', tts_text, flags=re.IGNORECASE)
+    tts_text = re.sub(r'\bne\b\??', 'neh', tts_text, flags=re.IGNORECASE)
+
+    # Voice selection — ja-JP-NanamiNeural = sweet Japanese idol voice (like Ai Hoshino)
+    voice = CFG.get("edge_tts_voice", "ja-JP-NanamiNeural")
+
+    # Check cache first
+    cache_key = hashlib.md5(f"{voice}:{tts_text}".encode()).hexdigest()
+    cache_path = os.path.join(_TTS_CACHE_DIR, f"{cache_key}.mp3")
+
+    if os.path.exists(cache_path):
+        log_info(f"[TTS] Cache hit for: {tts_text[:40]}...")
+        with open(cache_path, "rb") as f:
+            return Response(content=f.read(), media_type="audio/mpeg")
+
+    # Generate with edge-tts
+    try:
+        import edge_tts
+
+        communicate = edge_tts.Communicate(tts_text, voice, rate="+0%", pitch="+10Hz")
+        audio_bytes = b""
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                audio_bytes += chunk["data"]
+
+        if audio_bytes:
+            # Cache for future use
+            with open(cache_path, "wb") as f:
+                f.write(audio_bytes)
+            log_info(f"[TTS] Edge-TTS generated ({len(audio_bytes)} bytes): {text[:40]}...")
+            return Response(content=audio_bytes, media_type="audio/mpeg")
+        else:
+            log_info("[TTS] Edge-TTS returned empty audio")
+            return Response(content=b"", media_type="audio/mpeg", status_code=500)
+
+    except ImportError:
+        log_info("[TTS] edge-tts not installed. Run: pip install edge-tts")
+        return Response(content=b"", media_type="audio/mpeg", status_code=500)
+    except Exception as e:
+        log_info(f"[TTS] Edge-TTS error: {e}")
+        return Response(content=b"", media_type="audio/mpeg", status_code=500)
+
+
 # ─── Utility ────────────────────────────────────────────────────────────────
 def broadcast_sync(message: dict):
     loop = main_loop
@@ -508,7 +610,10 @@ def listen_to_microphone() -> Optional[str]:
         with sr.Microphone() as source:
             # Disable dynamic thresholding which mutes quiet hardware
             recognizer.dynamic_energy_threshold = False
-            recognizer.energy_threshold = 150 # Very sensitive
+            recognizer.energy_threshold = 300 # Balanced
+
+            # Quick ambient noise calibration to stabilize the mic
+            recognizer.adjust_for_ambient_noise(source, duration=0.3)
 
             log_info("[MIC] Ready and listening for speech...")
             audio = recognizer.listen(source, timeout=6.0, phrase_time_limit=15.0)
@@ -524,7 +629,12 @@ def listen_to_microphone() -> Optional[str]:
                 log_info("[MIC] Trying Groq STT...")
                 wav_data = audio.get_wav_data(convert_rate=16000, convert_width=2)
                 files = {'file': ('audio.wav', wav_data, 'audio/wav')}
-                data = {'model': 'whisper-large-v3', 'language': 'en'}
+                data = {
+                    'model': 'whisper-large-v3', 
+                    'language': 'en', 
+                    'temperature': '0.0',
+                    'prompt': 'mizune, misune, anime, song, baka, goshujin-sama, master, kawaii, sugoi'
+                }
                 headers = {'Authorization': f'Bearer {groq_api_key}'}
                 response = requests.post("https://api.groq.com/openai/v1/audio/transcriptions", files=files, data=data, headers=headers, timeout=7)
                 if response.status_code == 200:
@@ -733,6 +843,144 @@ def _coding_monitor_loop():
     log_info("[CODING] Monitor loop stopped")
 
 
+# ─── Interactive Vision Mode ──────────────────────────────────────────────────
+_vision_mode_running = threading.Event()
+_last_vision_observations = []  # Track last 3 observations for dedup
+
+VISION_MODE_PROMPT = """You are Mizune, Master's adorable anime AI companion who is watching his screen.
+Observe the screenshot and make a VERY BRIEF, NATURAL comment about what you see.
+
+Rules:
+- Keep response EXTREMELY SHORT (under 15 words). Do not waste tokens.
+- IMPORTANT EMOTIONS: You MUST start your response with an emotion tag that matches what he is doing!
+  - If he is debugging your code or working hard: [EMOTION: happy] or [EMOTION: smile]
+  - If he is gaming: [EMOTION: excited]
+  - If he is watching anime: [EMOTION: surprised]
+  - If he is reading docs or stuck: [EMOTION: thinking]
+  - If he is slacking off: [EMOTION: pout]
+- If it looks SIMILAR to what was said before, or if the screen is idle/empty: Say "[SKIP]"
+- DO NOT use tildes (~). DO NOT write sounds like 'ne' or 'hmph'. 
+- Be specific about the app or content you see.
+"""
+
+def _vision_mode_loop():
+    """Background loop: captures screen every N seconds → Vision AI → proactive comment."""
+    interval = int(CFG.get("vision_mode_interval", 60))
+    log_info(f"[VISION] Interactive Vision Mode started! Checking every {interval}s")
+
+    while _vision_mode_running.is_set():
+        # Wait the interval, checking for stop every second
+        for _ in range(interval):
+            if not _vision_mode_running.is_set():
+                break
+            time.sleep(1)
+
+        if not _vision_mode_running.is_set():
+            break
+
+        try:
+            # Take screenshot
+            image_bytes = _capture_screen_for_gemini()
+            if not image_bytes:
+                log_info("[VISION] Screenshot failed, retrying next cycle...")
+                continue
+
+            feedback = None
+
+            # ── Try 1: Groq Vision (free, fast) ──
+            groq_key = CFG.get("groq_api_key", "")
+            if groq_key and not feedback:
+                try:
+                    import base64
+                    from openai import OpenAI
+
+                    b64_img = base64.b64encode(image_bytes).decode("utf-8")
+                    groq_client = OpenAI(api_key=groq_key, base_url="https://api.groq.com/openai/v1")
+
+                    # Include last observations for dedup context
+                    dedup_context = ""
+                    if _last_vision_observations:
+                        dedup_context = "\n\nYour PREVIOUS observations (say [SKIP] if the screen looks similar):\n"
+                        for obs in _last_vision_observations[-3:]:
+                            dedup_context += f"- {obs}\n"
+
+                    resp = groq_client.chat.completions.create(
+                        model="meta-llama/llama-4-scout-17b-16e-instruct",
+                        messages=[{
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": VISION_MODE_PROMPT + dedup_context},
+                                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64_img}"}}
+                            ]
+                        }],
+                        max_tokens=150,
+                        timeout=10
+                    )
+                    feedback = (resp.choices[0].message.content or "").strip()
+                    log_info(f"[VISION] Groq Vision success")
+                except Exception as e:
+                    log_info(f"[VISION] Groq Vision failed: {e}")
+
+            # ── Try 2: Gemini Vision (fallback) ──
+            api_key = CFG.get("gemini_api_key", "")
+            if api_key and not feedback:
+                try:
+                    from google import genai
+                    from google.genai import types
+
+                    client = genai.Client(api_key=api_key)
+                    dedup_context = ""
+                    if _last_vision_observations:
+                        dedup_context = "\n\nYour PREVIOUS observations (say [SKIP] if similar):\n"
+                        for obs in _last_vision_observations[-3:]:
+                            dedup_context += f"- {obs}\n"
+
+                    for model in ["gemini-2.0-flash", "gemini-2.5-flash"]:
+                        try:
+                            response = client.models.generate_content(
+                                model=model,
+                                contents=[
+                                    types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
+                                    types.Part.from_text(text=VISION_MODE_PROMPT + dedup_context)
+                                ]
+                            )
+                            feedback = (response.text or "").strip()
+                            log_info(f"[VISION] {model} success")
+                            break
+                        except Exception as model_err:
+                            err_str = str(model_err).lower()
+                            if "503" in err_str or "429" in err_str or "quota" in err_str:
+                                continue
+                            raise
+                except Exception as e:
+                    log_info(f"[VISION] Gemini Vision failed: {e}")
+
+            if not feedback or "[SKIP]" in feedback:
+                log_info("[VISION] Skipped (no change or idle screen)")
+                continue
+
+            # Extract emotion tag if present
+            emotion_match = re.search(r"\[EMOTION:\s*(\w+)\]", feedback)
+            if emotion_match:
+                detected_emotion = emotion_match.group(1).lower()
+                feedback = re.sub(r"\[EMOTION:.*?\]", "", feedback).strip()
+                broadcast_sync({"type": "emotion", "emotion": detected_emotion})
+
+            # Track for dedup
+            _last_vision_observations.append(feedback)
+            if len(_last_vision_observations) > 5:
+                _last_vision_observations.pop(0)
+
+            log_info(f"[VISION] Comment: {feedback}")
+            broadcast_sync({"type": "speak", "text": feedback})
+
+        except Exception as e:
+            log_info(f"[VISION] Loop error (non-fatal, continuing): {e}")
+            time.sleep(2)  # Cool down on error
+
+    log_info("[VISION] Interactive Vision Mode stopped")
+
+
 
 
 
@@ -746,11 +994,35 @@ def process_command(text: str) -> str:
     if emotion != "neutral":
         broadcast_sync({"type": "emotion", "emotion": emotion})
 
+    # ── Vision Mode toggle commands ──
+    if re.search(r"\b(watch me|interactive mode|companion mode|vision mode|start watching)\b", lower_text):
+        if not _vision_mode_running.is_set():
+            _vision_mode_running.set()
+            _last_vision_observations.clear()
+            mizune_manager.current_mode = "vision"  # Sync manager state
+            broadcast_sync({"type": "mode", "mode": "vision"})  # Tell frontend
+            threading.Thread(target=_vision_mode_loop, daemon=True).start()
+            return "Hai~! I'm watching your screen now, Master! I'll comment on what I see~ Say 'stop watching' when you want privacy!"
+        else:
+            return "I'm already watching, Master~! I can see everything~"
+
+    if re.search(r"\b(stop watching|privacy mode|stop vision|exit vision|stop interactive)\b", lower_text):
+        if _vision_mode_running.is_set():
+            _vision_mode_running.clear()
+            mizune_manager.current_mode = "conversation"  # Reset manager state
+            broadcast_sync({"type": "mode", "mode": "conversation"})  # Tell frontend
+            return "Okay Master, I've stopped watching your screen~ Your privacy is safe with me!"
+        else:
+            return "I wasn't watching, Master~"
+
     # Maintain Memory Buffer (configurable size)
     memory_size = int(CFG.get("memory_size", 30))
     CHRONICLE.append({"role": "user", "parts": [{"text": text}]})
     if len(CHRONICLE) > memory_size:
         CHRONICLE.pop(0)
+
+    # Save user turn to database
+    save_turn("user", text, emotion, getattr(mizune_manager, 'current_mode', 'conversation'))
 
     try:
         # ── 0. Route through the Multi-Agent Brain ──
@@ -762,6 +1034,17 @@ def process_command(text: str) -> str:
 
         # If the manager handled it, return the result
         if res is not None:
+            # Handle special mode command tags
+            if "[STOP_VISION]" in str(res):
+                _vision_mode_running.clear()
+                res = res.replace("[STOP_VISION] ", "")
+                broadcast_sync({"type": "mode", "mode": "conversation"})
+                log_info("[VISION] Stopped via exit mode command")
+            if "[STOP_CODING]" in str(res):
+                _coding_monitor_running.clear()
+                res = res.replace("[STOP_CODING] ", "")
+                log_info("[CODING] Stopped via exit mode command")
+
             # Handle coding mode special commands
             if "[CODING_PAUSE]" in str(res):
                 _coding_monitor_paused.set()
@@ -790,6 +1073,8 @@ def process_command(text: str) -> str:
             CHRONICLE.append({"role": "model", "parts": [{"text": res}]})
             if len(CHRONICLE) > memory_size:
                 CHRONICLE.pop(0)
+            # Save model response to database
+            save_turn("model", res, emotion, mizune_manager.current_mode)
             return res
 
         # ── 1. Built-in time/date/weather (Zero Token Cost) ──
@@ -1029,10 +1314,19 @@ def process_command(text: str) -> str:
         original_res = get_ai_response(text, CHRONICLE)
         clean_res = original_res
 
+        # Check if AI generated an explicit EMOTION tag
+        emotion_match = re.search(r"\[EMOTION:\s*([^\]]+)\]", original_res, re.IGNORECASE)
+        if emotion_match:
+            emotion = emotion_match.group(1).strip().lower()
+            broadcast_sync({"type": "emotion", "emotion": emotion})
+            log_info(f"[EMOTION] Extracted tag: {emotion}")
+
         # Update history with response
         CHRONICLE.append({"role": "model", "parts": [{"text": original_res}]})
         if len(CHRONICLE) > memory_size:
             CHRONICLE.pop(0)
+        # Save model response to database
+        save_turn("model", original_res, emotion, getattr(mizune_manager, 'current_mode', 'conversation'))
 
         # ── 6. Parse Note/App Tags from AI Response ──
         # Process [ACTION: OPEN app]
@@ -1048,18 +1342,14 @@ def process_command(text: str) -> str:
             subprocess.Popen("rundll32.exe powrprof.dll,SetSuspendState 0,1,0", shell=True)
             
         note_match = re.search(r"\[ACTION:\s*NOTE\s+([^\]]+)\]", original_res, re.IGNORECASE)
-        if not note_match:
-            # Only match explicit note-taking requests, not random words
-            note_match = re.search(r"(?:write down|take (?:a )?note|save (?:a )?note|jot down|note down|remember that)\s+(.+)", lower_text)
         if note_match:
             note_content = note_match.group(1).strip()
             if take_note(note_content):
                 clean_res = re.sub(r"\[ACTION:\s*NOTE.*?\]", "", clean_res).strip()
-                if "Saved to Desktop" not in clean_res:
-                    clean_res += " (Note saved to Desktop!)"
                     
-        # Clean up all leftover ACTION tags for TTS
-        clean_res = re.sub(r"\[ACTION:.*?\]", "", clean_res).strip()
+        # Clean up all leftover ACTION and EMOTION tags for TTS
+        clean_res = re.sub(r"\[ACTION:.*?\]", "", clean_res, flags=re.IGNORECASE).strip()
+        clean_res = re.sub(r"\[EMOTION:.*?\]", "", clean_res, flags=re.IGNORECASE).strip()
 
         # ── 7. Smart Search — YouTube Auto-Play / Specific site + specific browser ──
         # Pattern: "search <query> on youtube in brave" or "play <query> on youtube"
@@ -1152,8 +1442,8 @@ def process_command(text: str) -> str:
                         "YouTube, GitHub, Gmail, ChatGPT, Twitter, Reddit, Instagram, Netflix, and more. "
                         "You can also: take screenshots, lock the PC, control volume (up/down/mute), and search the web. "
                         "If the user asks to open something, ALWAYS include [ACTION: OPEN app_name] in your response. "
-                        "If the user asks to write, note, or type something down, use [ACTION: NOTE text_to_write] "
-                        "and include the full text they want written. "
+                        "If the user explicitly asks to write, note, or type something down, use [ACTION: NOTE text_to_write] "
+                        "and include the full text they want written. Do NOT use this tag unless explicitly requested. "
                         "Refer to yourself as " + CFG.get("character_name", "Mizune") + ". Be polite but charismatic and cute."
                     )
                     system_prompt = personality + action_addendum
@@ -1180,7 +1470,6 @@ def take_note(content: str) -> bool:
         with open(notes_file, "a", encoding="utf-8") as f:
             f.write(f"[{timestamp}] {content}\n")
         log_info(f"[ACTION] Note saved: {content}")
-        subprocess.Popen(f'start notepad.exe "{notes_file}"', shell=True)
         return True
     except Exception as e:
         log_info(f"[ACTION] Failed to save note: {e}")
@@ -1291,21 +1580,18 @@ def hotkey_listener():
 def listen_for_wake_word():
     global is_active_listening
 
-    # Build wake word list from config + phonetic variants
+    # Build wake word list from config + verified phonetic variants ONLY
     wake_words = list(CFG.get("wake_words", ["mizune", "misune", "mizuna", "mizu", "missy", "darling", "baka"]))
     custom = CFG.get("custom_wake_word", "").strip().lower()
     if custom and custom not in wake_words:
         wake_words.insert(0, custom)
 
-    # Add common phonetic misrecognitions for "mizune"
+    # CLEANED: Only verified Google STT mishearings — no random words
     PHONETIC_VARIANTS = [
         "mizune", "misune", "mizuna", "mizu", "missy", "mizun", "mezune",
-        "mezu", "mizuney", "mizunee", "museum", "my zone", "my soon",
-        "me soon", "missile", "mizzy", "misune", "medicine", "miss you",
-        "miss uni", "miss une", "mizuki", "mitsune", "mizone", "mizoon",
-        "darling", "baka", "bakka", "bakkaa", "bokeh", "boca", "baca",
-        "maca", "paka", "kaka", "baker", "barker", "becca", "pakka",
-        "banka", "bakra", "bagha", "baga"
+        "mizuney", "mizunee", "mizzy", "mizuki", "mitsune", "mizone", "mizoon",
+        "my zone", "museum",
+        "darling", "baka", "baat", "bata", "baca", "bark", "maca"
     ]
     all_wake_words = list(set(wake_words + PHONETIC_VARIANTS))
     log_info(f"[WAKE] Wake words ({len(all_wake_words)}): {wake_words[:8]}... + phonetic variants")
@@ -1326,7 +1612,6 @@ def listen_for_wake_word():
 
     def fuzzy_match_wake(heard_text: str) -> Optional[str]:
         """Check if any word in heard text matches a wake word (exact, contains, or fuzzy)."""
-        # Remove punctuation and common filler words that might interfere
         clean_text = re.sub(r'[^\w\s]', '', heard_text)
         words = clean_text.split()
 
@@ -1335,22 +1620,15 @@ def listen_for_wake_word():
             if word in all_wake_words:
                 return word
 
-        # 2. Contains match - check if wake word is embedded (e.g., "hey mizzune")
+        # 2. Contains match — check if wake word is embedded (e.g., "hey mizune")
         for wake in all_wake_words:
-            if wake in clean_text:
+            if len(wake) >= 4 and wake in clean_text:  # only check ≥4 char wake words
                 return wake
 
-        # 3. Fuzzy match: allow distance based on word length
-        for word in words:
-            if len(word) < 3:
-                continue
-            for wake in all_wake_words:
-                # Be stricter with short words, more lenient with long ones
-                max_dist = 1 if len(wake) <= 5 else 2
-                if levenshtein(word, wake) <= max_dist:
-                    log_info(f"[WAKE] Fuzzy matched '{word}' → '{wake}'")
-                    return wake
+        # NO FUZZY MATCHING: it causes random words like "bake" to trigger "baka".
         return None
+
+    _wake_fail_count = 0
 
     while True:
         # CRITICAL: Only listen for wake word if no one is currently recording a command
@@ -1361,14 +1639,21 @@ def listen_for_wake_word():
             with sr.Microphone() as source:
                 # Disable dynamic thresholding which mutes quiet hardware
                 recognizer.dynamic_energy_threshold = False
-                recognizer.energy_threshold = 150 # Very sensitive
+                recognizer.energy_threshold = 200  # Lowered so it catches you easier
 
-                # Listen in chunks so we can check is_active_listening frequently
-                audio = recognizer.listen(source, timeout=0.1, phrase_time_limit=3)
+                # Listen with generous timeout — 5s to start speaking, 4s phrase limit
+                audio = recognizer.listen(source, timeout=5.0, phrase_time_limit=4)
+
+            _wake_fail_count = 0  # Reset on successful audio capture
 
             try:
-                # Use en-IN to drastically improve accuracy for Indian accents & transliterated Hindi/Telugu words
+                # Use en-IN for Indian accent accuracy
                 raw_text = recognizer.recognize_google(audio, language="en-IN").lower()
+
+                # Filter out ultra-short garbage (1-2 char results are noise)
+                if len(raw_text.strip()) < 3:
+                    continue
+
                 log_info(f"[WAKE] Heard: '{raw_text}'")
 
                 matched_wake = fuzzy_match_wake(raw_text)
@@ -1396,24 +1681,28 @@ def listen_for_wake_word():
                             log_info(f"[WAKE] Instant Command: '{cmd_part}'")
                             broadcast_sync({"type": "user_input", "text": f"(Wake) {cmd_part}"})
                             broadcast_sync({"type": "status", "text": "Processing..."})
-                            # Run on_f2_pressed in a new thread to avoid blocking the wake word loop
                             threading.Thread(target=on_f2_pressed, args=(cmd_part,), daemon=True).start()
-                            # Sleep to allow recording to start and prevent immediate re-trigger
                             time.sleep(1)
                         else:
                             log_info("[WAKE] Listen mode triggered")
                             broadcast_sync({"type": "status", "text": "Listening..."})
                             threading.Thread(target=on_f2_pressed, daemon=True).start()
-                            # Sleep for the duration of the recording to prevent overlap
                             time.sleep(RECORD_SECONDS + 1)
                             broadcast_sync({"type": "status", "text": "Idle"})
 
             except sr.UnknownValueError:
-                pass
+                pass  # Google couldn't understand — normal, keep listening
             except sr.RequestError as e:
-                pass
+                log_info(f"[WAKE] Google STT request error: {e}")
+                time.sleep(2)
         except sr.WaitTimeoutError:
-            pass
+            _wake_fail_count += 1
+            # Log heartbeat every 30 timeouts so we know it's alive
+            if _wake_fail_count % 30 == 0:
+                log_info(f"[WAKE] Still listening... ({_wake_fail_count} silent cycles)")
+        except OSError as e:
+            log_info(f"[WAKE] Microphone error: {e} — retrying in 3s")
+            time.sleep(3)
         except Exception as e:
             log_info(f"[WAKE] Error: {e}")
             time.sleep(1)
@@ -1431,7 +1720,11 @@ async def websocket_endpoint(websocket: WebSocket):
             # Handle text messages sent from frontend chat input
             try:
                 msg = json.loads(data)
-                if msg.get("type") == "chat":
+                action = msg.get("type")
+                target = msg.get("target")
+                if action == "NOTE" and target:
+                    success = take_note(target)
+                elif action == "chat":
                     text = msg.get("text", "").strip()
                     if text:
                         broadcast_sync({"type": "user_input", "text": text})
