@@ -17,7 +17,7 @@ class ManagerAgent(BaseAgent):
       - system:     PC control, environment setup
     """
 
-    VALID_MODES = ["conversation", "writing", "focus", "entertainment", "research", "system", "coding"]
+    VALID_MODES = ["conversation", "writing", "focus", "entertainment", "research", "system", "coding", "vision"]
 
     def __init__(self, config: dict):
         super().__init__(config)
@@ -51,7 +51,13 @@ class ManagerAgent(BaseAgent):
         if re.search(r"\b(exit mode|normal mode|default mode|go back|leave mode|stop mode)\b", text.lower()):
             old = self.current_mode
             self.current_mode = "conversation"
-            return f"Exiting {old.capitalize()} mode! Back to normal conversation, Master~"
+            # Signal server to stop vision/coding if active
+            prefix = ""
+            if old == "vision":
+                prefix = "[STOP_VISION] "
+            elif old == "coding":
+                prefix = "[STOP_CODING] "
+            return f"{prefix}Exiting {old.capitalize()} mode! Back to normal conversation, Master~"
 
         # ── 4. Route based on current mode ──
         if self.current_mode == "writing":
@@ -66,6 +72,13 @@ class ManagerAgent(BaseAgent):
             return await self._handle_research(text, context)
         elif self.current_mode == "system":
             return await self._handle_system(text, context)
+        elif self.current_mode == "vision":
+            # Vision mode is handled by server.py's vision loop directly
+            # But handle exit commands here
+            if re.search(r"\b(stop watching|privacy mode|stop vision|exit vision|stop interactive)\b", text.lower()):
+                self.current_mode = "conversation"
+                return None  # Let server.py handle the actual stop
+            return None  # Let LLM handle conversation while watching
 
         # ── 5. Conversation mode → return None for LLM ──
         return None
@@ -80,6 +93,7 @@ class ManagerAgent(BaseAgent):
             "research":      r"\b(research mode|study|investigate|deep dive|look into)\b",
             "system":        r"\b(system mode|developer mode|dev mode|pc control|admin mode)\b",
             "coding":        r"\b(coding mode|code mode|leetcode mode|coding coach|watch me code|pair program|code review mode|code with me)\b",
+            "vision":        r"\b(vision mode|interactive mode|companion mode|watch me|start watching)\b",
             "conversation":  r"\b(conversation mode|chat mode|talk mode|normal mode)\b",
         }
         for mode, pattern in patterns.items():
@@ -95,6 +109,7 @@ class ManagerAgent(BaseAgent):
             "research": "🔍 Research Mode activated! I'll search the web, summarize articles, and gather info for you, Master~ What topic shall I investigate?",
             "system": "⚙️ System Mode activated! Full PC control unlocked. I can set up projects, analyze code, manage files, and more~ What do you need, Master?",
             "coding": "💻 Coding Coach Mode activated! I'm watching your screen now, Master~ I'll analyze your code every 20 seconds, catch mistakes, suggest improvements, and cheer you on! Ganbatte~! Say 'exit mode' when done!",
+            "vision": "👁️ Interactive Vision Mode activated! I'm watching everything on your screen now, Master~ I'll comment on what I see! Say 'stop watching' or 'exit mode' for privacy!",
             "conversation": "💬 Back to Conversation Mode! Just chatting normally now, Master~",
         }
         return greetings.get(new_mode, f"Switched to {new_mode.capitalize()} mode!")
