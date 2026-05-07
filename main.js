@@ -114,8 +114,9 @@ function createWindow() {
     cfg = { ...cfg, ...newCfg };
     saveConfig(cfg);
 
-    // Apply always-on-top immediately
-    win.setAlwaysOnTop(cfg.always_on_top !== false, 'screen-saver');
+    // Apply always-on-top immediately with highest priority level
+    win.setAlwaysOnTop(cfg.always_on_top !== false, 'screen-saver', 1);
+    win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
 
     // Apply window scale
     const { w, h } = scaledSize();
@@ -154,7 +155,15 @@ function createWindow() {
   });
 
   win.on('blur', () => {
-    if (cfg.always_on_top !== false) win.setAlwaysOnTop(true, 'screen-saver');
+    if (cfg.always_on_top !== false) {
+        win.setAlwaysOnTop(true, 'screen-saver', 1);
+    }
+  });
+
+  win.on('focus', () => {
+    if (cfg.always_on_top !== false) {
+        win.setAlwaysOnTop(true, 'screen-saver', 1);
+    }
   });
 
   win.on('minimize', (e) => { e.preventDefault(); win.restore(); });

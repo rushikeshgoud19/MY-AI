@@ -88,20 +88,34 @@ body:hover #settings-btn {
 /* Response speech bubble */
 #response-bubble {
     max-width: 90%;
+    max-height: 84px;
     background: rgba(20, 20, 35, 0.88);
     color: #e0e0ff;
     padding: 8px 12px;
     border-radius: 12px;
     font-size: 11px;
     line-height: 1.4;
+    overflow-y: auto;
+    overflow-x: hidden;
+    scrollbar-width: thin;
     -webkit-backdrop-filter: blur(10px);
     backdrop-filter: blur(10px);
     border: 1px solid rgba(255, 183, 197, 0.3);
     text-align: center;
     transition: opacity 0.3s ease, transform 0.3s ease;
     pointer-events: none;
-    margin-top: auto; /* Push down */
-    margin-bottom: 20px; /* Leave space above status */
+    margin-top: auto; /* Push to bottom of overlay */
+    margin-bottom: 4px; /* Tiny gap above status */
+    z-index: 100;
+}
+
+#response-bubble::-webkit-scrollbar {
+    width: 6px;
+}
+
+#response-bubble::-webkit-scrollbar-thumb {
+    background: rgba(255, 183, 197, 0.35);
+    border-radius: 6px;
 }
 
 #response-bubble.hidden {
@@ -124,8 +138,17 @@ body:hover #settings-btn {
 }
 
 #status.listening {
-    color: #ff6b6b;
-    border: 1px solid rgba(255, 107, 107, 0.4);
+    color: #00ff00;
+    border: 1px solid rgba(0, 255, 0, 0.6);
+    background: rgba(0, 50, 0, 0.4);
+    box-shadow: 0 0 15px rgba(0, 255, 0, 0.4);
+    animation: listeningPulse 1.5s infinite ease-in-out;
+}
+
+@keyframes listeningPulse {
+    0% { transform: scale(1); box-shadow: 0 0 10px rgba(0, 255, 0, 0.2); }
+    50% { transform: scale(1.05); box-shadow: 0 0 20px rgba(0, 255, 0, 0.6); }
+    100% { transform: scale(1); box-shadow: 0 0 10px rgba(0, 255, 0, 0.2); }
 }
 
 /* ─── Text Chat Input Bar ───────────────────────── */
@@ -303,3 +326,85 @@ body:hover #drag-hint {
     40% { opacity: 1; }
 }
 
+#vision-indicator {
+    position: absolute;
+    top: 6px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(10, 10, 20, 0.92);
+    backdrop-filter: blur(8px);
+    border: 1px solid rgba(167, 119, 227, 0.4);
+    border-radius: 12px;
+    padding: 4px 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    z-index: 10001; /* Above everything */
+    font-size: 9px;
+    font-weight: 700;
+    color: #fff;
+    letter-spacing: 0.5px;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.6);
+    transition: all 0.5s cubic-bezier(0.19, 1, 0.22, 1);
+}
+
+#vision-indicator.hidden {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-20px);
+    pointer-events: none;
+}
+
+.vision-dot {
+    width: 7px;
+    height: 7px;
+    background: #a777e3;
+    border-radius: 50%;
+    box-shadow: 0 0 10px #a777e3;
+    animation: vision-pulse 1.5s infinite;
+}
+
+@keyframes vision-pulse {
+    0% { transform: scale(1); opacity: 0.8; }
+    50% { transform: scale(1.3); opacity: 1; box-shadow: 0 0 15px #a777e3; }
+    100% { transform: scale(1); opacity: 0.8; }
+}
+
+#vision-text {
+    font-family: 'Inter', sans-serif;
+    text-transform: uppercase;
+}
+
+/* ─── Emotion HUD ────────────────────────────────── */
+#emotion-hud {
+    position: absolute;
+    top: 28px;
+    right: 8px;
+    background: rgba(10, 10, 25, 0.85);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(167, 119, 227, 0.35);
+    border-radius: 10px;
+    padding: 4px 10px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    z-index: 9998;
+    font-size: 10px;
+    color: #d0d0ff;
+    pointer-events: none;
+    transition: all 0.4s ease;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.4);
+}
+
+#emotion-hud-emoji {
+    font-size: 14px;
+    line-height: 1;
+}
+
+#emotion-hud-label {
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    min-width: 50px;
+}

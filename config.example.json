@@ -15,6 +15,12 @@
   "openrouter_model": "anthropic/claude-3-opus",
   "wake_words": ["mizune", "misune", "mizuna", "mizu", "missy", "darling", "baka"],
   "custom_wake_word": "",
+  "wake_language": "en-IN",
+  "wake_energy_threshold": 180,
+  "wake_dynamic_energy": true,
+  "wake_phrase_time_limit": 4.5,
+  "wake_timeout": 6.0,
+  "wake_adjust_noise_sec": 0.3,
   "voice_id": "ja-JP-kimi",
   "voice_style": "Cheerful",
   "voice_rate": 0,
@@ -26,5 +32,31 @@
   "streamer_mode": false,
   "twitch_channel": "",
   "window_scale": 1.8,
-  "always_on_top": true
+  "always_on_top": true,
+  "dataset_path": "dataset",
+  "data_collection_enabled": true,
+  "data_collection_interval_sec": 5,
+  "data_collection_screen_scale": 1.0,
+  "data_collection_capture_screen": true,
+  "data_collection_capture_camera": true,
+  "data_collection_use_time_features": true,
+  "activity_labels": [
+    "coding",
+    "gaming",
+    "meetings",
+    "watching",
+    "serious_work",
+    "web_scraping",
+    "image_recognition"
+  ],
+  "emotion_labels": [
+    "happy",
+    "sad",
+    "angry",
+    "surprise",
+    "neutral",
+    "fear",
+    "disgust"
+  ],
+  "identity_labels": ["master", "other"]
 }

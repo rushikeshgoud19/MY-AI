@@ -38,3 +38,7 @@ server_debug_utf8.log
 .claude/
 lumina/
 package-lock.json
+tts_cache/
+dataset/
+data/
+*.db

@@ -25,6 +25,18 @@
     <!-- Status dot -->
     <div id="status-indicator"></div>
 
+    <!-- Vision indicator -->
+    <div id="vision-indicator" class="hidden">
+        <span class="vision-dot"></span>
+        <span id="vision-text">SCANNING: 0</span>
+    </div>
+
+    <!-- Emotion HUD (shows detected emotion in real-time) -->
+    <div id="emotion-hud">
+        <span id="emotion-hud-emoji">😐</span>
+        <span id="emotion-hud-label">neutral</span>
+    </div>
+
     <!-- Settings button (top-left, appears on hover) -->
     <button type="button" id="settings-btn" title="Settings" onclick="openSettings()">⚙</button>
 
