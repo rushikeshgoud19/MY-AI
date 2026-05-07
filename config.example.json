@@ -21,6 +21,8 @@
   "wake_phrase_time_limit": 4.5,
   "wake_timeout": 6.0,
   "wake_adjust_noise_sec": 0.3,
+  "mic_device_name": "Realtek(R) Audio",
+  "mic_device_index": null,
   "voice_id": "ja-JP-kimi",
   "voice_style": "Cheerful",
   "voice_rate": 0,

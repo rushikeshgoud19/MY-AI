@@ -66,6 +66,8 @@ DEFAULT_CONFIG = {
     "wake_phrase_time_limit": 4.5,
     "wake_timeout": 6.0,
     "wake_adjust_noise_sec": 0.3,
+    "mic_device_name": "",
+    "mic_device_index": None,
     "voice_id": "ja-JP-NanamiNeural",
     "voice_style": "Cheerful",
     "voice_rate": -2,
@@ -454,10 +456,40 @@ mizune_manager.workers = {
     "memory": MemoryAgent(CFG),
     "camera": CameraAgent(CFG)
 }
-try:
-    SAMPLE_RATE = int(sd.query_devices(sd.default.device[0], 'input')['default_samplerate'])
+def _resolve_mic_device_index() -> Optional[int]:
+    cfg_index = CFG.get("mic_device_index")
+    if cfg_index is not None:
+        try:
+            return int(cfg_index)
+        except (TypeError, ValueError):
+            return None
 
-except:
+    name = (CFG.get("mic_device_name") or "").strip().lower()
+    if not name:
+        return None
+
+    try:
+        devices = sd.query_devices()
+        for idx, dev in enumerate(devices):
+            if dev.get("max_input_channels", 0) < 1:
+                continue
+            dev_name = str(dev.get("name", "")).lower()
+            if name in dev_name:
+                return idx
+    except Exception:
+        return None
+    return None
+
+
+MIC_DEVICE_INDEX = _resolve_mic_device_index()
+
+try:
+    if MIC_DEVICE_INDEX is not None:
+        SAMPLE_RATE = int(sd.query_devices(MIC_DEVICE_INDEX, 'input')['default_samplerate'])
+    else:
+        SAMPLE_RATE = int(sd.query_devices(sd.default.device[0], 'input')['default_samplerate'])
+
+except Exception:
     SAMPLE_RATE = 44100  # Fallback to standard HD audio
 log_info(f"[SERVER] Audio capture sample rate set to: {SAMPLE_RATE} Hz")
 RECORD_SECONDS = 6
@@ -733,7 +765,7 @@ def listen_to_microphone() -> Optional[str]:
         broadcast_sync({"type": "status", "text": "Listening..."})
         is_active_listening = True
 
-        with sr.Microphone() as source:
+        with sr.Microphone(device_index=MIC_DEVICE_INDEX) if MIC_DEVICE_INDEX is not None else sr.Microphone() as source:
             # Disable dynamic thresholding which mutes quiet hardware
             recognizer.dynamic_energy_threshold = False
             recognizer.energy_threshold = 300 # Balanced
@@ -1907,7 +1939,7 @@ def listen_for_wake_word():
             time.sleep(0.5)
             continue
         try:
-            with sr.Microphone() as source:
+            with sr.Microphone(device_index=MIC_DEVICE_INDEX) if MIC_DEVICE_INDEX is not None else sr.Microphone() as source:
                 recognizer.dynamic_energy_threshold = wake_dynamic_energy
                 recognizer.energy_threshold = wake_energy_threshold
 
