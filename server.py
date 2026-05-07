@@ -60,7 +60,13 @@ DEFAULT_CONFIG = {
     "openrouter_model": "anthropic/claude-3-opus",
     "wake_words": ["mizune", "misune", "mizuna", "mizu", "missy", "darling", "baka"],
     "custom_wake_word": "",
-    "voice_id": "ja-JP-kimi",
+    "wake_language": "en-IN",
+    "wake_energy_threshold": 180,
+    "wake_dynamic_energy": True,
+    "wake_phrase_time_limit": 4.5,
+    "wake_timeout": 6.0,
+    "wake_adjust_noise_sec": 0.3,
+    "voice_id": "ja-JP-NanamiNeural",
     "voice_style": "Cheerful",
     "voice_rate": -2,
     "voice_pitch": 6,
@@ -87,6 +93,32 @@ DEFAULT_CONFIG = {
     "twitch_channel": "",
     "window_scale": 1.0,
     "always_on_top": True,
+    "dataset_path": os.path.join(os.path.dirname(os.path.abspath(__file__)), "dataset"),
+    "data_collection_enabled": True,
+    "data_collection_interval_sec": 5,
+    "data_collection_screen_scale": 1.0,
+    "data_collection_capture_screen": True,
+    "data_collection_capture_camera": True,
+    "data_collection_use_time_features": True,
+    "activity_labels": [
+        "coding",
+        "gaming",
+        "meetings",
+        "watching",
+        "serious_work",
+        "web_scraping",
+        "image_recognition"
+    ],
+    "emotion_labels": [
+        "happy",
+        "sad",
+        "angry",
+        "surprise",
+        "neutral",
+        "fear",
+        "disgust"
+    ],
+    "identity_labels": ["master", "other"],
 }
 
 def load_config() -> dict:
@@ -103,6 +135,8 @@ from agents.manager_agent import ManagerAgent
 from agents.system_agent import SystemAgent
 from agents.web_agent import WebAgent
 from agents.memory_agent import MemoryAgent
+from agents.camera_agent import CameraAgent
+from data_collection import DataCollector
 
 # Import Conversation Database
 from conversation_db import save_turn, load_recent_turns, get_turn_count
@@ -417,7 +451,8 @@ mizune_manager = ManagerAgent(CFG)
 mizune_manager.workers = {
     "system": SystemAgent(CFG),
     "web": WebAgent(CFG),
-    "memory": MemoryAgent(CFG)
+    "memory": MemoryAgent(CFG),
+    "camera": CameraAgent(CFG)
 }
 try:
     SAMPLE_RATE = int(sd.query_devices(sd.default.device[0], 'input')['default_samplerate'])
@@ -431,6 +466,7 @@ CHRONICLE = []
 recognizer = sr.Recognizer()
 is_active_listening = False
 main_loop: Optional[asyncio.AbstractEventLoop] = None
+data_collector: Optional[DataCollector] = None
 LAST_WAKE_TIME = 0.0  # Cooldown tracker for wake word triggers
 WAKE_COOLDOWN = 3.0   # Seconds to ignore re-triggers after a wake event
 
@@ -451,15 +487,105 @@ except Exception as e:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global main_loop
+    global data_collector
     main_loop = asyncio.get_running_loop()
     log_info("[SERVER] Backend initialized.")
     threading.Thread(target=hotkey_listener, daemon=True).start()
     threading.Thread(target=listen_for_wake_word, daemon=True).start()
+    if "camera" in mizune_manager.workers:
+        cam = mizune_manager.workers["camera"]
+        
+        def handle_greet(emotion):
+            msg = "Hai Master! Mizune is ready to serve you~!"
+            ui_emotion = "happy"
+            if emotion in ["sad", "fear"]:
+                msg = "Master! Are you okay? You look a little down. I'm here for you!"
+                ui_emotion = "sad"
+            elif emotion in ["angry"]:
+                msg = "Master, you look tense! Take a deep breath, I'm here!"
+                ui_emotion = "sad"
+            elif emotion in ["happy", "surprise"]:
+                msg = "Hai Master! You look so happy today! I'm glad to see you!"
+                ui_emotion = "happy"
+            elif emotion in ["disgust"]:
+                msg = "Master! What happened? You look troubled!"
+                ui_emotion = "surprised"
+            broadcast_sync({"type": "emotion", "emotion": ui_emotion})
+            broadcast_sync({"type": "speak", "text": msg})
+            
+        def handle_unauthorized():
+            msg = "Who are you?! You are not my Master! Get away from this computer!"
+            broadcast_sync({"type": "emotion", "emotion": "sad"})
+            broadcast_sync({"type": "speak", "text": msg})
+        
+        def handle_sustained_emotion(emotion):
+            """Fires when master shows the same emotion for 2+ minutes straight."""
+            msg = ""
+            ui_emotion = "neutral"
+            if emotion == "sad":
+                msg = "Master, you've been looking sad for a while now. Please talk to me. I'm worried about you!"
+                ui_emotion = "sad"
+            elif emotion == "angry":
+                msg = "Master! You've been frustrated for too long. Take a break, go drink some water. I'll be right here!"
+                ui_emotion = "sad"
+            elif emotion == "happy":
+                msg = "Master, you've been smiling for so long! Whatever you're doing, keep going! I love seeing you happy!"
+                ui_emotion = "happy"
+            elif emotion == "fear":
+                msg = "Master, are you stressed? You've been looking worried. Let me play some music or something to help you relax!"
+                ui_emotion = "sad"
+            elif emotion == "surprise":
+                msg = "Master, what has you so surprised? Tell me about it!"
+                ui_emotion = "surprised"
+            elif emotion == "disgust":
+                msg = "Master, you've been making that face for a while. Everything okay?"
+                ui_emotion = "surprised"
+            else:
+                return  # Don't react to neutral
+            
+            if msg:
+                broadcast_sync({"type": "emotion", "emotion": ui_emotion})
+                broadcast_sync({"type": "speak", "text": msg})
+            
+        def handle_emotion_update(emotion):
+            """Fires every second with the master's current detected emotion."""
+            broadcast_sync({"type": "emotion_track", "emotion": emotion})
+        
+        def handle_master_missing():
+            """Fires when master's face disappears from camera for ~10 seconds."""
+            broadcast_sync({"type": "emotion", "emotion": "sad"})
+            broadcast_sync({"type": "speak", "text": "Master? Where are you? I can't see you! Come back to me!"})
+            
+        cam.on_master_greet = handle_greet
+        cam.on_unauthorized_user = handle_unauthorized
+        cam.on_sustained_emotion = handle_sustained_emotion
+        cam.on_emotion_update = handle_emotion_update
+        cam.on_master_missing = handle_master_missing
+        cam.start()
+
+    if CFG.get("data_collection_enabled"):
+        dataset_path = CFG.get("dataset_path") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "dataset")
+        data_collector = DataCollector(
+            dataset_path=dataset_path,
+            camera_agent=mizune_manager.workers.get("camera"),
+            get_mode=lambda: getattr(mizune_manager, "current_mode", ""),
+            get_master_emotion=lambda: getattr(mizune_manager.workers.get("camera"), "master_emotion", ""),
+            interval_sec=int(CFG.get("data_collection_interval_sec", 5)),
+            screen_scale=float(CFG.get("data_collection_screen_scale", 1.0)),
+            capture_screen=bool(CFG.get("data_collection_capture_screen", True)),
+            capture_camera=bool(CFG.get("data_collection_capture_camera", True)),
+            use_time_features=bool(CFG.get("data_collection_use_time_features", True)),
+        )
+        data_collector.start()
+        log_info(f"[DATA] Collection started at: {dataset_path}")
     if CFG.get("streamer_mode") and CFG.get("twitch_channel"):
         threading.Thread(target=twitch_listener, daemon=True).start()
     log_info(f"[SERVER] {CFG.get('character_name','Mizune')} is awake and listening!")
     log_info(f"[SERVER] AI Model: {CFG.get('ai_model','gemini')} | Say wake word or press F2.")
     yield
+
+    if data_collector:
+        data_collector.stop()
 
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(
@@ -703,6 +829,9 @@ _coding_monitor_running = threading.Event()
 _coding_monitor_paused = threading.Event()
 _last_coding_feedback = ""
 
+_vision_task_lock = threading.Lock()
+_vision_task_owner = None
+
 CODING_COACH_PROMPT = """You are Mizune, an adorable anime AI coding coach watching Master's screen.
 Analyze the screenshot and respond with ONE of these:
 
@@ -725,6 +854,23 @@ Use cute expressions like "Master~", "I think you should try...", "Hint: "
 Keep it short since this will be spoken aloud."""
 
 
+def _acquire_vision_lock(owner: str) -> bool:
+    """Prevent simultaneous vision responses from different sources."""
+    global _vision_task_owner
+    if _vision_task_lock.acquire(blocking=False):
+        _vision_task_owner = owner
+        return True
+    return False
+
+
+def _release_vision_lock(owner: str) -> None:
+    """Release vision lock if owned by this task."""
+    global _vision_task_owner
+    if _vision_task_owner == owner:
+        _vision_task_owner = None
+        _vision_task_lock.release()
+
+
 def _capture_screen_for_gemini():
     """Take a screenshot and return as bytes for Gemini Vision."""
     try:
@@ -741,79 +887,87 @@ def _capture_screen_for_gemini():
 def _analyze_screen_now(mode="review"):
     """Take a screenshot and analyze it with Gemini Vision immediately."""
     global _last_coding_feedback
-    
-    image_bytes = _capture_screen_for_gemini()
-    if not image_bytes:
+
+    owner = f"coding:{mode}"
+    if not _acquire_vision_lock(owner):
+        log_info("[CODING] Vision task skipped (another vision task active)")
         return
-    
-    api_key = CFG.get("gemini_api_key", "")
-    prompt = CODING_HINT_PROMPT if mode == "hint" else CODING_COACH_PROMPT
-    feedback = None
-    
-    # ── Try 1: Groq Vision (free, fast, reliable) ──
-    groq_key = CFG.get("groq_api_key", "")
-    if groq_key and not feedback:
-        try:
-            import base64
-            from openai import OpenAI
-            
-            b64_img = base64.b64encode(image_bytes).decode("utf-8")
-            groq_client = OpenAI(api_key=groq_key, base_url="https://api.groq.com/openai/v1")
-            
-            resp = groq_client.chat.completions.create(
-                model="meta-llama/llama-4-scout-17b-16e-instruct",
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64_img}"}}
-                    ]
-                }],
-                max_tokens=200
-            )
-            feedback = (resp.choices[0].message.content or "").strip()
-            log_info(f"[CODING] Groq Vision success!")
-        except Exception as e:
-            log_info(f"[CODING] Groq Vision failed: {e}")
-    
-    # ── Try 2: Gemini Vision (fallback) ──
-    api_key = CFG.get("gemini_api_key", "")
-    if api_key and not feedback:
-        try:
-            from google import genai
-            from google.genai import types
-            
-            client = genai.Client(api_key=api_key)
-            for model in ["gemini-2.0-flash", "gemini-2.5-flash"]:
-                try:
-                    response = client.models.generate_content(
-                        model=model,
-                        contents=[
-                            types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
-                            types.Part.from_text(text=prompt)
+
+    try:
+        image_bytes = _capture_screen_for_gemini()
+        if not image_bytes:
+            return
+
+        api_key = CFG.get("gemini_api_key", "")
+        prompt = CODING_HINT_PROMPT if mode == "hint" else CODING_COACH_PROMPT
+        feedback = None
+
+        # ── Try 1: Groq Vision (free, fast, reliable) ──
+        groq_key = CFG.get("groq_api_key", "")
+        if groq_key and not feedback:
+            try:
+                import base64
+                from openai import OpenAI
+
+                b64_img = base64.b64encode(image_bytes).decode("utf-8")
+                groq_client = OpenAI(api_key=groq_key, base_url="https://api.groq.com/openai/v1")
+
+                resp = groq_client.chat.completions.create(
+                    model="meta-llama/llama-4-scout-17b-16e-instruct",
+                    messages=[{
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64_img}"}}
                         ]
-                    )
-                    feedback = (response.text or "").strip()
-                    log_info(f"[CODING] {model} success!")
-                    break
-                except Exception as model_err:
-                    err_str = str(model_err).lower()
-                    if "503" in err_str or "429" in err_str or "quota" in err_str:
-                        continue
-                    raise
-        except Exception as e:
-            log_info(f"[CODING] Gemini Vision failed: {e}")
-    
-    if not feedback or "[SKIP]" in feedback:
-        return
-    
-    # Avoid repeating the same feedback
-    if feedback == _last_coding_feedback:
-        return
-    
-    _last_coding_feedback = feedback
-    log_info(f"[CODING] Feedback: {feedback}")
-    broadcast_sync({"type": "speak", "text": feedback})
+                    }],
+                    max_tokens=200
+                )
+                feedback = (resp.choices[0].message.content or "").strip()
+                log_info(f"[CODING] Groq Vision success!")
+            except Exception as e:
+                log_info(f"[CODING] Groq Vision failed: {e}")
+
+        # ── Try 2: Gemini Vision (fallback) ──
+        api_key = CFG.get("gemini_api_key", "")
+        if api_key and not feedback:
+            try:
+                from google import genai
+                from google.genai import types
+
+                client = genai.Client(api_key=api_key)
+                for model in ["gemini-2.0-flash", "gemini-2.5-flash"]:
+                    try:
+                        response = client.models.generate_content(
+                            model=model,
+                            contents=[
+                                types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
+                                types.Part.from_text(text=prompt)
+                            ]
+                        )
+                        feedback = (response.text or "").strip()
+                        log_info(f"[CODING] {model} success!")
+                        break
+                    except Exception as model_err:
+                        err_str = str(model_err).lower()
+                        if "503" in err_str or "429" in err_str or "quota" in err_str:
+                            continue
+                        raise
+            except Exception as e:
+                log_info(f"[CODING] Gemini Vision failed: {e}")
+
+        if not feedback or "[SKIP]" in feedback:
+            return
+
+        # Avoid repeating the same feedback
+        if feedback == _last_coding_feedback:
+            return
+
+        _last_coding_feedback = feedback
+        log_info(f"[CODING] Feedback: {feedback}")
+        broadcast_sync({"type": "speak", "text": feedback})
+    finally:
+        _release_vision_lock(owner)
 
 
 def _coding_monitor_loop():
@@ -863,9 +1017,13 @@ Rules:
 - Be specific about the app or content you see.
 """
 
+_vision_scan_count = 0
+
 def _vision_mode_loop():
     """Background loop: captures screen every N seconds → Vision AI → proactive comment."""
-    interval = int(CFG.get("vision_mode_interval", 60))
+    global _vision_scan_count
+    _vision_scan_count = 0
+    interval = int(CFG.get("vision_mode_interval", 15))
     log_info(f"[VISION] Interactive Vision Mode started! Checking every {interval}s")
 
     while _vision_mode_running.is_set():
@@ -877,6 +1035,13 @@ def _vision_mode_loop():
 
         if not _vision_mode_running.is_set():
             break
+
+        if not _acquire_vision_lock("vision_mode"):
+            log_info("[VISION] Skipped (another vision task active)")
+            continue
+
+        _vision_scan_count += 1
+        broadcast_sync({"type": "vision_update", "count": _vision_scan_count})
 
         try:
             # Take screenshot
@@ -977,6 +1142,8 @@ def _vision_mode_loop():
         except Exception as e:
             log_info(f"[VISION] Loop error (non-fatal, continuing): {e}")
             time.sleep(2)  # Cool down on error
+        finally:
+            _release_vision_lock("vision_mode")
 
     log_info("[VISION] Interactive Vision Mode stopped")
 
@@ -987,12 +1154,100 @@ def _vision_mode_loop():
 def process_command(text: str) -> str:
     global CHRONICLE
     log_info(f"[COMMAND] Processing: '{text}'")
+    
+    # ── Determine who is talking — LIVE face check ──
+    camera_agent = mizune_manager.workers.get("camera")
+    is_master = True  # Default if no camera
+    if camera_agent:
+        # Even if is_master_present was True from background loop,
+        # do a LIVE check right now to catch stranger swaps
+        is_master = camera_agent.verify_master_now()
+        if not is_master:
+            camera_agent.is_master_present = False  # Sync the state
+    
+    # ── Security: Block ALL strangers ──
+    if not is_master:
+        log_info("[SECURITY] Stranger detected at command time. Rejecting.")
+        broadcast_sync({"type": "emotion", "emotion": "sad"})
+        return "I'm sorry, I only respond to my Master."
+
     lower_text = text.lower().strip()
 
     # Emotion detection — send to frontend for facial expression
     emotion = detect_emotion(text)
     if emotion != "neutral":
         broadcast_sync({"type": "emotion", "emotion": emotion})
+
+    # ── Camera Vision: "What do you see?" / "Look at me" / "What's on my camera" ──
+    if re.search(r"\b(what do you see|what can you see|look at me|look at my|what's on my camera|what is on my camera|whats going on my camera|what's going on|describe what you see|what am i doing|how do i look|what's around me|what's in front of you|who is here|who is in front|describe my room|look around)\b", lower_text):
+        cam = mizune_manager.workers.get("camera")
+        if cam:
+            if not _acquire_vision_lock("camera_vision"):
+                return "I'm already processing another vision task, Master~ Try again in a moment!"
+
+            try:
+                frame_bytes = cam.get_current_frame()
+                if frame_bytes:
+                    log_info("[CAMERA VISION] Processing camera view for Master...")
+                    broadcast_sync({"type": "status", "text": "Looking through camera..."})
+                    
+                    camera_prompt = f"""You are Mizune, Master's adorable anime AI companion. 
+Master just asked: "{text}"
+You are looking at Master through your webcam camera RIGHT NOW.
+
+Describe what you see in detail:
+- Describe Master (what they look like, what they're wearing, their expression, posture)
+- Describe the environment/room (background, objects, lighting, colors)
+- If there are other people, mention them
+- Comment on anything interesting or notable
+
+Be observant and detailed but keep it natural and in-character.
+Use cute expressions. Keep it to 2-3 sentences max since this will be spoken aloud.
+Start with an emotion tag: [EMOTION: happy] or [EMOTION: surprised] etc."""
+
+                    # Try Gemini Vision
+                    api_key = CFG.get("gemini_api_key", "")
+                    if api_key:
+                        try:
+                            from google import genai
+                            from google.genai import types
+                            
+                            client = genai.Client(api_key=api_key)
+                            for model in ["gemini-2.0-flash", "gemini-2.5-flash"]:
+                                try:
+                                    response = client.models.generate_content(
+                                        model=model,
+                                        contents=[
+                                            types.Part.from_bytes(data=frame_bytes, mime_type="image/jpeg"),
+                                            types.Part.from_text(text=camera_prompt)
+                                        ]
+                                    )
+                                    result = (response.text or "").strip()
+                                    if result:
+                                        log_info(f"[CAMERA VISION] {model} success!")
+                                        # Extract emotion and broadcast
+                                        emotion = detect_emotion(result)
+                                        if emotion != "neutral":
+                                            broadcast_sync({"type": "emotion", "emotion": emotion})
+                                        CHRONICLE.append({"role": "user", "parts": [{"text": text}]})
+                                        CHRONICLE.append({"role": "model", "parts": [{"text": result}]})
+                                        return result
+                                except Exception as model_err:
+                                    err_str = str(model_err).lower()
+                                    if "503" in err_str or "429" in err_str:
+                                        continue
+                                    log_info(f"[CAMERA VISION] {model} failed: {model_err}")
+                                    continue
+                        except Exception as e:
+                            log_info(f"[CAMERA VISION] Gemini Vision failed: {e}")
+                    
+                    return "[EMOTION: sad] I tried to look through my camera but my vision processing failed! Try again, Master!"
+                else:
+                    return "[EMOTION: sad] I can't see anything! My camera might not be working right now."
+            finally:
+                _release_vision_lock("camera_vision")
+        else:
+            return "[EMOTION: sad] I don't have a camera connected right now, Master!"
 
     # ── Vision Mode toggle commands ──
     if re.search(r"\b(watch me|interactive mode|companion mode|vision mode|start watching)\b", lower_text):
@@ -1329,23 +1584,32 @@ def process_command(text: str) -> str:
         save_turn("model", original_res, emotion, getattr(mizune_manager, 'current_mode', 'conversation'))
 
         # ── 6. Parse Note/App Tags from AI Response ──
-        # Process [ACTION: OPEN app]
-        for open_match in re.finditer(r"\[ACTION:\s*OPEN\s+([^\]]+)\]", original_res, re.IGNORECASE):
-            app_req = open_match.group(1).strip().lower()
-            launch_app(app_req)
-        # Process [ACTION: CLOSE app]
-        for close_match in re.finditer(r"\[ACTION:\s*CLOSE\s+([^\]]+)\]", original_res, re.IGNORECASE):
-            app_req = close_match.group(1).strip().lower()
-            close_app(app_req)
-        # Process [ACTION: SLEEP]
-        if "[ACTION: SLEEP]" in original_res.upper():
-            subprocess.Popen("rundll32.exe powrprof.dll,SetSuspendState 0,1,0", shell=True)
-            
-        note_match = re.search(r"\[ACTION:\s*NOTE\s+([^\]]+)\]", original_res, re.IGNORECASE)
-        if note_match:
-            note_content = note_match.group(1).strip()
-            if take_note(note_content):
-                clean_res = re.sub(r"\[ACTION:\s*NOTE.*?\]", "", clean_res).strip()
+        # SECURITY: Only execute system actions if Master is verified
+        _cam_check = mizune_manager.workers.get("camera")
+        _is_master_now = True if not _cam_check else _cam_check.is_master_present
+        
+        if not _is_master_now:
+            # Strip all action tags from response — guest cannot trigger system commands
+            clean_res = re.sub(r"\[ACTION:[^\]]*\]", "", clean_res).strip()
+            log_info("[SECURITY] Stripped ACTION tags from guest response.")
+        else:
+            # Process [ACTION: OPEN app]
+            for open_match in re.finditer(r"\[ACTION:\s*OPEN\s+([^\]]+)\]", original_res, re.IGNORECASE):
+                app_req = open_match.group(1).strip().lower()
+                launch_app(app_req)
+            # Process [ACTION: CLOSE app]
+            for close_match in re.finditer(r"\[ACTION:\s*CLOSE\s+([^\]]+)\]", original_res, re.IGNORECASE):
+                app_req = close_match.group(1).strip().lower()
+                close_app(app_req)
+            # Process [ACTION: SLEEP]
+            if "[ACTION: SLEEP]" in original_res.upper():
+                subprocess.Popen("rundll32.exe powrprof.dll,SetSuspendState 0,1,0", shell=True)
+                
+            note_match = re.search(r"\[ACTION:\s*NOTE\s+([^\]]+)\]", original_res, re.IGNORECASE)
+            if note_match:
+                note_content = note_match.group(1).strip()
+                if take_note(note_content):
+                    clean_res = re.sub(r"\[ACTION:\s*NOTE.*?\]", "", clean_res).strip()
                     
         # Clean up all leftover ACTION and EMOTION tags for TTS
         clean_res = re.sub(r"\[ACTION:.*?\]", "", clean_res, flags=re.IGNORECASE).strip()
@@ -1591,7 +1855,7 @@ def listen_for_wake_word():
         "mizune", "misune", "mizuna", "mizu", "missy", "mizun", "mezune",
         "mizuney", "mizunee", "mizzy", "mizuki", "mitsune", "mizone", "mizoon",
         "my zone", "museum",
-        "darling", "baka", "baat", "bata", "baca", "bark", "maca"
+        "darling", "baka", "baat", "bata", "baca", "bark", "maca", "dhaka"
     ]
     all_wake_words = list(set(wake_words + PHONETIC_VARIANTS))
     log_info(f"[WAKE] Wake words ({len(all_wake_words)}): {wake_words[:8]}... + phonetic variants")
@@ -1630,6 +1894,13 @@ def listen_for_wake_word():
 
     _wake_fail_count = 0
 
+    wake_language = CFG.get("wake_language", "en-IN")
+    wake_energy_threshold = int(CFG.get("wake_energy_threshold", 180))
+    wake_dynamic_energy = bool(CFG.get("wake_dynamic_energy", True))
+    wake_phrase_time_limit = float(CFG.get("wake_phrase_time_limit", 4.5))
+    wake_timeout = float(CFG.get("wake_timeout", 6.0))
+    wake_adjust_noise_sec = float(CFG.get("wake_adjust_noise_sec", 0.3))
+
     while True:
         # CRITICAL: Only listen for wake word if no one is currently recording a command
         if is_active_listening:
@@ -1637,18 +1908,23 @@ def listen_for_wake_word():
             continue
         try:
             with sr.Microphone() as source:
-                # Disable dynamic thresholding which mutes quiet hardware
-                recognizer.dynamic_energy_threshold = False
-                recognizer.energy_threshold = 200  # Lowered so it catches you easier
+                recognizer.dynamic_energy_threshold = wake_dynamic_energy
+                recognizer.energy_threshold = wake_energy_threshold
 
-                # Listen with generous timeout — 5s to start speaking, 4s phrase limit
-                audio = recognizer.listen(source, timeout=5.0, phrase_time_limit=4)
+                if wake_adjust_noise_sec > 0:
+                    recognizer.adjust_for_ambient_noise(source, duration=wake_adjust_noise_sec)
+
+                # Listen with generous timeout and phrase limit
+                audio = recognizer.listen(
+                    source,
+                    timeout=wake_timeout,
+                    phrase_time_limit=wake_phrase_time_limit,
+                )
 
             _wake_fail_count = 0  # Reset on successful audio capture
 
             try:
-                # Use en-IN for Indian accent accuracy
-                raw_text = recognizer.recognize_google(audio, language="en-IN").lower()
+                raw_text = recognizer.recognize_google(audio, language=wake_language).lower()
 
                 # Filter out ultra-short garbage (1-2 char results are noise)
                 if len(raw_text.strip()) < 3:

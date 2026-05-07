@@ -19,3 +19,5 @@ pyaudio
 requests
 Pillow
 pyscreeze
+tensorflow
+pygetwindow

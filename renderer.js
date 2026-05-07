@@ -34,10 +34,12 @@ let reconnectTimer = null;
 let isSpeaking = false;
 let isSpeakingTimeout = null; // Safety: auto-reset isSpeaking if TTS hangs
 let isWaving = false;
+let isListening = false;
 let waveStartTime = 0;
 
 // Emotion system with smooth blending
 let currentEmotion = 'neutral';
+let currentMode = 'conversation';
 let emotionTimer = 0;
 let emotionBlends = { happy: 0, sad: 0, angry: 0, surprised: 0, relaxed: 0 };
 let targetBlends  = { happy: 0.8, sad: 0, angry: 0, surprised: 0, relaxed: 0.2 };
@@ -496,6 +498,17 @@ function animate() {
         // ── Lip sync ──
         updateLipSync(deltaTime, time);
 
+        // ── Vision Mode Framing ──
+        // Ensure she doesn't tilt or move out of the tiny 150x150 frame during thinking/vision
+        if (currentMode === 'vision' || currentMode === 'coding') {
+            const head = humanoid.getRawBoneNode('head');
+            if (head) {
+                // Clamp extreme tilts that might push her out of frame
+                head.rotation.x = clamp(head.rotation.x, -0.2, 0.2);
+                head.rotation.z = clamp(head.rotation.z, -0.2, 0.2);
+            }
+        }
+
         // ── Breathing (chest + shoulders rise) ──
         const breathe = 0.018 * Math.sin(time * 1.4 + breathPhaseOffset)
                        + 0.006 * Math.sin(time * 2.8 + breathPhaseOffset); // slight double-breath
@@ -678,16 +691,9 @@ function connectWebSocket() {
         if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
 
         setTimeout(() => {
-            const greeting = `Hai~ Master! ${charName} is ready to serve you~!`;
-            // Happy face on startup
-            currentEmotion = 'happy';
-            emotionTimer = 4.0;
-            setTargetEmotion('happy');
-            playTTS(greeting, () => {
-                showResponse(greeting);
-                logTerminal(greeting, 'risse');
-            });
-        }, 2500);
+            // Greeting is now handled dynamically by the CameraAgent when it sees the user
+            if (statusEl) statusEl.textContent = `Say "${charName}" or press F2.`;
+        }, 1000);
     };
 
     ws.onmessage = (event) => {
@@ -695,10 +701,14 @@ function connectWebSocket() {
 
         if (msg.type === 'speak') {
             hideTypingIndicator();
+            const cleanText = (msg.text || '')
+                .replace(/\[EMOTION:.*?\]/gi, '')
+                .replace(/\[ACTION:.*?\]/gi, '')
+                .trim();
             // Defer text + lips until audio actually starts
-            playTTS(msg.text, () => {
-                showResponse(msg.text);
-                logTerminal(msg.text, 'risse');
+            playTTS(cleanText, () => {
+                showResponse(cleanText);
+                logTerminal(cleanText, 'risse');
             });
             // Reset status light back to idle when response arrives
             const indicator = document.getElementById('status-indicator');
@@ -729,6 +739,7 @@ function connectWebSocket() {
         }
 
         if (msg.type === 'mode') {
+            currentMode = msg.mode;
             const modeColors = {
                 conversation: '#a777e3',
                 writing: '#4ecdc4',
@@ -738,6 +749,7 @@ function connectWebSocket() {
                 system: '#4d96ff',
                 coding: '#00d4ff',
                 vision: '#ff6ec7',
+                calibration: '#a777e3',
             };
             const color = modeColors[msg.mode] || '#a777e3';
             const indicator = document.getElementById('status-indicator');
@@ -746,6 +758,40 @@ function connectWebSocket() {
                 indicator.style.boxShadow = `0 0 10px ${color}`;
             }
             logTerminal(`Mode: ${msg.mode.toUpperCase()}`, 'system');
+
+            // Handle Vision Indicator
+            const vIndicator = document.getElementById('vision-indicator');
+            if (vIndicator) {
+                if (msg.mode === 'vision' || msg.mode === 'coding') {
+                    vIndicator.classList.remove('hidden');
+                } else {
+                    vIndicator.classList.add('hidden');
+                }
+            }
+        }
+
+        if (msg.type === 'vision_update') {
+            const vText = document.getElementById('vision-text');
+            if (vText) vText.innerText = `SCANNING: ${msg.count || 0}`;
+        }
+
+        if (msg.type === 'emotion_track') {
+            const emojiMap = {
+                happy: '😊', sad: '😢', angry: '😠', fear: '😨',
+                surprise: '😲', disgust: '🤢', neutral: '😐'
+            };
+            const colorMap = {
+                happy: 'rgba(46, 204, 113, 0.4)', sad: 'rgba(52, 152, 219, 0.4)',
+                angry: 'rgba(231, 76, 60, 0.4)', fear: 'rgba(155, 89, 182, 0.4)',
+                surprise: 'rgba(241, 196, 15, 0.4)', disgust: 'rgba(39, 174, 96, 0.4)',
+                neutral: 'rgba(167, 119, 227, 0.35)'
+            };
+            const hudEmoji = document.getElementById('emotion-hud-emoji');
+            const hudLabel = document.getElementById('emotion-hud-label');
+            const hud = document.getElementById('emotion-hud');
+            if (hudEmoji) hudEmoji.textContent = emojiMap[msg.emotion] || '😐';
+            if (hudLabel) hudLabel.textContent = msg.emotion || 'neutral';
+            if (hud) hud.style.borderColor = colorMap[msg.emotion] || colorMap.neutral;
         }
 
         if (msg.type === 'status') {
@@ -762,6 +808,10 @@ function connectWebSocket() {
                     indicator.style.backgroundColor = '#ffcc00';
                     indicator.style.boxShadow = '0 0 8px #ffcc00';
                     showTypingIndicator();
+                } else if (msg.text === 'CALIBRATING (Talk to me...)') {
+                    indicator.style.backgroundColor = '#a777e3';
+                    indicator.style.boxShadow = '0 0 20px #a777e3';
+                    showTypingIndicator();
                 } else if (msg.text.toLowerCase().includes('installing') || msg.text.toLowerCase().includes('searching') || msg.text.toLowerCase().includes('processing')) {
                     // Active Work Status
                     indicator.style.backgroundColor = '#00ccff';
@@ -773,6 +823,29 @@ function connectWebSocket() {
                     indicator.style.boxShadow = 'none';
                     hideTypingIndicator();
                 }
+            }
+        }
+
+        if (msg.type === 'listening_start') {
+            isListening = true;
+            currentEmotion = 'surprised';
+            emotionTimer = 10.0; // Stay in this state until listening stops
+            setTargetEmotion('surprised');
+            if (statusEl) {
+                statusEl.classList.add('listening');
+                statusEl.textContent = "Listening... (I can hear you!)";
+            }
+        }
+
+        if (msg.type === 'listening_stop') {
+            isListening = false;
+            if (currentEmotion === 'surprised') {
+                currentEmotion = 'neutral';
+                setTargetEmotion('neutral');
+            }
+            if (statusEl) {
+                statusEl.classList.remove('listening');
+                statusEl.textContent = `Say "${cfg.character_name || 'Mizune'}" or press F2.`;
             }
         }
     };
@@ -822,20 +895,24 @@ function hideTypingIndicator() {
 }
 
 function showResponse(text) {
+    const cleanText = text
+        .replace(/\[EMOTION:.*?\]/gi, '')
+        .replace(/\[ACTION:.*?\]/gi, '')
+        .trim();
     responseBubble.classList.remove('hidden');
     responseBubble.textContent = '';
     // Typewriter effect
     clearTimeout(responseBubble._hideTimer);
     clearInterval(responseBubble._typeTimer);
     let i = 0;
-    const speed = Math.max(18, Math.min(40, Math.round(20000 / text.length))); // adaptive speed
+    const speed = Math.max(18, Math.min(40, Math.round(20000 / Math.max(cleanText.length, 1)))); // adaptive speed
     responseBubble._typeTimer = setInterval(() => {
-        if (i < text.length) {
-            responseBubble.textContent += text[i++];
+        if (i < cleanText.length) {
+            responseBubble.textContent += cleanText[i++];
         } else {
             clearInterval(responseBubble._typeTimer);
             // Auto-hide: ~1s per 15 chars, clamped 5s–20s
-            const duration = Math.max(5000, Math.min(20000, text.length * 65));
+            const duration = Math.max(5000, Math.min(20000, cleanText.length * 65));
             responseBubble._hideTimer = setTimeout(() => responseBubble.classList.add('hidden'), duration);
         }
     }, speed);
@@ -906,30 +983,7 @@ async function playTTS(text, onAudioStart = null) {
         source.start(0);
     }
 
-    // ── 1. Edge-TTS via server (FREE — Ai Hoshino voice!) ─────────────────────
-    // This is the PRIORITY voice — ja-JP-NanamiNeural, sweet Japanese idol sound
-    try {
-        log('[TTS] Trying Edge-TTS (Ai Hoshino voice)...');
-        const edgeResp = await fetch('http://localhost:8000/tts', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text }),
-            signal: AbortSignal.timeout(12000)
-        });
-        if (edgeResp.ok) {
-            const arrayBuffer = await edgeResp.arrayBuffer();
-            if (arrayBuffer.byteLength > 100) {
-                await playAudioBuffer(arrayBuffer);
-                log('[TTS] Edge-TTS playing!');
-                return;
-            }
-        }
-        log('[TTS] Edge-TTS returned empty/error, trying fallbacks...');
-    } catch (edgeErr) {
-        log('[TTS] Edge-TTS failed: ' + edgeErr.message);
-    }
-
-    // ── 2. ElevenLabs (paid, high quality) ────────────────────────────────────
+    // ── 1. ElevenLabs (paid, high quality) ────────────────────────────────────
     try {
         const elevenKey   = cfg.elevenlabs_api_key || '';
         const elevenVoice = cfg.elevenlabs_voice_id || 'EXAVITQu4vr4xnSDxMaL';
@@ -1024,7 +1078,28 @@ async function playTTS(text, onAudioStart = null) {
             }
         }
     } catch (globalErr) {
-        log('[TTS] Unexpected error in playTTS: ' + globalErr.stack);
+        log('[TTS] Unexpected error in Murf/ElevenLabs: ' + globalErr.stack);
+    }
+
+    // ── 3. Edge-TTS via server (FREE — Microsoft Neural) ──────────────────────
+    try {
+        log('[TTS] Trying Edge-TTS fallback...');
+        const edgeResp = await fetch('http://localhost:8000/tts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text }),
+            signal: AbortSignal.timeout(12000)
+        });
+        if (edgeResp.ok) {
+            const arrayBuffer = await edgeResp.arrayBuffer();
+            if (arrayBuffer.byteLength > 100) {
+                await playAudioBuffer(arrayBuffer);
+                log('[TTS] Edge-TTS playing!');
+                return;
+            }
+        }
+    } catch (edgeErr) {
+        log('[TTS] Edge-TTS failed: ' + edgeErr.message);
     }
 
     // ── 4. Browser speech synthesis (absolute last resort) ────────────────────
