@@ -35,9 +35,9 @@ When she's not automating your job, she watches you work.
 2. Analyzes code using Groq Vision.
 3. Speaks dynamic feedback (catches bugs, validates logic) and forcefully blocks distracting apps to keep you focused.
 
-## The 7 Operational Modes
+## The 7 Autonomous Execution Modes
 
-Mizune adapts to workflow requirements dynamically using 7 distinct execution modes:
+Mizune does not use manual trigger words. The Zero-Latency Intent Brain continuously analyzes user input and silently, autonomously shifts between 7 distinct execution states in real-time based on workflow requirements:
 - **Conversation:** Default interaction state.
 - **Writing:** Continuous speech-to-text dictation.
 - **Focus:** Applies Pomodoro limits, blocks distracting URLs, provides motivational oversight.
