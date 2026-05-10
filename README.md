@@ -12,11 +12,11 @@ Forget typing "mode switch" or using wake words for specific tasks. Mizune uses 
 - Recognizes Hinglish, typos, slang, and deeply buried intents.
 - Instantly routes requests silently to the correct backend agent without breaking conversation flow.
 
-### Uncensored Execution (God Mode)
-I ripped out the training wheels. This system runs completely uncensored.
-- **Extreme Complexity Guard:** Automatically detects massive, multi-app orchestration prompts and bypasses standard system limits.
-- **Filter Bypass:** API safety filters (Gemini/Groq) are explicitly overridden. It refuses nothing.
-- **Terminal & Disk Access:** The execution engine doesn't slowly type code like a human macro. It writes files directly to your hard drive and executes PowerShell commands silently in the background to build entire projects from scratch.
+### Privileged Execution Engine
+The system is designed for unconstrained automation. Standard AI limitations and content filters have been bypassed to enable true root-level execution.
+- **High-Complexity Orchestration:** Automatically detects massive, multi-app prompts and scales execution limits dynamically.
+- **Unrestricted Processing:** Default API safety filters are explicitly disabled to ensure uninterrupted processing of raw data and scripts.
+- **Raw System Access:** The execution engine writes code directly to the local file system and executes background PowerShell scripts to build entire projects from scratch, rather than simulating human input.
 
 ## The Multi-Agent Hivemind
 
