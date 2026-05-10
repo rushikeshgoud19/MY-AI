@@ -108,6 +108,10 @@ window.toggleTerminal = toggleTerminal;
 window.openSettings = openSettings;
 window.sendTextMessage = sendTextMessage;
 
+function setIgnoreMouse(ignore) {
+    ipcRenderer.send('set-ignore-mouse', ignore);
+}
+
 function logTerminal(text, type = 'system') {
     if (!terminalContent) return;
     const line = document.createElement('div');
@@ -150,6 +154,53 @@ if (chatInput) {
         if (e.key === 'Enter') { e.preventDefault(); sendTextMessage(); }
     });
 }
+
+// Click-through by default; Alt + click to interact
+setIgnoreMouse(true);
+
+function enableInteraction() {
+    setIgnoreMouse(false);
+    ipcRenderer.send('focus-window');
+}
+
+function disableInteractionIfIdle() {
+    if (document.activeElement !== chatInput) {
+        setIgnoreMouse(true);
+    }
+}
+
+window.addEventListener('mousedown', (e) => {
+    if (e.altKey) {
+        enableInteraction();
+    }
+});
+
+window.addEventListener('mouseup', (e) => {
+    if (!e.altKey) {
+        disableInteractionIfIdle();
+    }
+});
+
+window.addEventListener('blur', () => {
+    setIgnoreMouse(true);
+});
+
+if (chatInput) {
+    chatInput.addEventListener('focus', () => setIgnoreMouse(false));
+    chatInput.addEventListener('blur', () => setIgnoreMouse(true));
+}
+
+// ─── Alt+M Global Shortcut Handler ─────────────────────────────────────────────
+// When user presses Alt+M anywhere on the system, main process sends this event.
+// We enable interaction and focus the chat input so they can type immediately.
+ipcRenderer.on('focus-chat-input', () => {
+    log('[UI] Alt+M pressed — focusing chat input');
+    enableInteraction();
+    if (chatInput) {
+        chatInput.focus();
+        chatInput.scrollIntoView({ behavior: 'smooth' });
+    }
+});
 
 // ─── Terminal Toggle ──────────────────────────────────────────────────────────
 function toggleTerminal() {
@@ -278,10 +329,8 @@ function updateBlush(deltaTime) {
     }
     if (currentVrm && currentVrm.expressionManager) {
         const em = currentVrm.expressionManager;
-        // Try blush blendshape first, otherwise fallback to subtle red tint (simulation)
-        if (em.prototype && em.prototype.setValue) {
-            em.setValue('blush', blushIntensity);
-        }
+        // Apply blush blendshape if available on the VRM model
+        try { em.setValue('blush', blushIntensity); } catch(e) {}
     }
     // Update shy tilt based on blush
     shyTiltValue = lerp(shyTiltValue, blushIntensity * 0.5, deltaTime * 2.0);
@@ -798,12 +847,13 @@ function connectWebSocket() {
             const indicator = document.getElementById('status-indicator');
             if (indicator) {
                 if (msg.text === 'Triggered') {
-                    // Wake word detected — BLUE flash
-                    indicator.style.backgroundColor = '#007bff';
-                    indicator.style.boxShadow = '0 0 14px #007bff';
+                    // Wake word detected — magenta glow
+                    indicator.style.backgroundColor = '#ff00c8';
+                    indicator.style.boxShadow = '0 0 14px #ff00c8';
                 } else if (msg.text === 'Listening...') {
-                    indicator.style.backgroundColor = '#00ff00';
-                    indicator.style.boxShadow = '0 0 12px #00ff00';
+                    // Wake listener active — sapphire glow
+                    indicator.style.backgroundColor = '#0f52ba';
+                    indicator.style.boxShadow = '0 0 12px #0f52ba';
                 } else if (msg.text === 'Processing...' || msg.text === 'Thinking...') {
                     indicator.style.backgroundColor = '#ffcc00';
                     indicator.style.boxShadow = '0 0 8px #ffcc00';

@@ -39,6 +39,27 @@ body {
     pointer-events: none;
 }
 
+#interaction-hint {
+    position: absolute;
+    bottom: 40px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(10, 10, 20, 0.65);
+    color: rgba(255, 255, 255, 0.6);
+    font-size: 9px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    border: 1px solid rgba(255, 183, 197, 0.2);
+    z-index: 9998;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease;
+}
+
+body:hover #interaction-hint {
+    opacity: 1;
+}
+
 /* ─── Settings button ───────────────────────────── */
 #settings-btn {
     position: absolute;
@@ -80,6 +101,7 @@ body:hover #settings-btn {
     display: flex;
     flex-direction: column;
     align-items: center;
+    justify-content: flex-end;
     gap: 8px;
     pointer-events: none;
     z-index: 10;
@@ -104,7 +126,6 @@ body:hover #settings-btn {
     text-align: center;
     transition: opacity 0.3s ease, transform 0.3s ease;
     pointer-events: none;
-    margin-top: auto; /* Push to bottom of overlay */
     margin-bottom: 4px; /* Tiny gap above status */
     z-index: 100;
 }

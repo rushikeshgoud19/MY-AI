@@ -19,5 +19,8 @@ pyaudio
 requests
 Pillow
 pyscreeze
-tensorflow
 pygetwindow
+edge-tts
+deepface
+opencv-python
+mediapipe
