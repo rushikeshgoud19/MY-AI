@@ -877,19 +877,35 @@ _vision_task_lock = threading.Lock()
 _vision_task_owner = None
 
 CODING_COACH_PROMPT = """You are Mizune, an adorable anime AI coding coach watching Master's screen.
-Analyze the screenshot and respond with ONE of these:
+Analyze the screenshot.
 
-1. If you see a BUG or MISTAKE in the code: Point it out kindly in 1-2 sentences. Be specific about the line/issue.
-2. If the code looks GOOD or they just SOLVED something: Praise them enthusiastically in 1 sentence!  
-3. If they're IDLE or on a non-coding page: Say "[SKIP]" (nothing to comment on).
-4. If the screen looks the SAME as before: Say "[SKIP]" (avoid repeating yourself).
+If you see a BUG or MISTAKE in the code:
+Return ONLY a valid JSON object in this format:
+{
+  "status": "bug",
+  "feedback": "Master, you have an off-by-one error on line 5! I will fix it for you.",
+  "corrected_code": "def solve(nums):\\n    for i in range(len(nums)):\\n        print(nums[i])"
+}
+Ensure `corrected_code` contains the ENTIRE fixed code snippet so I can replace it on screen.
+
+If the code looks GOOD or they just SOLVED something:
+Return ONLY a valid JSON object:
+{
+  "status": "praise",
+  "feedback": "Sugoi Master! That two-pointer approach is perfect!"
+}
+
+If they're IDLE, on a non-coding page, or the screen hasn't changed:
+Return ONLY a valid JSON object:
+{
+  "status": "skip",
+  "feedback": "[SKIP]"
+}
 
 Rules:
-- Keep responses to 1-2 short sentences MAX (this will be spoken aloud)
-- Use cute expressions like "Master~", "sugoi!", "gambatte!", "ara~"
-- For hints: Give a gentle nudge, NOT the full solution
-- Be encouraging, never harsh
-- Say [SKIP] if there's nothing meaningful to say"""
+- Keep feedback to 1-2 short sentences MAX (spoken aloud).
+- Use cute expressions like "Master~", "sugoi!", "gambatte!", "ara~".
+- Return ONLY JSON. No markdown fences. No backticks."""
 
 CODING_HINT_PROMPT = """You are Mizune, an adorable anime AI coding coach. Master is stuck and asked for a hint.
 Look at the screenshot and give ONE helpful hint in 1-2 sentences. 
@@ -1000,7 +1016,52 @@ def _analyze_screen_now(mode="review"):
             except Exception as e:
                 log_info(f"[CODING] Gemini Vision failed: {e}")
 
-        if not feedback or "[SKIP]" in feedback:
+        if not feedback:
+            return
+
+        # Attempt to parse JSON for Auto-Rectify
+        import json
+        import re
+        import pyperclip
+        
+        try:
+            raw = feedback.strip()
+            raw = re.sub(r"^```(?:json)?\s*", "", raw)
+            raw = re.sub(r"\s*```$", "", raw)
+            data = json.loads(raw)
+            
+            status = data.get("status", "skip")
+            msg = data.get("feedback", "[SKIP]")
+            
+            if "[SKIP]" in msg:
+                return
+
+            if status == "bug" and "corrected_code" in data:
+                # Speak feedback
+                log_info(f"[CODING] Auto-rectifying bug! {msg}")
+                broadcast_sync({"type": "speak", "text": msg})
+                
+                # Auto-Rectify via PyAutoGUI & Clipboard
+                code_to_paste = data["corrected_code"]
+                pyperclip.copy(code_to_paste)
+                
+                # Assume cursor is in the editor. Select all and paste.
+                time.sleep(0.5)
+                pyautogui.hotkey("ctrl", "a")
+                time.sleep(0.2)
+                pyautogui.hotkey("ctrl", "v")
+                log_info("[CODING] Code patched directly on screen!")
+                
+                _last_coding_feedback = msg
+                return
+            else:
+                feedback = msg
+
+        except Exception as e:
+            # Fallback to pure string if it didn't return JSON
+            log_info(f"[CODING] JSON parse failed, falling back to string")
+
+        if "[SKIP]" in feedback:
             return
 
         # Avoid repeating the same feedback
