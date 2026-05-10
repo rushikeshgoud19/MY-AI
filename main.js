@@ -1,4 +1,4 @@
-const { app, BrowserWindow, screen, ipcMain } = require('electron');
+const { app, BrowserWindow, screen, ipcMain, globalShortcut } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -34,6 +34,7 @@ function saveConfig(cfg) {
 
 let win;
 let settingsWin = null;
+let savedPosition = null; // Track position for restore after Show Desktop
 let cfg = loadConfig();
 
 // ─── Base window size (Face focus) ──────────────────────────────────────────
@@ -67,9 +68,17 @@ function createWindow() {
     }
   });
 
+  // ─── Track window position for restore after Show Desktop ──────────────
+  win.on('move', () => {
+    if (win && !win.isMinimized()) {
+      const bounds = win.getBounds();
+      savedPosition = { x: bounds.x, y: bounds.y };
+    }
+  });
+
   win.loadFile('index.html');
   win.webContents.once('did-finish-load', () => {
-    ipcMain.emit('open-settings');
+    // Settings panel is available via gear icon or Alt+Shift+S
   });
 
   // ─── Drag-to-move Disabled per User Request ──────────────────────────────
@@ -78,6 +87,10 @@ function createWindow() {
 
   ipcMain.on('set-ignore-mouse', (_event, ignore) => {
     win.setIgnoreMouseEvents(ignore, { forward: true });
+  });
+
+  ipcMain.on('focus-window', () => {
+    if (win) win.focus();
   });
 
   // ─── Settings window ──────────────────────────────────────────────────────
@@ -167,10 +180,45 @@ function createWindow() {
   });
 
   win.on('minimize', (e) => { e.preventDefault(); win.restore(); });
+
+  // ─── Restore position after Show Desktop (3-finger swipe down) ────────
+  win.on('restore', () => {
+    if (savedPosition) {
+      win.setBounds({ ...win.getBounds(), x: savedPosition.x, y: savedPosition.y });
+    }
+    if (cfg.always_on_top !== false) {
+      win.setAlwaysOnTop(true, 'screen-saver', 1);
+    }
+  });
+
+  // ─── IPC: Focus chat input from global shortcut ───────────────────────
+  ipcMain.on('focus-chat', () => {
+    if (win) {
+      win.webContents.send('focus-chat-input');
+    }
+  });
 }
 
 app.whenReady().then(() => {
   createWindow();
+
+  // ─── Global Shortcut: Alt+M → Focus Mizune & open chat input ────────
+  globalShortcut.register('Alt+M', () => {
+    if (!win) return;
+    // Restore if minimized
+    if (win.isMinimized()) win.restore();
+    // Restore position if it got moved by Show Desktop
+    if (savedPosition) {
+      win.setBounds({ ...win.getBounds(), x: savedPosition.x, y: savedPosition.y });
+    }
+    // Show, focus, and bring to front
+    win.show();
+    win.focus();
+    win.setAlwaysOnTop(true, 'screen-saver', 1);
+    // Tell renderer to enable interaction and focus chat input
+    win.webContents.send('focus-chat-input');
+  });
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
@@ -178,4 +226,8 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
+});
+
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll();
 });

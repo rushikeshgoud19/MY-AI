@@ -9,12 +9,19 @@ from agents.base_agent import BaseAgent
 from typing import Any, Optional, Dict
 import logging
 
-# Import COMMON_APPS from server to reuse app mapping
-try:
-    from server import COMMON_APPS
-except ImportError:
-    # Fallback if imported before server is fully initialized
-    COMMON_APPS = {}
+# COMMON_APPS defined locally to avoid circular import with server.py
+COMMON_APPS = {
+    "notepad": "notepad.exe", "brave": "brave", "chrome": "chrome",
+    "firefox": "firefox", "edge": "msedge", "code": "code", "vs code": "code",
+    "terminal": "wt", "cmd": "cmd", "powershell": "powershell",
+    "excel": "excel", "word": "winword", "powerpoint": "powerpnt",
+    "discord": "discord", "telegram": "telegram", "whatsapp": "whatsapp",
+    "spotify": "spotify", "steam": "steam", "obs": "obs64",
+    "calculator": "calc.exe", "explorer": "explorer", "task manager": "taskmgr",
+    "settings": "ms-settings:", "paint": "mspaint",
+    "youtube": "https://youtube.com", "github": "https://github.com",
+    "gmail": "https://mail.google.com", "netflix": "https://netflix.com",
+}
 
 class SystemAgent(BaseAgent):
     """

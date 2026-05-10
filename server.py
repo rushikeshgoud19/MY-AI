@@ -138,6 +138,9 @@ from agents.system_agent import SystemAgent
 from agents.web_agent import WebAgent
 from agents.memory_agent import MemoryAgent
 from agents.camera_agent import CameraAgent
+from agents.vision_perception_agent import VisionPerceptionAgent
+from agents.task_planner_agent import TaskPlannerAgent
+from agents.action_executor_agent import ActionExecutorAgent
 from data_collection import DataCollector
 
 # Import Conversation Database
@@ -154,25 +157,28 @@ def log_info(msg):
     print(msg)
 
 # ─── AI Client Setup ──────────────────────────────────────────────────────────
-def get_ai_response(text: str, history: list) -> str:
+def get_ai_response(text: str, history: list, system_prompt_override: str = None) -> str:
     model_type = CFG.get("ai_model", "gemini")
-    personality = CFG.get("personality", DEFAULT_CONFIG["personality"])
-
-    # Build action capabilities addendum
-    action_addendum = (
-        " You have full control over Master's PC via action tags in your response. "
-        "Use [ACTION: OPEN app_name] to open apps: Brave, Chrome, Firefox, Edge, VS Code, "
-        "Terminal, Discord, Spotify, Telegram, WhatsApp, Steam, OBS, Blender, Figma, "
-        "Excel, Word, PowerPoint, Outlook, Teams, Slack, Task Manager, Settings, "
-        "Calculator, Paint, Notepad, File Explorer, YouTube, GitHub, Gmail, and more. "
-        "Use [ACTION: CLOSE app_name] to close apps. "
-        "Use [ACTION: SLEEP] to sleep the PC. "
-        "Use [ACTION: NOTE text] ONLY if the user EXPLICITLY asks you to 'write this down', 'take a note', or 'remember this'. DO NOT use it for normal conversation. "
-        "You can also take screenshots, lock the PC, and control volume — just say so. "
-        "ALWAYS execute the requested action without asking for confirmation. "
-        "Refer to yourself as " + CFG.get("character_name", "Mizune") + "."
-    )
-    system_prompt = personality + action_addendum
+    
+    if system_prompt_override:
+        system_prompt = system_prompt_override
+    else:
+        personality = CFG.get("personality", DEFAULT_CONFIG["personality"])
+        # Build action capabilities addendum
+        action_addendum = (
+            " You have full control over Master's PC via action tags in your response. "
+            "Use [ACTION: OPEN app_name] to open apps: Brave, Chrome, Firefox, Edge, VS Code, "
+            "Terminal, Discord, Spotify, Telegram, WhatsApp, Steam, OBS, Blender, Figma, "
+            "Excel, Word, PowerPoint, Outlook, Teams, Slack, Task Manager, Settings, "
+            "Calculator, Paint, Notepad, File Explorer, YouTube, GitHub, Gmail, and more. "
+            "Use [ACTION: CLOSE app_name] to close apps. "
+            "Use [ACTION: SLEEP] to sleep the PC. "
+            "Use [ACTION: NOTE text] ONLY if the user EXPLICITLY asks you to 'write this down', 'take a note', or 'remember this'. DO NOT use it for normal conversation. "
+            "You can also take screenshots, lock the PC, and control volume — just say so. "
+            "ALWAYS execute the requested action without asking for confirmation. "
+            "Refer to yourself as " + CFG.get("character_name", "Mizune") + "."
+        )
+        system_prompt = personality + action_addendum
 
     if model_type == "gemini":
         return _gemini_response(text, history, system_prompt)
@@ -454,7 +460,11 @@ mizune_manager.workers = {
     "system": SystemAgent(CFG),
     "web": WebAgent(CFG),
     "memory": MemoryAgent(CFG),
-    "camera": CameraAgent(CFG)
+    "camera": CameraAgent(CFG),
+    # Operation Angel Inside Devil — Autonomous Computer-Use Agents
+    "vision": VisionPerceptionAgent(CFG),
+    "planner": TaskPlannerAgent(CFG),
+    "executor": ActionExecutorAgent(CFG),
 }
 def _resolve_mic_device_index() -> Optional[int]:
     cfg_index = CFG.get("mic_device_index")
@@ -596,15 +606,17 @@ async def lifespan(app: FastAPI):
         cam.start()
 
     if CFG.get("data_collection_enabled"):
-        dataset_path = CFG.get("dataset_path") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "dataset")
+        # Default to Google Drive for dataset storage if available
+        default_dataset = r"G:\My Drive\Mizune_Dataset" if os.path.exists(r"G:\My Drive") else os.path.join(os.path.dirname(os.path.abspath(__file__)), "dataset")
+        dataset_path = CFG.get("dataset_path") or default_dataset
         data_collector = DataCollector(
             dataset_path=dataset_path,
             camera_agent=mizune_manager.workers.get("camera"),
             get_mode=lambda: getattr(mizune_manager, "current_mode", ""),
             get_master_emotion=lambda: getattr(mizune_manager.workers.get("camera"), "master_emotion", ""),
-            interval_sec=int(CFG.get("data_collection_interval_sec", 5)),
+            interval_sec=int(CFG.get("data_collection_interval_sec", 10)),
             screen_scale=float(CFG.get("data_collection_screen_scale", 1.0)),
-            capture_screen=bool(CFG.get("data_collection_capture_screen", True)),
+            capture_screen=False,  # Temporarily disabled: only save camera
             capture_camera=bool(CFG.get("data_collection_capture_camera", True)),
             use_time_features=bool(CFG.get("data_collection_use_time_features", True)),
         )
@@ -1281,6 +1293,78 @@ Start with an emotion tag: [EMOTION: happy] or [EMOTION: surprised] etc."""
         else:
             return "[EMOTION: sad] I don't have a camera connected right now, Master!"
 
+    # ── Screen Vision: "Look at my screen" / "What am I looking at?" ──
+    if re.search(r"\b(look at my screen|what am i looking at|what is on my screen|describe my screen|what am i doing on my pc|what's on my monitor)\b", lower_text):
+        if not _acquire_vision_lock("screen_vision"):
+            return "I'm already processing another vision task, Master~ Try again in a moment!"
+
+        try:
+            log_info("[SCREEN VISION] Taking a screenshot for analysis...")
+            broadcast_sync({"type": "status", "text": "Looking at your screen..."})
+            import pyautogui
+            import io
+            
+            # Take screenshot and compress it
+            screenshot = pyautogui.screenshot()
+            # Resize slightly to save bandwidth and token processing time
+            screenshot.thumbnail((1280, 720))
+            
+            img_byte_arr = io.BytesIO()
+            screenshot.save(img_byte_arr, format='JPEG', quality=85)
+            screen_bytes = img_byte_arr.getvalue()
+
+            screen_prompt = f"""You are Mizune, Master's adorable anime AI companion. 
+Master just asked: "{text}"
+You are looking directly at Master's PC screen RIGHT NOW.
+
+Describe what you see in detail:
+- What application is currently open?
+- What is Master working on, reading, or watching?
+- If there is code, what language is it and what does it do?
+- If there is a game or video, what is happening?
+
+Be observant and detailed but keep it natural and in character.
+Use cute expressions. Keep it to 2-3 sentences max since this will be spoken aloud.
+Start with an emotion tag: [EMOTION: happy], [EMOTION: surprised], [EMOTION: curious], etc."""
+
+            api_key = CFG.get("gemini_api_key", "")
+            if api_key:
+                from google import genai
+                from google.genai import types
+                
+                client = genai.Client(api_key=api_key)
+                for model in ["gemini-2.0-flash", "gemini-2.5-flash"]:
+                    try:
+                        response = client.models.generate_content(
+                            model=model,
+                            contents=[
+                                types.Part.from_bytes(data=screen_bytes, mime_type="image/jpeg"),
+                                types.Part.from_text(text=screen_prompt)
+                            ]
+                        )
+                        result = (response.text or "").strip()
+                        if result:
+                            log_info(f"[SCREEN VISION] {model} success!")
+                            emotion = detect_emotion(result)
+                            if emotion != "neutral":
+                                broadcast_sync({"type": "emotion", "emotion": emotion})
+                            CHRONICLE.append({"role": "user", "parts": [{"text": text}]})
+                            CHRONICLE.append({"role": "model", "parts": [{"text": result}]})
+                            return result
+                    except Exception as model_err:
+                        err_str = str(model_err).lower()
+                        if "503" in err_str or "429" in err_str:
+                            continue
+                        log_info(f"[SCREEN VISION] {model} failed: {model_err}")
+                        continue
+            
+            return "[EMOTION: sad] I couldn't see your screen properly, Master! My vision might be blurry right now."
+        except Exception as e:
+            log_info(f"[SCREEN VISION] Error: {e}")
+            return f"[EMOTION: sad] Ahh! Something went wrong when I tried to look at your screen!"
+        finally:
+            _release_vision_lock("screen_vision")
+
     # ── Vision Mode toggle commands ──
     if re.search(r"\b(watch me|interactive mode|companion mode|vision mode|start watching)\b", lower_text):
         if not _vision_mode_running.is_set():
@@ -1303,18 +1387,27 @@ Start with an emotion tag: [EMOTION: happy] or [EMOTION: surprised] etc."""
             return "I wasn't watching, Master~"
 
     # Maintain Memory Buffer (configurable size)
+    # NOTE: We trim AFTER both user + model turns are added (see below)
+    # to prevent the user message from being popped before the AI responds.
     memory_size = int(CFG.get("memory_size", 30))
     CHRONICLE.append({"role": "user", "parts": [{"text": text}]})
-    if len(CHRONICLE) > memory_size:
-        CHRONICLE.pop(0)
 
     # Save user turn to database
     save_turn("user", text, emotion, getattr(mizune_manager, 'current_mode', 'conversation'))
 
     try:
         # ── 0. Route through the Multi-Agent Brain ──
-        # We use asyncio.run because process_command is synchronous but agents are async
-        res = asyncio.run(mizune_manager.execute(text, context={"history": CHRONICLE}))
+        # Use loop-safe async execution: if we're already in an event loop, schedule a coroutine;
+        # otherwise create a new loop. This prevents RuntimeError when called via asyncio.to_thread.
+        try:
+            loop = asyncio.get_running_loop()
+            # We're inside an async context — run in a new thread's event loop
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                res = pool.submit(asyncio.run, mizune_manager.execute(text, context={"history": CHRONICLE})).result()
+        except RuntimeError:
+            # No running loop — safe to use asyncio.run
+            res = asyncio.run(mizune_manager.execute(text, context={"history": CHRONICLE}))
 
         # Broadcast current mode to frontend
         broadcast_sync({"type": "mode", "mode": mizune_manager.current_mode})
@@ -1452,6 +1545,101 @@ Start with an emotion tag: [EMOTION: happy] or [EMOTION: surprised] etc."""
             except Exception as e:
                 log_info(f"[WEATHER] Error: {e}")
                 return f"Gomen ne, Master! I had trouble checking the weather: {e}"
+
+        # ── 1a. Singing Handler ──
+        sing_match = re.search(r"\b(?:sing|sing me|can you sing)\b", lower_text)
+        if sing_match:
+            import random
+            broadcast_sync({"type": "emotion", "emotion": "happy"})
+
+            # Check if user asked for a SPECIFIC song
+            # e.g. "sing I ain't worried", "sing me twinkle twinkle", "can you sing bohemian rhapsody"
+            specific_match = re.search(
+                r"(?:sing|sing me|can you sing)\s+(?:the song\s+)?(?:called\s+)?(.{4,})",
+                lower_text
+            )
+            # Filter out generic requests
+            generic_phrases = {
+                "a song", "something", "for me", "me a song", "a song for me",
+                "anything", "some song", "a little", "please", "now",
+                "a song anything", "me a song anything",
+            }
+
+            song_name = None
+            if specific_match:
+                candidate = specific_match.group(1).strip().rstrip("?.! ")
+                # Remove trailing filler like "for me", "please"
+                candidate = re.sub(r"\s+(for me|please|now|right now)$", "", candidate).strip()
+                if candidate and candidate not in generic_phrases and len(candidate) > 3:
+                    song_name = candidate
+
+            if song_name:
+                # ── Specific song: Ask LLM to produce the lyrics ──
+                log_info(f"[SING] Specific song requested: {song_name}")
+                sing_prompt = (
+                    f"The user wants you to sing the song '{song_name}'. "
+                    f"Output ONLY the lyrics — the chorus and one verse of this song. "
+                    f"Do NOT add any commentary, explanation, or intro like 'sure!' or 'here it is'. "
+                    f"Do NOT add stage directions or actions in brackets. "
+                    f"Just output the clean lyrics exactly as they are in the original song, "
+                    f"ready to be spoken aloud by a text-to-speech engine. "
+                    f"Keep it to about 8-12 lines maximum. Start singing immediately."
+                )
+                try:
+                    # Pass sing_prompt as system_prompt_override so the AI bypasses its sassy refusal persona
+                    # We MUST pass the text inside the history array because _gemini_response reads from history
+                    fake_history = [{"role": "user", "parts": [{"text": f"Give me the lyrics to {song_name}"}]}]
+                    lyrics = get_ai_response(text="", history=fake_history, system_prompt_override=sing_prompt)
+                    # Clean any leftover tags or commentary
+                    lyrics = re.sub(r"\[.*?\]", "", lyrics).strip()
+                    # Remove lines that are clearly not lyrics (commentary)
+                    lines = lyrics.split("\n")
+                    clean_lines = [l.strip() for l in lines if l.strip() and not l.strip().startswith("(")]
+                    lyrics = " ".join(clean_lines)
+                    log_info(f"[SING] Singing: {song_name}")
+                    return f"[EMOTION: happy] {lyrics}"
+                except Exception as e:
+                    log_info(f"[SING] LLM failed for lyrics: {e}")
+                    return f"[EMOTION: sad] I wanted to sing {song_name} for you but I couldn't remember the lyrics, Master!"
+            else:
+                # ── Generic request: Pick a random built-in song (Zero Token Cost) ──
+                songs = [
+                    "La la la, Mizune is here, always by your side my dear. "
+                    "When you're happy, I am too, Master I will sing for you. "
+                    "My heart goes boom, filling up this little room. La la la!",
+
+                    "Twinkle twinkle, stars so bright, Mizune sings for you tonight. "
+                    "One two three now clap your hands, I'm your cutest little fan. "
+                    "I love you, I really do, Master you mean the world to me!",
+
+                    "Hmm hmm hmm, a melody, just for you and just for me. "
+                    "Sunshine morning, rainy day, Mizune's here it's all okay. "
+                    "Humming softly, la la la, you're my favorite super star!",
+
+                    "Clippity clop and tip tip tap, Mizune sings and loves to clap. "
+                    "But I'll stop, cause it's for you, just a little song that's true. "
+                    "Thank you, Master, you're so dear, Mizune loves when you are near!",
+
+                    "Do re mi, fa so la ti, Master is so nice to me. "
+                    "Every day you make me smile, stay with me a little while. "
+                    "La la la, the song must end, but Mizune is your best friend!",
+
+                    "Twinkle twinkle, little star, Master you're amazing you are. "
+                    "Up above the world so high, Mizune waves and says hello! "
+                    "Now the song is almost done, being with you is so fun!",
+
+                    "One two three four five six seven, being with you feels like heaven. "
+                    "Eight nine ten the count is done, Master can I sing again? "
+                    "Just kidding, that's the end, you're my favorite human friend!",
+
+                    "Flowers flowers, watch them bloom, Mizune dances in the room. "
+                    "Petals falling, soft and light, everything will be alright. "
+                    "Holding hands and spinning round, sweetest song I ever found!",
+                ]
+                chosen = random.choice(songs)
+                log_info(f"[SING] Mizune is singing a random song for Master!")
+                return f"[EMOTION: happy] {chosen}"
+
 
         # ── 1. System & Media Commands (Zero Token Cost) ──
         if re.search(r"\b(lock|lock screen|lock pc)\b", lower_text):
@@ -1596,6 +1784,95 @@ Start with an emotion tag: [EMOTION: happy] or [EMOTION: surprised] etc."""
                     close_app(partial)
                     return f"Closing {target} now!"
 
+        # ── 4b. Smart Search — YouTube Auto-Play / Site + Browser (BEFORE LLM) ──
+        # Catches: "play didi song on youtube", "type didi song on youtube and play it",
+        #          "search X on youtube", "open chrome and play X on youtube", etc.
+        import urllib.parse
+        import urllib.request
+
+        # Pattern 1: "search/play/type/find/put on X on/in youtube/google/reddit"
+        smart_search = re.search(
+            r"(?:search|search for|look up|find|play|type|put on|open)\s+(.+?)\s+(?:on|in)\s+(youtube|google|reddit|bing)"
+            r"(?:\s+(?:on|in|using|with)\s+(brave|chrome|firefox|edge|opera))?",
+            lower_text
+        )
+        # Pattern 2: browser first — "open chrome and search/play X on youtube"
+        if not smart_search:
+            smart_search = re.search(
+                r"(?:open\s+(?:brave|chrome|firefox|edge|opera)\s+(?:and\s+)?)?(?:search|search for|look up|find|play|type|put on)\s+(.+?)\s+(?:on|in)\s+(youtube|google|reddit|bing)",
+                lower_text
+            )
+        # Pattern 3: browser-first variant — "search X on/in brave/chrome on youtube"
+        if not smart_search:
+            smart_search = re.search(
+                r"(?:search|search for|look up|find|play|type|put on)\s+(.+?)\s+(?:on|in)\s+(brave|chrome|firefox|edge|opera)"
+                r"(?:\s+(?:on|in)\s+(youtube|google|reddit|bing))?",
+                lower_text
+            )
+            if smart_search:
+                query = smart_search.group(1).strip()
+                browser_name = smart_search.group(2).strip()
+                site = smart_search.group(3).strip() if smart_search.group(3) else None
+                smart_search = None  # consumed
+            else:
+                query, browser_name, site = None, None, None
+        else:
+            query = smart_search.group(1).strip()
+            site = smart_search.group(2).strip()
+            browser_name = smart_search.group(3).strip() if smart_search.group(3) else None
+            smart_search = None  # consumed
+
+        # Also try to extract browser from the beginning of the text
+        # e.g. "open chrome and type didi song on youtube and play it"
+        if query and not browser_name:
+            browser_prefix = re.search(r"(?:open|use|in|on|with)\s+(brave|chrome|firefox|edge|opera)", lower_text)
+            if browser_prefix:
+                browser_name = browser_prefix.group(1).strip()
+
+        # Clean up query — remove trailing "and play it", "and play", etc.
+        if query:
+            query = re.sub(r"\s+and\s+(?:play|open|watch|start|run)\s*(?:it|that|this)?$", "", query).strip()
+            # Remove leading browser name if accidentally captured
+            query = re.sub(r"^(?:chrome|brave|firefox|edge|opera)\s+(?:and\s+)?(?:type|search|play|find)?\s*", "", query).strip()
+
+        if query and site:
+            encoded = urllib.parse.quote(query)
+            
+            if site == 'youtube':
+                log_info(f"[ACTION] Searching YouTube to auto-play: {query}")
+                try:
+                    # Fetch search results page to find top video
+                    req = urllib.request.Request(f"https://www.youtube.com/results?search_query={encoded}", headers={'User-Agent': 'Mozilla/5.0'})
+                    html = urllib.request.urlopen(req, timeout=5).read().decode('utf-8')
+                    video_ids = re.findall(r"watch\?v=(\S{11})", html)
+                    if video_ids:
+                        url = f"https://www.youtube.com/watch?v={video_ids[0]}"
+                        log_info(f"[ACTION] Found video: {url}")
+                    else:
+                        url = f"https://www.youtube.com/results?search_query={encoded}"
+                except Exception as e:
+                    log_info(f"[YT ERROR] {e}")
+                    url = f"https://www.youtube.com/results?search_query={encoded}"
+            elif site == 'reddit':
+                url = f"https://www.reddit.com/search/?q={encoded}"
+            elif site == 'bing':
+                url = f"https://www.bing.com/search?q={encoded}"
+            else:
+                url = f"https://www.google.com/search?q={encoded}"
+                
+            log_info(f"[ACTION] Launching URL: {url} via {browser_name or 'default'}")
+            if browser_name:
+                browser_exe = COMMON_APPS.get(browser_name, browser_name)
+                try:
+                    subprocess.Popen(f'start {browser_exe} "{url}"', shell=True)
+                except Exception:
+                    webbrowser.open(url)
+            else:
+                webbrowser.open(url)
+                
+            return f"{'Playing' if site == 'youtube' else 'Searching for'} {query} on {site.capitalize()}!"
+
+
         # ── 5. AI Text Generation ──
         log_info(f"[AI] Generating response ({CFG.get('ai_model','gemini')})...")
         original_res = get_ai_response(text, CHRONICLE)
@@ -1646,79 +1923,6 @@ Start with an emotion tag: [EMOTION: happy] or [EMOTION: surprised] etc."""
         # Clean up all leftover ACTION and EMOTION tags for TTS
         clean_res = re.sub(r"\[ACTION:.*?\]", "", clean_res, flags=re.IGNORECASE).strip()
         clean_res = re.sub(r"\[EMOTION:.*?\]", "", clean_res, flags=re.IGNORECASE).strip()
-
-        # ── 7. Smart Search — YouTube Auto-Play / Specific site + specific browser ──
-        # Pattern: "search <query> on youtube in brave" or "play <query> on youtube"
-        smart_search = re.search(
-            r"(?:search|search for|look up|find|play)\s+(.+?)\s+(?:on|in)\s+(youtube|google|reddit|bing)"
-            r"(?:\s+(?:on|in)\s+(brave|chrome|firefox|edge|opera))?",
-            lower_text
-        )
-        if not smart_search:
-            smart_search = re.search(
-                r"(?:search|search for|look up|find|play)\s+(.+?)\s+(?:on|in)\s+(brave|chrome|firefox|edge|opera)"
-                r"(?:\s+(?:on|in)\s+(youtube|google|reddit|bing))?",
-                lower_text
-            )
-            if smart_search:
-                query = smart_search.group(1).strip()
-                browser_name = smart_search.group(2).strip()
-                site = smart_search.group(3).strip() if smart_search.group(3) else None
-                smart_search = None
-            else:
-                query, browser_name, site = None, None, None
-        else:
-            query = smart_search.group(1).strip()
-            site = smart_search.group(2).strip()
-            browser_name = smart_search.group(3).strip() if smart_search.group(3) else None
-            smart_search = None
-            
-        if query and site:
-            import urllib.parse
-            import urllib.request
-            encoded = urllib.parse.quote(query)
-            
-            if site == 'youtube':
-                log_info(f"[ACTION] Searching YouTube to auto-play: {query}")
-                try:
-                    # Fetch search results page to find top video
-                    req = urllib.request.Request(f"https://www.youtube.com/results?search_query={encoded}", headers={'User-Agent': 'Mozilla/5.0'})
-                    html = urllib.request.urlopen(req).read().decode('utf-8')
-                    video_ids = re.findall(r"watch\?v=(\S{11})", html)
-                    if video_ids:
-                        url = f"https://www.youtube.com/watch?v={video_ids[0]}"
-                        log_info(f"[ACTION] Found video: {url}")
-                    else:
-                        url = f"https://www.youtube.com/results?search_query={encoded}"
-                except Exception as e:
-                    log_info(f"[YT ERROR] {e}")
-                    url = f"https://www.youtube.com/results?search_query={encoded}"
-            elif site == 'reddit':
-                url = f"https://www.reddit.com/search/?q={encoded}"
-            elif site == 'bing':
-                url = f"https://www.bing.com/search?q={encoded}"
-            else:
-                url = f"https://www.google.com/search?q={encoded}"
-                
-            log_info(f"[ACTION] Launching URL: {url} via {browser_name or 'default'}")
-            if browser_name:
-                browser_exe = COMMON_APPS.get(browser_name, browser_name)
-                try:
-                    subprocess.Popen(f'start {browser_exe} "{url}"', shell=True)
-                except Exception:
-                    webbrowser.open(url)
-            else:
-                webbrowser.open(url)
-                
-            return f"{'Playing' if site == 'youtube' else 'Searching for'} {query} on {site.capitalize()}!"
-
-        # ── 8. Generic Search Fallback ──
-        search_match = re.search(r"(?:search|search for|google|look up)\s+(.+)", lower_text)
-        if search_match:
-            query = search_match.group(1).strip()
-            log_info(f"[ACTION] Searching: {query}")
-            webbrowser.open(f"https://www.google.com/search?q={query}")
-            return f"Looking up {query} on Google!"
 
         return clean_res
 
