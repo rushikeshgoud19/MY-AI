@@ -35,12 +35,25 @@ When she's not automating your job, she watches you work.
 2. Analyzes code using Groq Vision.
 3. Speaks dynamic feedback (catches bugs, validates logic) and forcefully blocks distracting apps to keep you focused.
 
+## The 7 Operational Modes
+
+Mizune adapts to workflow requirements dynamically using 7 distinct execution modes:
+- **Conversation:** Default interaction state.
+- **Writing:** Continuous speech-to-text dictation.
+- **Focus:** Applies Pomodoro limits, blocks distracting URLs, provides motivational oversight.
+- **Entertainment:** Automates media playback and recommendations.
+- **Research:** Autonomous web search, scraping, and content summarization.
+- **System:** Root-level PC control, project setup, and file management.
+- **Coding Coach:** Vision-based real-time IDE monitoring and bug catching.
+
 ## The V-Tuber Pipeline
 
 Rendered as a 3D VRM character directly on your desktop.
 - **5-Vowel Lip Sync Engine:** Real-time frequency-band analysis maps audio to VRM blendshapes (`aa`, `ee`, `ih`, `oh`, `ou`).
 - **Synchronized Audio:** Text and lips only move when the audio actually plays.
-- **Dynamic Emotion:** Real-time emotion detection drives facial expressions based on conversation context.
+- **Dynamic Emotion Engine:** Real-time text sentiment analysis maps user input directly to the VRM's facial expressions (Happy, Angry, Sad, Blush, Surprised).
+- **Redundant TTS Pipeline:** Primary execution via Murf AI (Premium), with fallback to ElevenLabs (Turbo), and finally Browser SpeechSynthesis for zero-latency offline processing.
+- **Multi-Layer STT:** Groq Whisper for cloud-speed transcription, backed by faster-whisper for offline local processing.
 
 ## Token Economy
 
