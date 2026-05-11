@@ -255,10 +255,13 @@ class ManagerAgent(BaseAgent):
                      r"debug\s+(this|my)|fix\s+(this|my)\s+(code|error|bug)|"
                      r"watch\s+me\s+code|what('s|\s+is)\s+wrong\s+with\s+(my\s+)?code|"
                      r"code\s+review|explain\s+(this|my)\s+code|"
-                     r"is\s+(this|my)\s+code\s+(correct|right|wrong|good|bad|ok)|"
+                     r"is\s+(this|my)\s+(code|solution)\s+(correct|right|wrong|good|bad|ok)|"
                      r"(think|thought)\s+about\s+(this\s+|my\s+)?code|"
                      r"help\s+me\s+(with\s+)?(this\s+)?(code|function|class|error|bug)|"
                      r"help\s+me\s+fix\s+(this\s+)?(bug|error|issue)|"
+                     r"did\s+i\s+(do|code)\s+(it|this)?\s*(good|well|right|correct(ly)?)|"
+                     r"make\s+(this|my)\s+code\s+better|improve\s+(this|my)\s+code|"
+                     r"coding\s+question|"
                      r"can\s+you\s+check\s+(it|this|my))\b", clean):
             return "coding"
 
