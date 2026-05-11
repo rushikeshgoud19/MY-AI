@@ -445,14 +445,16 @@ class ManagerAgent(BaseAgent):
 
         # Screen review triggers
         if re.search(r"\b(how is|how's|is this|is it|am i|what do you think|look at|check|review|"
-                     r"analyze|rate|evaluate|correct|wrong|right|good|bad|okay)\b", lower):
+                     r"analyze|rate|evaluate|correct|wrong|right|good|bad|okay|better|improve|"
+                     r"did i|fix|debug)\b", lower):
             return "[CODING_REVIEW_NOW] Let me take a look at your code, Master~!"
         if re.search(r"\b(what's wrong|any error|any mistake|any bug|see anything|spot anything)\b", lower):
-            return "[CODING_REVIEW_NOW] Checking for issues~!"
-        if re.search(r"\b(hint|help|stuck|don't know|no idea|confused|what should|how do i|next step)\b", lower):
-            return "[CODING_HINT] Let me look at your screen and give you a hint~!"
-
-        return None
+            return "[CODING_REVIEW_NOW] Let me check for bugs, Master~!"
+        if re.search(r"\b(give me a hint|hint|stuck)\b", lower):
+            return "[CODING_HINT] Hmm, let's see... I'll give you a small hint~"
+        
+        # If they asked a coding question and we are in coding mode, just review the screen by default.
+        return "[CODING_REVIEW_NOW] Let me check your screen to answer that~!"
 
     # ─── Autonomous Mode ──────────────────────────────────────────────────────
 
