@@ -10,9 +10,6 @@ import time
 from datetime import datetime
 from agents.base_agent import BaseAgent
 from typing import Any, Optional, Dict, List
-from faster_whisper import WhisperModel
-import chromadb
-from chromadb.utils import embedding_functions
 
 class MemoryAgent(BaseAgent):
     """
@@ -28,18 +25,35 @@ class MemoryAgent(BaseAgent):
         self.sessions_folder = os.path.join(self.desktop_path, "sessions")
         os.makedirs(self.sessions_folder, exist_ok=True)
 
-        # Initialize Transcription Model (Small/Fast for local use)
-        # We use 'tiny' for speed in real-time chunks
-        self.stt_model = WhisperModel("tiny", device="cpu", compute_type="int8")
+        # Background loading state
+        self.stt_model = None
+        self.chroma_client = None
+        self.collection = None
+        self.embedding_fn = None
+        
+        # Start background load
+        threading.Thread(target=self._init_heavy_models, daemon=True).start()
 
-        # Initialize Vector Store for Memory
-        # Using persistent client to save memories across restarts
-        self.chroma_client = chromadb.PersistentClient(path=os.path.join(os.path.dirname(__file__), "..", ".chroma_db"))
-        self.embedding_fn = embedding_functions.DefaultEmbeddingFunction()
-        self.collection = self.chroma_client.get_or_create_collection(
-            name="mizune_memory",
-            embedding_function=self.embedding_fn
-        )
+    def _init_heavy_models(self):
+        try:
+            self.log("Background loading ChromaDB and Whisper for MemoryAgent...")
+            from faster_whisper import WhisperModel
+            import chromadb
+            from chromadb.utils import embedding_functions
+
+            # Initialize Transcription Model (Small/Fast for local use)
+            self.stt_model = WhisperModel("tiny", device="cpu", compute_type="int8")
+
+            # Initialize Vector Store for Memory
+            self.chroma_client = chromadb.PersistentClient(path=os.path.join(os.path.dirname(__file__), "..", ".chroma_db"))
+            self.embedding_fn = embedding_functions.DefaultEmbeddingFunction()
+            self.collection = self.chroma_client.get_or_create_collection(
+                name="mizune_memory",
+                embedding_function=self.embedding_fn
+            )
+            self.log("MemoryAgent background models loaded successfully!")
+        except Exception as e:
+            self.log(f"Failed to load background models: {e}")
 
         # Session State
         self.is_logging = False

@@ -35,14 +35,22 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 # Try to import faster-whisper for a more robust STT fallback
-try:
-    from faster_whisper import WhisperModel
-    WHISPER_MODEL = WhisperModel("tiny", device="cpu", compute_type="int8")
-    HAS_WHISPER = True
-except Exception as e:
-    HAS_WHISPER = False
-    # Note: log_info is defined later; use logging directly here
-    logging.info(f"[SERVER] Faster-Whisper not loaded: {e}")
+HAS_WHISPER = False
+WHISPER_MODEL = None
+
+def _load_whisper_bg():
+    global WHISPER_MODEL, HAS_WHISPER
+    try:
+        from faster_whisper import WhisperModel
+        logging.info("[SERVER] Background loading Faster-Whisper model...")
+        WHISPER_MODEL = WhisperModel("tiny", device="cpu", compute_type="int8")
+        HAS_WHISPER = True
+        logging.info("[SERVER] Faster-Whisper loaded successfully!")
+    except Exception as e:
+        HAS_WHISPER = False
+        logging.info(f"[SERVER] Faster-Whisper not loaded: {e}")
+
+threading.Thread(target=_load_whisper_bg, daemon=True).start()
 
 # ─── Config Loading ────────────────────────────────────────────────────────────
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
