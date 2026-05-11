@@ -8,17 +8,27 @@ from collections import Counter
 from typing import Optional, Any
 from agents.base_agent import BaseAgent
 
-try:
-    from deepface import DeepFace
-    HAS_DEEPFACE = True
-except ImportError:
-    HAS_DEEPFACE = False
+HAS_DEEPFACE = False
+HAS_MEDIAPIPE = False
+DeepFace = None
+mp = None
 
-try:
-    import mediapipe as mp
-    HAS_MEDIAPIPE = True
-except ImportError:
-    HAS_MEDIAPIPE = False
+def _load_camera_ml_bg():
+    global HAS_DEEPFACE, HAS_MEDIAPIPE, DeepFace, mp
+    try:
+        from deepface import DeepFace as df
+        DeepFace = df
+        HAS_DEEPFACE = True
+    except ImportError:
+        pass
+    try:
+        import mediapipe as mpipe
+        mp = mpipe
+        HAS_MEDIAPIPE = True
+    except ImportError:
+        pass
+
+threading.Thread(target=_load_camera_ml_bg, daemon=True).start()
 
 
 class CameraAgent(BaseAgent):
