@@ -24,6 +24,7 @@
   "mic_device_name": "Realtek(R) Audio",
   "mic_device_index": null,
   "voice_id": "ja-JP-kimi",
+  "edge_tts_voice": "ja-JP-NanamiNeural",
   "voice_style": "Cheerful",
   "voice_rate": 0,
   "voice_pitch": 0,

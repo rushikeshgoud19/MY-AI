@@ -34,6 +34,10 @@ threading.Thread(target=_load_camera_ml_bg, daemon=True).start()
 class CameraAgent(BaseAgent):
     def __init__(self, config: dict):
         super().__init__(config)
+        # ── Thread Safety Locks ──
+        self._auth_lock = threading.Lock()  # Protect auth state
+        self._emotion_lock = threading.Lock()  # Protect emotion history
+
         # ── Auth state ──
         self.is_master_present = False
         self.current_gesture = None
@@ -308,10 +312,11 @@ class CameraAgent(BaseAgent):
 
         if is_verified:
             # ── MASTER FOUND ──
-            self.is_master_present = True
-            self.no_face_count = 0
-            self.reverify_fail_count = 0
-            self.has_warned_unauthorized = False
+            with self._auth_lock:
+                self.is_master_present = True
+                self.no_face_count = 0
+                self.reverify_fail_count = 0
+                self.has_warned_unauthorized = False
 
             # Scan emotion FIRST before greeting (use boosted crop already saved)
             try:
@@ -413,12 +418,14 @@ class CameraAgent(BaseAgent):
     def _silent_deauth(self):
         """Silently remove authentication without yelling. The security gate in
         process_command will block any commands from the stranger."""
-        self.is_master_present = False
-        self.has_greeted = False
-        self.has_warned_unauthorized = False
-        self.reverify_fail_count = 0
-        self.no_face_count = 0
-        self.emotion_history.clear()
+        with self._auth_lock:
+            self.is_master_present = False
+            self.has_greeted = False
+            self.has_warned_unauthorized = False
+            self.reverify_fail_count = 0
+            self.no_face_count = 0
+        with self._emotion_lock:
+            self.emotion_history.clear()
 
     # ─── Continuous Emotion Tracking ───────────────────────────────────────────
     def _track_emotion(self, frame):
@@ -457,12 +464,13 @@ class CameraAgent(BaseAgent):
         if self.on_emotion_update:
             self.on_emotion_update(detected)
 
-        # Record in history
-        self.emotion_history.append((now, detected))
+        # Record in history (thread-safe)
+        with self._emotion_lock:
+            self.emotion_history.append((now, detected))
 
-        # Trim history older than 3 minutes
-        cutoff = now - 180
-        self.emotion_history = [(t, e) for t, e in self.emotion_history if t >= cutoff]
+            # Trim history older than 3 minutes
+            cutoff = now - 180
+            self.emotion_history = [(t, e) for t, e in self.emotion_history if t >= cutoff]
 
         # ── Sustained emotion check (2+ minutes of same emotion) ──
         two_min_ago = now - 120
@@ -490,12 +498,20 @@ class CameraAgent(BaseAgent):
         Otherwise fall back to a full LIVE check.
         Uses CLAHE-boosted frame in dim lighting."""
         # FAST PATH: trust background loop if verified recently (within 35s)
-        if self.is_master_present and (time.time() - self.last_verified_time < 35.0):
-            return True
+        with self._auth_lock:
+            if self.is_master_present and (time.time() - self.last_verified_time < 35.0):
+                return True
 
         if not self.cap or not self.cap.isOpened():
             return self.is_master_present  # Can't check, trust last state
-        if not HAS_DEEPFACE or not self.master_face_paths:
+            
+        # If DeepFace is still loading in the background thread, we MUST trust
+        # the user temporarily. Otherwise, we instantly reject them at startup!
+        if not HAS_DEEPFACE:
+            self.log("DeepFace is still loading... temporarily trusting user for instant startup.")
+            return True
+            
+        if not self.master_face_paths:
             return self.is_master_present
 
         with self.cap_lock:

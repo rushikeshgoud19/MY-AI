@@ -9,10 +9,11 @@ import sys
 import numpy as np
 from datetime import datetime
 
-SOURCE_DIR = os.path.join("dataset", "camera", "2026-05-07")
+import sys
+SOURCE_DIR = sys.argv[1] if len(sys.argv) > 1 else os.path.join("dataset", "camera", "2026-05-07")
 OUTPUT_DIR = os.path.join("data", "master_faces")
 LEGACY_PATH = os.path.join("data", "master_face.jpg")
-TARGET_SAMPLES = 25
+TARGET_SAMPLES = 200
 BRIGHT_ALPHA = 1.5
 BRIGHT_BETA = 30
 

@@ -16,6 +16,7 @@ The frontend never knows what "mode" is active — it just gets a response.
 """
 
 from agents.base_agent import BaseAgent
+from agents.intent_classifier import IntentClassifier
 from typing import Any, Optional, Dict, List
 import re
 import logging
@@ -52,7 +53,9 @@ class ManagerAgent(BaseAgent):
         self.workers: Dict[str, BaseAgent] = {}
         self.current_mode = "conversation"  # Internal state — frontend doesn't see this
         self._focus_timer = None
-        self._focus_minutes = 25
+        # Load from config with fallback to default
+        _system_settings = config.get("system_settings", {})
+        self._focus_minutes = _system_settings.get("focus_minutes", 25)
         self._autonomous_pending_confirm = False  # Waiting for user to confirm a plan
         self._pending_plan = None
         self.log("ManagerAgent Brain initialized. Silent intent routing active.")
@@ -146,177 +149,10 @@ class ManagerAgent(BaseAgent):
         """
         The core brain. Classifies user intent WITHOUT requiring trigger words.
         Uses prioritized pattern matching — first match wins.
+
+        Delegates to IntentClassifier for zero-token classification.
         """
-        lower = text.lower().strip()
-        # Strip trailing punctuation only (keep apostrophes for contractions like what's, how's)
-        clean = re.sub(r"[!?.,\"]+", "", lower).strip()
-
-        # ── GUARD: Very short conversational inputs (1-2 words, no action words) ──
-        word_count = len(clean.split())
-        if word_count <= 2 and not re.search(
-            r"\b(open|close|launch|start|kill|play|sing|search|screenshot|mute|unmute|"
-            r"volume|lock|sleep|shutdown|restart|describe|review|check|debug|fix|watch|"
-            r"pause|resume|remember|block|log|increase|decrease|brightness)\b", clean
-        ):
-            return "conversation"
-        # ─── AUTONOMOUS: EXTREME COMPLEXITY GUARD (Runs first) ────────────
-        # Brutal edge-case tasks orchestrating multiple apps or background tasks
-        if re.search(r"\b(side\s*by\s*side|in\s+(the\s+)?background|second\s+monitor|main\s+one|while\s+it\s+plays|while\s+doing\s+that|while\s+(i|you|it)\s+|every\s+time)\b", clean):
-            return "autonomous"
-
-        # Action density heuristic for very long orchestrations
-        if word_count >= 10:
-            actions = re.findall(r"\b(open|launch|start|play|playing|search|find|mute|cut|sing|keep|snap|take|analyze|type|apply|block|checkout|go\s+to|copy|watch|load|navigate|turn)\b", clean)
-            conjunctions = re.findall(r"\b(and|then|after\s+that)\b", clean)
-            
-            if len(set(actions)) >= 3:
-                return "autonomous"
-            if len(actions) >= 2 and len(conjunctions) >= 2:
-                return "autonomous"
-
-        # ─── SYSTEM: App control + PC commands ────────────────────────────
-
-        app_names = (r"chrome|brave|firefox|edge|code|vs\s*code|terminal|discord|spotify|steam|"
-                     r"notepad|excel|word|explorer|settings|calculator|obs|telegram|whatsapp|"
-                     r"task\s*manager|powershell|cmd|browser|blender|figma|slack|teams|outlook|paint")
-
-        if re.search(r"\b(open|launch|start|close|kill)\b", clean) and re.search(rf"\b({app_names})\b", clean):
-            if re.search(r"\b(and\s+(go|navigate|search|find|then|also|do))\b", clean):
-                return "autonomous"
-            return "system"
-
-        if re.search(r"\b(closing|opening|launching|starting)\b", clean) and re.search(rf"\b({app_names})\b", clean):
-            return "system"
-
-        if re.search(r"\b(take\s+(a\s+)?screenshot|screen\s*shot)\b", clean):
-            return "system"
-        if re.search(r"\b(lock\s+(the\s+|my\s+)?(pc|computer|screen)|"
-                     r"shut\s*down(\s+(the\s+)?(pc|computer))?|"
-                     r"restart(\s+(the\s+)?(pc|computer))?|"
-                     r"(put|sleep)\s+.{0,10}(pc|computer)(\s+to\s+sleep)?|"
-                     r"sleep\s+(the\s+)?(pc|computer)|"
-                     r"log\s*off|log\s*out)\b", clean):
-            return "system"
-        if re.search(r"\b(volume\s*(up|down)|mute|unmute|"
-                     r"(increase|decrease|turn\s+(up|down))\s*(the\s+)?(volume|brightness)|"
-                     r"brightness)\b", clean):
-            return "system"
-
-        # ─── AUTONOMOUS: Multi-step tasks ─────────────────────────────────
-
-        auto_pattern = (r"\b(search\s+for\s+.+\s+on\s+(amazon|flipkart|google|ebay|linkedin|indeed)|"
-                        r"book\s+(a\s+)?(flight|hotel|ticket|cab|ride)|"
-                        r"order\s+(a\s+|me\s+|food\s+|something\s+)?(from\s+)?|"
-                        r"buy\s+(me\s+)?(a\s+)?|"
-                        r"fill\s+(out\s+|in\s+)?(the\s+|this\s+|a\s+)?form|"
-                        r"go\s+to\s+\S+\s+(and|then)\s+|"
-                        r"navigate\s+to\s+.+\s+and\s+|"
-                        r"go\s+to\s+(google\s+maps|amazon|flipkart|github|linkedin))\b")
-        if re.search(auto_pattern, clean):
-            return "autonomous"
-
-        # Chain detection: action + "and" + follow-up action
-        if re.search(r"\b(search|find|go|navigate|look)\b", clean) and \
-           re.search(r"\b(and\s+(apply|save|sort|compare|add|buy|order|book|download|submit|click|then|filter|select))\b", clean):
-            return "autonomous"
-
-        if re.search(r"\b(do\s+it\s+(yourself|for\s+me)|do\s+this\s+for\s+me|"
-                     r"handle\s+it(\s+yourself)?|take\s+control|operate\s+(my\s+)?pc|"
-                     r"can\s+you\s+do\s+(it|this)\s+(for|by)\s+(me|yourself)|"
-                     r"just\s+do\s+it\s+for\s+me|"
-                     r"can\s+you\s+(order|book|buy|search|find)\s+.+\s+(online|for\s+me))\b", clean):
-            return "autonomous"
-
-        if re.search(r"\b(bruh|bro|yo|dude|fam)\b", clean) and \
-           re.search(r"\b(do\s+it|handle\s+it|just\s+do|for\s+me)\b", clean):
-            return "autonomous"
-
-        # ─── VISION: What's on screen ─────────────────────────────────────
-
-        if re.search(r"\b(what('s|\s+is)\s+(on\s+)?(my\s+)?(the\s+)?screen|"
-                     r"what('s|\s+is)\s+happening\s+on\s+(my\s+)?screen|"
-                     r"what\s+(do\s+you|can\s+you)\s+see|"
-                     r"(can\s+you\s+)?see\s+my\s+screen|"
-                     r"(look|looking)\s+at\s+(my\s+)?(screen|this)|"
-                     r"describe\s+(my\s+)?(screen|what)|"
-                     r"what('s|\s+is)\s+(this|that)\s+(on\s+)?(my\s+)?screen|"
-                     r"read\s+(my\s+)?screen|read\s+what's\s+on|"
-                     r"on\s+(the\s+)?screen\s+(right\s+)?now|"
-                     r"what\s+am\s+i\s+(looking\s+at|doing|watching)|"
-                     r"(see|check|lemme\s+see|let\s+me\s+see)\s+(whats|what's|what\s+is)\s+on\s+screen|"
-                     r"look\s+at\s+my\s+screen\s+and)\b", clean):
-            return "vision"
-
-        # ─── CODING: Code review, debugging ───────────────────────────────
-
-        if re.search(r"\b(check\s+(my\s+)?code|review\s+(my\s+)?code|"
-                     r"checking\s+(my\s+)?code|"
-                     r"how('s|\s+is)\s+my\s+code|any\s+(bug|error|mistake|issue)s?\s+(in\s+|with\s+)?(my\s+)?code|"
-                     r"debug\s+(this|my)|fix\s+(this|my)\s+(code|error|bug)|"
-                     r"watch\s+me\s+code|what('s|\s+is)\s+wrong\s+with\s+(my\s+)?code|"
-                     r"code\s+review|explain\s+(this|my)\s+code|"
-                     r"is\s+(this|my)\s+(code|solution)\s+(correct|right|wrong|good|bad|ok)|"
-                     r"(think|thought)\s+about\s+(this\s+|my\s+)?code|"
-                     r"help\s+me\s+(with\s+)?(this\s+)?(code|function|class|error|bug)|"
-                     r"help\s+me\s+fix\s+(this\s+)?(bug|error|issue)|"
-                     r"did\s+i\s+(do|code)\s+(it|this)?\s*(good|well|right|correct(ly)?)|"
-                     r"make\s+(this|my)\s+code\s+better|improve\s+(this|my)\s+code|"
-                     r"coding\s+question|"
-                     r"can\s+you\s+check\s+(it|this|my))\b", clean):
-            return "coding"
-
-        # ─── RESEARCH: Information lookup ─────────────────────────────────
-
-        if re.search(r"\b(search\s+for|look\s+up|google|"
-                     r"research\s+(about|on|into)|"
-                     r"find\s+(info|information|out)\s+(about|on))\b", clean):
-            if not re.search(r"\b(and\s+(then|apply|save|sort|add|buy|order|book|also|filter))\b", clean):
-                return "research"
-
-        # "what is X" / "who is X" — exclude common non-research words
-        non_research = r"(this|that|it|up|happening|going|wrong|good|bad|ok|2\+2|\d+\+\d+)"
-        if re.search(rf"\b(what\s+is\s+(?!{non_research}\b)(a\s+|an\s+)?\w{{3,}}|" 
-                     r"who\s+is\s+(?!this\b|that\b|it\b)\w{3,}|"
-                     r"tell\s+me\s+about\s+\w{3,}|"
-                     r"how\s+does\s+\w{3,}\s+work|"
-                     r"best\s+\w+\s+of\s+\d{4}|"
-                     rf"what\s+is\s+the\s+\w{{3,}}\s+of\s+\w{{3,}})\b", clean):
-            return "research"
-
-        # ─── ENTERTAINMENT: Music, media, anime ───────────────────────────
-
-        if re.search(r"\b(play\s+(some\s+|a\s+|my\s+)?\w*\s*(music|song|songs|anime|video|movie|tunes|playlist)|"
-                     r"sing\s+(a\s+)?song(\s+for\s+me)?|sing\s+for\s+me|^sing$|"
-                     r"recommend\s+(an?\s+|me\s+)?(anime|movie|song|show)|"
-                     r"suggest\s+(an?\s+|me\s+)?(a\s+)?(good\s+)?(anime|movie|song|show)|"
-                     r"next\s+song|previous\s+song|pause\s+music|resume\s+music|"
-                     r"put\s+on\s+(some\s+)?(music|anime|tunes)|"
-                     r"watch\s+(something|anime|a\s+movie|movies?|netflix|youtube|crunchyroll)|"
-                     r"(gimme|give\s+me)\s+(a\s+)?(song|music)\s*(recommendation|suggestion)?|"
-                     r"what\s+(anime|movie|show|song)?\s*should\s+i\s+(watch|listen|play)|"
-                     r"i\s+want\s+to\s+watch\s+(something|anime|a\s+movie)|"
-                     r"play\s+something)\b", clean):
-            return "entertainment"
-
-        # ─── WRITING: Note-taking ─────────────────────────────────────────
-
-        if re.search(r"\b(write\s+this\s+down|take\s+a\s+note|"
-                     r"note\s+this|remember\s+this|save\s+this|"
-                     r"type\s+(this|for\s+me)|start\s+dictating)\b", clean):
-            return "writing"
-
-        # ─── FOCUS: Productivity ──────────────────────────────────────────
-
-        if re.search(r"\b(start\s+pomodoro|i\s+need\s+to\s+focus|"
-                     r"help\s+me\s+(focus|concentrate)|block\s+distractions|"
-                     r"do\s+not\s+disturb|"
-                     r"set\s+(a\s+)?timer(\s+\d+\s*min)?|"
-                     r"\d+\s*min(ute)?s?\s*(timer|pomodoro|focus))\b", clean):
-            return "focus"
-
-
-        # ─── FALLBACK: Conversation ───────────────────────────────────────
-        return "conversation"
+        return IntentClassifier.classify(text)
 
     # ═══════════════════════════════════════════════════════════════════════════
     # TIER 3: INTENT ROUTING (silent — no announcements)
@@ -345,7 +181,10 @@ class ManagerAgent(BaseAgent):
             return await self._handle_vision_query(text, context)
 
         elif intent == "coding":
-            self.current_mode = "coding"
+            # Only enter continuous monitoring mode if explicitly requested
+            lower = text.lower()
+            if re.search(r"\b(start watching|watch again|monitor my code)\b", lower):
+                self.current_mode = "coding"
             return await self._handle_coding(text, context)
 
         elif intent == "research":

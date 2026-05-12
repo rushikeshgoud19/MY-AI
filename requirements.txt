@@ -20,7 +20,9 @@ requests
 Pillow
 pyscreeze
 pygetwindow
+pywin32
 edge-tts
 deepface
 opencv-python
 mediapipe
+python-gitlab
