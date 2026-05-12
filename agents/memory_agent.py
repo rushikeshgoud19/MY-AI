@@ -55,10 +55,23 @@ class MemoryAgent(BaseAgent):
         except Exception as e:
             self.log(f"Failed to load background models: {e}")
 
-        # Session State
-        self.is_logging = False
+        # Session State - Thread-safe using Event
+        self._logging_event = threading.Event()
+        self._logging_event.clear()  # Not logging initially
         self.session_buffer: List[str] = []
+        self.session_buffer_lock = threading.Lock()  # Protect buffer access
         self.logging_thread: Optional[threading.Thread] = None
+
+    @property
+    def is_logging(self) -> bool:
+        return self._logging_event.is_set()
+
+    @is_logging.setter
+    def is_logging(self, value: bool):
+        if value:
+            self._logging_event.set()
+        else:
+            self._logging_event.clear()
 
     async def execute(self, task_input: str, context: Optional[Dict] = None) -> Any:
         self.log(f"Processing memory task: {task_input}")
@@ -106,11 +119,12 @@ class MemoryAgent(BaseAgent):
     def _recording_loop(self):
         """Background thread that records audio in chunks and transcribes them."""
         self.log("Session recording loop active.")
-        chunk_duration = 10 # Record in 10-second chunks for responsiveness
-        fs = 16000 # Whisper expects 16kHz
+        chunk_duration = 10  # Record in 10-second chunks for responsiveness
+        fs = 16000  # Whisper expects 16kHz
 
         try:
-            while self.is_logging:
+            # Use event wait instead of polling is_logging flag
+            while self._logging_event.is_set():
                 try:
                     # Record chunk
                     recording = sd.rec(int(chunk_duration * fs), samplerate=fs, channels=1, dtype='float32')
@@ -123,22 +137,29 @@ class MemoryAgent(BaseAgent):
 
                     if text:
                         self.log(f"Session Log: {text}")
-                        self.session_buffer.append(f"[{datetime.now().strftime('%H:%M:%S')}] {text}")
+                        timestamp = datetime.now().strftime('%H:%M:%S')
+                        # Thread-safe append to buffer
+                        with self.session_buffer_lock:
+                            self.session_buffer.append(f"[{timestamp}] {text}")
 
                 except Exception as e:
                     self.log(f"Error in recording loop: {e}")
-                    time.sleep(2) # Cool down on error
+                    time.sleep(2)  # Cool down on error
         except Exception as e:
             self.log(f"Critical failure in recording loop: {e}")
         finally:
-            self.is_logging = False
+            self._logging_event.clear()
 
     async def _summarize_session(self) -> str:
-        if not self.session_buffer:
+        # Thread-safe buffer access
+        with self.session_buffer_lock:
+            buffer_copy = list(self.session_buffer)
+
+        if not buffer_copy:
             return "I don't have any logs for the current session, Master. Maybe you haven't spoken much?"
 
         self.log("Summarizing current session...")
-        full_transcript = "\n".join(self.session_buffer)
+        full_transcript = "\n".join(buffer_copy)
 
         # For the summary, we'll use a simplified version that can be expanded
         # when the AI model call is integrated.

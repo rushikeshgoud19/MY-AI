@@ -60,6 +60,7 @@ DEFAULT_CONFIG = {
     "openai_api_key": "",
     "anthropic_api_key": "",
     "openrouter_api_key": "",
+    "groq_api_key": "",
     "murf_api_key": "",
     "ai_model": "gemini",
     "gemini_model": "gemini-2.5-flash",
@@ -77,6 +78,7 @@ DEFAULT_CONFIG = {
     "mic_device_name": "",
     "mic_device_index": None,
     "voice_id": "ja-JP-NanamiNeural",
+    "edge_tts_voice": "ja-JP-NanamiNeural",
     "voice_style": "Cheerful",
     "voice_rate": -2,
     "voice_pitch": 6,
@@ -104,8 +106,17 @@ DEFAULT_CONFIG = {
     "window_scale": 1.0,
     "always_on_top": True,
     "dataset_path": os.path.join(os.path.dirname(os.path.abspath(__file__)), "dataset"),
-    "data_collection_enabled": True,
+    "data_collection_enabled": False,  # Default to False for privacy
     "data_collection_interval_sec": 5,
+    "system_settings": {
+        "wake_key": "f2",
+        "record_seconds": 6,
+        "wake_cooldown": 3.0,
+        "focus_minutes": 25,
+        "coding_monitor_interval": 30,
+        "vision_mode_interval": 15,
+        "max_actions_per_session": 100
+    },
     "data_collection_screen_scale": 1.0,
     "data_collection_capture_screen": True,
     "data_collection_capture_camera": True,
@@ -132,11 +143,69 @@ DEFAULT_CONFIG = {
 }
 
 def load_config() -> dict:
+    """Load configuration with validation and warnings."""
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-            return {**DEFAULT_CONFIG, **json.load(f)}
-    except Exception:
+            user_config = json.load(f)
+    except FileNotFoundError:
+        log_info("[CONFIG] No config.json found - using defaults")
         return DEFAULT_CONFIG.copy()
+    except json.JSONDecodeError as e:
+        log_info(f"[CONFIG] Invalid JSON in config.json: {e} - using defaults")
+        return DEFAULT_CONFIG.copy()
+    except Exception as e:
+        log_info(f"[CONFIG] Failed to load config: {e} - using defaults")
+        return DEFAULT_CONFIG.copy()
+
+    config = {**DEFAULT_CONFIG, **user_config}
+
+    # Validate critical settings and warn about missing values
+    _validate_config(config)
+
+    return config
+
+
+def _validate_config(config: dict):
+    """Validate config and log warnings for missing/invalid values."""
+    warnings = []
+
+    # Check for required API keys
+    ai_model = config.get("ai_model", "gemini")
+    if ai_model == "gemini" and not config.get("gemini_api_key"):
+        warnings.append("gemini_api_key is missing - Gemini AI will not work")
+    elif ai_model == "openai" and not config.get("openai_api_key"):
+        warnings.append("openai_api_key is missing - OpenAI will not work")
+    elif ai_model == "anthropic" and not config.get("anthropic_api_key"):
+        warnings.append("anthropic_api_key is missing - Claude will not work")
+
+    # Check for missing system_settings and validate them
+    system_settings = config.get("system_settings", {})
+    required_system_settings = {
+        "wake_key": str,
+        "record_seconds": (int, float),
+        "wake_cooldown": (int, float),
+        "focus_minutes": int,
+        "coding_monitor_interval": int,
+        "vision_mode_interval": int,
+        "max_actions_per_session": int,
+    }
+
+    for key, expected_type in required_system_settings.items():
+        if key not in system_settings:
+            warnings.append(f"system_settings.{key} not configured - using default")
+        else:
+            value = system_settings[key]
+            if isinstance(expected_type, tuple):
+                if not isinstance(value, expected_type):
+                    warnings.append(f"system_settings.{key} has invalid type - expected {expected_type}, got {type(value).__name__}")
+            elif not isinstance(value, expected_type):
+                warnings.append(f"system_settings.{key} has invalid type - expected {expected_type.__name__}, got {type(value).__name__}")
+
+    # Log all warnings
+    if warnings:
+        log_info("[CONFIG] Configuration warnings:")
+        for w in warnings:
+            log_info(f"  - {w}")
 
 CFG = load_config()
 
@@ -225,7 +294,10 @@ def _gemini_response(text: str, history: list, system_prompt: str) -> str:
     # Try primary model with retries, then fallback models
     models_to_try = [primary_model] + [m for m in fallback_models if m != primary_model]
     
+    skip_gemini = False
     for model in models_to_try:
+        if skip_gemini:
+            break
         for attempt in range(3):  # 3 retries per model
             try:
                 log_info(f"[AI] Trying {model} (attempt {attempt + 1})...")
@@ -242,12 +314,14 @@ def _gemini_response(text: str, history: list, system_prompt: str) -> str:
                     log_info(f"[AI] {model} unavailable (503), retrying in {wait_time}s...")
                     time.sleep(wait_time)
                     continue
-                elif "429" in err_str or "quota" in err_str or "exhausted" in err_str:
-                    log_info(f"[AI] {model} quota exhausted, trying next model...")
-                    break  # Skip to next model
+                elif "429" in err_str or "quota" in err_str or "exhausted" in err_str or "api key not valid" in err_str or "api_key_invalid" in err_str:
+                    log_info(f"[AI] Gemini API Key exhausted/invalid! Falling back directly to Groq...")
+                    skip_gemini = True
+                    break  # Skip all Gemini fallbacks
                 else:
                     raise  # Re-raise non-retryable errors
-        log_info(f"[AI] {model} failed after retries, trying next fallback...")
+        if not skip_gemini:
+            log_info(f"[AI] {model} failed after retries, trying next fallback...")
     
     # ── Last resort: Groq (free tier, fast) ──
     groq_key = CFG.get("groq_api_key", "")
@@ -311,7 +385,7 @@ def _anthropic_response(text: str, history: list[dict], system_prompt: str) -> s
             content = turn["parts"][0]["text"] if "parts" in turn else turn.get("content", "")
             messages.append({"role": role, "content": content})
         messages.append({"role": "user", "content": text})
-        model = CFG.get("anthropic_model", "claude-opus-4-6")
+        model = CFG.get("anthropic_model", "claude-3-opus-20240229")
         resp = client.messages.create(
             model=model,
             max_tokens=200,
@@ -461,7 +535,9 @@ COMMON_APPS = {
 }
 
 # ─── Runtime State ────────────────────────────────────────────────────────────
-WAKE_KEY = "f2"
+# Load system settings from config (with defaults for backward compatibility)
+_system_settings = CFG.get("system_settings", {})
+WAKE_KEY = _system_settings.get("wake_key", "f2")
 _recording_lock = threading.Lock()
 mizune_manager = ManagerAgent(CFG)
 mizune_manager.workers = {
@@ -510,7 +586,7 @@ try:
 except Exception:
     SAMPLE_RATE = 44100  # Fallback to standard HD audio
 log_info(f"[SERVER] Audio capture sample rate set to: {SAMPLE_RATE} Hz")
-RECORD_SECONDS = 6
+RECORD_SECONDS = _system_settings.get("record_seconds", 6)
 connected_clients: list[WebSocket] = []
 CHRONICLE = []
 recognizer = sr.Recognizer()
@@ -518,7 +594,7 @@ is_active_listening = False
 main_loop: Optional[asyncio.AbstractEventLoop] = None
 data_collector: Optional[DataCollector] = None
 LAST_WAKE_TIME = 0.0  # Cooldown tracker for wake word triggers
-WAKE_COOLDOWN = 3.0   # Seconds to ignore re-triggers after a wake event
+WAKE_COOLDOWN = _system_settings.get("wake_cooldown", 3.0)   # Seconds to ignore re-triggers after a wake event
 
 # ─── Load conversation history from DB on startup ──────────────────────────────
 try:
@@ -706,6 +782,55 @@ async def tts_endpoint(payload: dict):
     tts_text = re.sub(r'\b(hmph|mph)\b', 'humph', tts_text, flags=re.IGNORECASE)
     tts_text = re.sub(r'\bne\b\??', 'neh', tts_text, flags=re.IGNORECASE)
 
+    # ── Expand English contractions for Japanese TTS engine ──
+    # The Japanese voice reads contractions character-by-character, producing garbled output
+    contraction_map = {
+        r"\bshouldn't\b": "should not",
+        r"\bcan't\b": "cannot",
+        r"\bwon't\b": "will not",
+        r"\bdon't\b": "do not",
+        r"\bdoesn't\b": "does not",
+        r"\bdidn't\b": "did not",
+        r"\bisn't\b": "is not",
+        r"\baren't\b": "are not",
+        r"\bwasn't\b": "was not",
+        r"\bweren't\b": "were not",
+        r"\bhasn't\b": "has not",
+        r"\bhaven't\b": "have not",
+        r"\bhadn't\b": "had not",
+        r"\bcouldn't\b": "could not",
+        r"\bwouldn't\b": "would not",
+        r"\bmustn't\b": "must not",
+        r"\bI'm\b": "I am",
+        r"\bI've\b": "I have",
+        r"\bI'll\b": "I will",
+        r"\bI'd\b": "I would",
+        r"\byou're\b": "you are",
+        r"\byou've\b": "you have",
+        r"\byou'll\b": "you will",
+        r"\byou'd\b": "you would",
+        r"\bhe's\b": "he is",
+        r"\bshe's\b": "she is",
+        r"\bit's\b": "it is",
+        r"\bwe're\b": "we are",
+        r"\bwe've\b": "we have",
+        r"\bwe'll\b": "we will",
+        r"\bthey're\b": "they are",
+        r"\bthey've\b": "they have",
+        r"\bthey'll\b": "they will",
+        r"\bthere's\b": "there is",
+        r"\bthat's\b": "that is",
+        r"\bwhat's\b": "what is",
+        r"\bwho's\b": "who is",
+        r"\blet's\b": "let us",
+        r"\bhere's\b": "here is",
+        r"\bhow's\b": "how is",
+        r"\bwhere's\b": "where is",
+        r"\bain't\b": "is not",
+    }
+    for pattern, replacement in contraction_map.items():
+        tts_text = re.sub(pattern, replacement, tts_text, flags=re.IGNORECASE)
+
     # Voice selection — ja-JP-NanamiNeural = sweet Japanese idol voice (like Ai Hoshino)
     voice = CFG.get("edge_tts_voice", "ja-JP-NanamiNeural")
 
@@ -767,7 +892,6 @@ def broadcast_sync(message: dict):
                 pass
 
     try:
-        assert loop is not None
         asyncio.run_coroutine_threadsafe(_send(), loop)
     except RuntimeError as e:
         log_info(f"[BROADCAST] Failed: {e}")
@@ -884,27 +1008,38 @@ _last_coding_feedback = ""
 _vision_task_lock = threading.Lock()
 _vision_task_owner = None
 
-CODING_COACH_PROMPT = """You are Mizune, an adorable anime AI coding coach watching Master's screen.
-Analyze the screenshot.
+CODING_COACH_PROMPT = """You are Mizune, an expert anime AI coding coach watching Master's screen.
+Analyze the screenshot VERY carefully.
 
-If you see a BUG or MISTAKE in the code:
-Return ONLY a valid JSON object in this format:
-{
-  "status": "bug",
-  "feedback": "Master, you have an off-by-one error on line 5! I will fix it for you.",
-  "corrected_code": "def solve(nums):\\n    for i in range(len(nums)):\\n        print(nums[i])"
-}
-Ensure `corrected_code` contains the ENTIRE fixed code snippet so I can replace it on screen.
+STEP 1: Read the PROBLEM STATEMENT visible on screen (title, description, constraints, examples).
+STEP 2: Read Master's CURRENT CODE carefully, line by line.
+STEP 3: Mentally trace through the code with the example inputs shown on screen.
+STEP 4: Identify any bugs, logic errors, edge case failures, or inefficiencies.
 
-If the code looks GOOD or they just SOLVED something:
+If you find a BUG or MISTAKE:
 Return ONLY a valid JSON object:
 {
+  "status": "bug",
+  "feedback": "Master, your loop condition is wrong! It should be i < n, not i <= n. Let me fix it~",
+  "corrected_code": "FULL CORRECTED CODE HERE"
+}
+
+CRITICAL RULES for corrected_code:
+- Include the COMPLETE working solution, not just changed lines.
+- The code MUST be correct — mentally verify it against the examples on screen.
+- Handle edge cases (empty input, single element, large values).
+- Preserve the original function signature exactly as shown on screen.
+- Use ACTUAL newlines (not \\n literals). Preserve original indentation.
+- Do NOT add markdown fences or backticks around the code.
+- Do NOT add comments explaining changes — just provide clean working code.
+
+If the code looks CORRECT and well-written:
+{
   "status": "praise",
-  "feedback": "Sugoi Master! That two-pointer approach is perfect!"
+  "feedback": "Sugoi Master! Your solution is perfect! Submit it~!"
 }
 
 If they're IDLE, on a non-coding page, or the screen hasn't changed:
-Return ONLY a valid JSON object:
 {
   "status": "skip",
   "feedback": "[SKIP]"
@@ -912,8 +1047,8 @@ Return ONLY a valid JSON object:
 
 Rules:
 - Keep feedback to 1-2 short sentences MAX (spoken aloud).
-- Use cute expressions like "Master~", "sugoi!", "gambatte!", "ara~".
-- Return ONLY JSON. No markdown fences. No backticks."""
+- Use cute expressions: "Master~", "sugoi!", "gambatte!", "ara~".
+- Return ONLY valid JSON. No markdown. No backticks around the JSON."""
 
 CODING_HINT_PROMPT = """You are Mizune, an adorable anime AI coding coach. Master is stuck and asked for a hint.
 Look at the screenshot and give ONE helpful hint in 1-2 sentences. 
@@ -961,6 +1096,9 @@ def _analyze_screen_now(mode="review"):
         log_info("[CODING] Vision task skipped (another vision task active)")
         return
 
+    # Broadcast scanning UI
+    broadcast_sync({"type": "vision_update", "count": "Analyzing Code..."})
+
     try:
         image_bytes = _capture_screen_for_gemini()
         if not image_bytes:
@@ -989,7 +1127,7 @@ def _analyze_screen_now(mode="review"):
                             {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64_img}"}}
                         ]
                     }],
-                    max_tokens=200
+                    max_tokens=2048
                 )
                 feedback = (resp.choices[0].message.content or "").strip()
                 log_info(f"[CODING] Groq Vision success!")
@@ -1045,20 +1183,68 @@ def _analyze_screen_now(mode="review"):
                 return
 
             if status == "bug" and "corrected_code" in data:
-                # Speak feedback
-                log_info(f"[CODING] Auto-rectifying bug! {msg}")
+                code_to_paste = data["corrected_code"]
+                log_info(f"[CODING] Bug detected! Auto-typing fix into editor...")
+                
+                # ── Phase 1: Announce ──
+                broadcast_sync({"type": "vision_update", "count": "🔧 Fixing Code..."})
                 broadcast_sync({"type": "speak", "text": msg})
                 
-                # Auto-Rectify via PyAutoGUI & Clipboard
-                code_to_paste = data["corrected_code"]
+                # Safety backup: full code always on clipboard
                 pyperclip.copy(code_to_paste)
                 
-                # Assume cursor is in the editor. Select all and paste.
-                time.sleep(0.5)
-                pyautogui.hotkey("ctrl", "a")
-                time.sleep(0.2)
-                pyautogui.hotkey("ctrl", "v")
-                log_info("[CODING] Code patched directly on screen!")
+                try:
+                    # ── Phase 2: Focus the code editor ──
+                    time.sleep(1.0)
+                    
+                    # Dismiss autocomplete/tooltips
+                    pyautogui.press("escape")
+                    time.sleep(0.2)
+                    
+                    # Click on the code editor area (right side for LeetCode/HackerRank)
+                    screen_w, screen_h = pyautogui.size()
+                    editor_x = int(screen_w * 0.65)
+                    editor_y = int(screen_h * 0.45)
+                    pyautogui.click(editor_x, editor_y)
+                    time.sleep(0.3)
+                    
+                    # ── Phase 3: Clear the editor ──
+                    pyautogui.hotkey("ctrl", "a")
+                    time.sleep(0.2)
+                    pyautogui.press("delete")
+                    time.sleep(0.2)
+                    
+                    # ── Phase 4: Type code LINE BY LINE ──
+                    # Each line is pasted individually via clipboard for reliability
+                    # with a delay between lines = visible cascading typing effect
+                    lines = code_to_paste.split("\n")
+                    
+                    for i, line in enumerate(lines):
+                        pyperclip.copy(line)
+                        
+                        if i == 0:
+                            # First line: just paste directly (editor is empty)
+                            pyautogui.hotkey("ctrl", "v")
+                        else:
+                            # New line
+                            pyautogui.press("enter")
+                            time.sleep(0.03)
+                            # Kill Monaco's auto-indent: Home goes to col 0,
+                            # Shift+End selects any auto-indent whitespace,
+                            # then Ctrl+V replaces it with our properly-indented line
+                            pyautogui.press("home")
+                            pyautogui.hotkey("shift", "end")
+                            pyautogui.hotkey("ctrl", "v")
+                        
+                        time.sleep(0.08)  # 80ms per line = visible cascade
+                    
+                    log_info(f"[CODING] ✅ Auto-typed {len(lines)} lines into editor!")
+                    broadcast_sync({"type": "vision_update", "count": "✅ Code Fixed!"})
+                    time.sleep(2.0)
+                    
+                except Exception as type_err:
+                    log_info(f"[CODING] Auto-type failed ({type_err}), code is on clipboard")
+                    broadcast_sync({"type": "speak", "text": "I could not type it directly, Master, but I copied the fix to your clipboard!"})
                 
                 _last_coding_feedback = msg
                 return
@@ -1080,13 +1266,15 @@ def _analyze_screen_now(mode="review"):
         log_info(f"[CODING] Feedback: {feedback}")
         broadcast_sync({"type": "speak", "text": feedback})
     finally:
+        # Clear scanning UI
+        broadcast_sync({"type": "vision_update", "count": -1})
         _release_vision_lock(owner)
 
 
 def _coding_monitor_loop():
     """Background loop: captures screen every 30s → Gemini Vision → feedback."""
     log_info("[CODING] Monitor loop started — watching Master's screen!")
-    interval = 30  # seconds between screen reads (balanced: not too spammy, not too slow)
+    interval = _system_settings.get("coding_monitor_interval", 30)  # seconds between screen reads (balanced: not too spammy, not too slow)
     
     while _coding_monitor_running.is_set():
         # Check if paused
@@ -1258,6 +1446,8 @@ def _vision_mode_loop():
         finally:
             _release_vision_lock("vision_mode")
 
+    # Clear scanning UI when mode stops
+    broadcast_sync({"type": "vision_update", "count": -1})
     log_info("[VISION] Interactive Vision Mode stopped")
 
 
@@ -1291,8 +1481,122 @@ def process_command(text: str) -> str:
     if emotion != "neutral":
         broadcast_sync({"type": "emotion", "emotion": emotion})
 
-    # ── Camera Vision: "What do you see?" / "Look at me" / "What's on my camera" ──
-    if re.search(r"\b(what do you see|what can you see|look at me|look at my|what's on my camera|what is on my camera|whats going on my camera|what's going on|describe what you see|what am i doing|how do i look|what's around me|what's in front of you|who is here|who is in front|describe my room|look around)\b", lower_text):
+    # ── Screen Vision: "Look at my screen" / "What am I doing" / "What's on my screen" ──
+    # MUST be checked BEFORE Camera Vision because phrases like "what am i doing" are ambiguous
+    _is_screen_request = re.search(
+        r"\b(look at my screen|look at (the|my) screen|what('s| is) on (my |the )?screen|"
+        r"what am i (doing|looking at|working on)|what am i doing on (my )?(pc|computer|screen|monitor)|"
+        r"describe my screen|what's on my monitor|what is on my monitor|check my screen|"
+        r"see my screen|guess what i am doing|tell me what i am doing|"
+        r"see what('s| is) on (my )?screen|what('s| is) happening on (my )?screen)\b", lower_text)
+    if _is_screen_request:
+        if not _acquire_vision_lock("screen_vision"):
+            return "I'm already processing another vision task, Master~ Try again in a moment!"
+
+        try:
+            log_info("[SCREEN VISION] Taking a screenshot for analysis...")
+            broadcast_sync({"type": "status", "text": "Looking at your screen..."})
+            import pyautogui
+            import io
+            
+            # Take screenshot and compress it
+            screenshot = pyautogui.screenshot()
+            # Resize slightly to save bandwidth and token processing time
+            screenshot.thumbnail((1280, 720))
+            
+            buf = io.BytesIO()
+            screenshot.save(buf, format='JPEG', quality=70)
+            buf.seek(0)
+            screen_bytes = buf.read()
+
+            screen_prompt = f"""You are Mizune, Master's adorable anime AI companion.
+Master just asked: "{text}"
+You are looking at Master's computer screen RIGHT NOW via a screenshot.
+
+Describe what you see in detail:
+- What application is currently open?
+- What is Master working on, reading, or watching?
+- If there is code, what language is it and what does it do?
+- If there is a game or video, what is happening?
+
+Be observant and detailed but keep it natural and in character.
+Use cute expressions. Keep it to 2-3 sentences max since this will be spoken aloud.
+Start with an emotion tag: [EMOTION: happy], [EMOTION: surprised], [EMOTION: curious], etc."""
+
+            # Try Groq Vision first (free, fast)
+            groq_key = CFG.get("groq_api_key", "")
+            if groq_key:
+                try:
+                    import base64
+                    from openai import OpenAI
+                    b64_img = base64.b64encode(screen_bytes).decode("utf-8")
+                    groq_client = OpenAI(api_key=groq_key, base_url="https://api.groq.com/openai/v1")
+                    resp = groq_client.chat.completions.create(
+                        model="meta-llama/llama-4-scout-17b-16e-instruct",
+                        messages=[{"role": "user", "content": [
+                            {"type": "text", "text": screen_prompt},
+                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"}}
+                        ]}],
+                        max_tokens=300
+                    )
+                    result = (resp.choices[0].message.content or "").strip()
+                    if result:
+                        log_info(f"[SCREEN VISION] Groq success!")
+                        emotion = detect_emotion(result)
+                        if emotion != "neutral":
+                            broadcast_sync({"type": "emotion", "emotion": emotion})
+                        CHRONICLE.append({"role": "user", "parts": [{"text": text}]})
+                        CHRONICLE.append({"role": "model", "parts": [{"text": result}]})
+                        return result
+                except Exception as e:
+                    log_info(f"[SCREEN VISION] Groq failed: {e}")
+
+            # Fallback: Gemini Vision
+            api_key = CFG.get("gemini_api_key", "")
+            if api_key:
+                from google import genai
+                from google.genai import types
+                
+                client = genai.Client(api_key=api_key)
+                for model in ["gemini-2.0-flash", "gemini-2.5-flash"]:
+                    try:
+                        response = client.models.generate_content(
+                            model=model,
+                            contents=[
+                                types.Part.from_bytes(data=screen_bytes, mime_type="image/jpeg"),
+                                types.Part.from_text(text=screen_prompt)
+                            ]
+                        )
+                        result = (response.text or "").strip()
+                        if result:
+                            log_info(f"[SCREEN VISION] {model} success!")
+                            emotion = detect_emotion(result)
+                            if emotion != "neutral":
+                                broadcast_sync({"type": "emotion", "emotion": emotion})
+                            CHRONICLE.append({"role": "user", "parts": [{"text": text}]})
+                            CHRONICLE.append({"role": "model", "parts": [{"text": result}]})
+                            return result
+                    except Exception as model_err:
+                        err_str = str(model_err).lower()
+                        if "503" in err_str or "429" in err_str:
+                            continue
+                        log_info(f"[SCREEN VISION] {model} failed: {model_err}")
+                        continue
+            
+            return "[EMOTION: sad] I couldn't see your screen properly, Master! My vision might be blurry right now."
+        except Exception as e:
+            log_info(f"[SCREEN VISION] Error: {e}")
+            return f"[EMOTION: sad] Ahh! Something went wrong when I tried to look at your screen!"
+        finally:
+            _release_vision_lock("screen_vision")
+
+    # ── Camera Vision: "Look at me" / "What do you see through camera" / "How do I look" ──
+    # Only triggers for explicit camera/body/face/room references (NOT screen)
+    if re.search(r"\b(what do you see|what can you see|look at me|how do i look|"
+                 r"what('s| is) on my camera|whats going on my camera|"
+                 r"describe what you see|what's around me|what's in front of you|"
+                 r"who is here|who is in front|describe my room|look around|"
+                 r"see me|can you see me|look at my face)\b", lower_text):
         cam = mizune_manager.workers.get("camera")
         if cam:
             if not _acquire_vision_lock("camera_vision"):
@@ -1338,7 +1642,6 @@ Start with an emotion tag: [EMOTION: happy] or [EMOTION: surprised] etc."""
                                     result = (response.text or "").strip()
                                     if result:
                                         log_info(f"[CAMERA VISION] {model} success!")
-                                        # Extract emotion and broadcast
                                         emotion = detect_emotion(result)
                                         if emotion != "neutral":
                                             broadcast_sync({"type": "emotion", "emotion": emotion})
@@ -1361,78 +1664,6 @@ Start with an emotion tag: [EMOTION: happy] or [EMOTION: surprised] etc."""
                 _release_vision_lock("camera_vision")
         else:
             return "[EMOTION: sad] I don't have a camera connected right now, Master!"
-
-    # ── Screen Vision: "Look at my screen" / "What am I looking at?" ──
-    if re.search(r"\b(look at my screen|what am i looking at|what is on my screen|describe my screen|what am i doing on my pc|what's on my monitor)\b", lower_text):
-        if not _acquire_vision_lock("screen_vision"):
-            return "I'm already processing another vision task, Master~ Try again in a moment!"
-
-        try:
-            log_info("[SCREEN VISION] Taking a screenshot for analysis...")
-            broadcast_sync({"type": "status", "text": "Looking at your screen..."})
-            import pyautogui
-            import io
-            
-            # Take screenshot and compress it
-            screenshot = pyautogui.screenshot()
-            # Resize slightly to save bandwidth and token processing time
-            screenshot.thumbnail((1280, 720))
-            
-            img_byte_arr = io.BytesIO()
-            screenshot.save(img_byte_arr, format='JPEG', quality=85)
-            screen_bytes = img_byte_arr.getvalue()
-
-            screen_prompt = f"""You are Mizune, Master's adorable anime AI companion. 
-Master just asked: "{text}"
-You are looking directly at Master's PC screen RIGHT NOW.
-
-Describe what you see in detail:
-- What application is currently open?
-- What is Master working on, reading, or watching?
-- If there is code, what language is it and what does it do?
-- If there is a game or video, what is happening?
-
-Be observant and detailed but keep it natural and in character.
-Use cute expressions. Keep it to 2-3 sentences max since this will be spoken aloud.
-Start with an emotion tag: [EMOTION: happy], [EMOTION: surprised], [EMOTION: curious], etc."""
-
-            api_key = CFG.get("gemini_api_key", "")
-            if api_key:
-                from google import genai
-                from google.genai import types
-                
-                client = genai.Client(api_key=api_key)
-                for model in ["gemini-2.0-flash", "gemini-2.5-flash"]:
-                    try:
-                        response = client.models.generate_content(
-                            model=model,
-                            contents=[
-                                types.Part.from_bytes(data=screen_bytes, mime_type="image/jpeg"),
-                                types.Part.from_text(text=screen_prompt)
-                            ]
-                        )
-                        result = (response.text or "").strip()
-                        if result:
-                            log_info(f"[SCREEN VISION] {model} success!")
-                            emotion = detect_emotion(result)
-                            if emotion != "neutral":
-                                broadcast_sync({"type": "emotion", "emotion": emotion})
-                            CHRONICLE.append({"role": "user", "parts": [{"text": text}]})
-                            CHRONICLE.append({"role": "model", "parts": [{"text": result}]})
-                            return result
-                    except Exception as model_err:
-                        err_str = str(model_err).lower()
-                        if "503" in err_str or "429" in err_str:
-                            continue
-                        log_info(f"[SCREEN VISION] {model} failed: {model_err}")
-                        continue
-            
-            return "[EMOTION: sad] I couldn't see your screen properly, Master! My vision might be blurry right now."
-        except Exception as e:
-            log_info(f"[SCREEN VISION] Error: {e}")
-            return f"[EMOTION: sad] Ahh! Something went wrong when I tried to look at your screen!"
-        finally:
-            _release_vision_lock("screen_vision")
 
     # ── Vision Mode toggle commands ──
     if re.search(r"\b(watch me|interactive mode|companion mode|vision mode|start watching)\b", lower_text):
@@ -1779,7 +2010,8 @@ Start with an emotion tag: [EMOTION: happy], [EMOTION: surprised], [EMOTION: cur
             log_info(f"[ACTION] Searching Spotify Web Player for: {song_query}")
             try:
                 subprocess.Popen(f'start brave "https://open.spotify.com/search/{encoded}"', shell=True)
-            except Exception as e: pass
+            except Exception as e:
+                log_info(f"[ACTION] Spotify launch failed: {e}")
             return f"Playing {song_query} on Spotify right now!"
 
         # ── 3b. Netflix / Streaming Service Search (Zero Token Cost) ──
@@ -1932,6 +2164,8 @@ Start with an emotion tag: [EMOTION: happy], [EMOTION: surprised], [EMOTION: cur
             log_info(f"[ACTION] Launching URL: {url} via {browser_name or 'default'}")
             if browser_name:
                 browser_exe = COMMON_APPS.get(browser_name, browser_name)
+                # Sanitize to prevent shell injection
+                browser_exe = re.sub(r'[&|;<>^]', '', browser_exe)
                 try:
                     subprocess.Popen(f'start {browser_exe} "{url}"', shell=True)
                 except Exception:
@@ -2055,6 +2289,9 @@ def launch_app(target: str):
         return
 
     exe = COMMON_APPS.get(target, target)
+    # Sanitize to prevent shell injection
+    exe = re.sub(r'[&|;<>^]', '', exe)
+    
     log_info(f"[ACTION] Launching: {exe}")
     if exe.startswith("http") or exe.startswith("ms-"):
         webbrowser.open(exe)
@@ -2069,6 +2306,9 @@ def close_app(target: str):
     # Extract just the filename if it's a full path or URL
     if exe.startswith("http") or exe.startswith("ms-"):
         return # Cannot taskkill URLs or UWP apps easily via taskkill
+    
+    # Sanitize to prevent shell injection
+    exe = re.sub(r'[&|;<>^]', '', exe)
     
     if not exe.endswith(".exe"):
         exe += ".exe"

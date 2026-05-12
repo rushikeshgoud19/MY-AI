@@ -1,0 +1,10 @@
+{
+  "headless": false,
+  "slow_mo_ms": 0,
+  "chrome_exe": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+  "brave_exe": "C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe",
+  "chrome_profile_dir": "C:\\Users\\rushi\\AppData\\Local\\Google\\Chrome\\User Data",
+  "brave_profile_dir": "C:\\Users\\rushi\\AppData\\Local\\BraveSoftware\\Brave-Browser\\User Data",
+  "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+  "netflix_url": "https://www.netflix.com/watch/80057281"
+}

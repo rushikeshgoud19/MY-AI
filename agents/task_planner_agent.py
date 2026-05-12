@@ -65,6 +65,8 @@ ACTIONS:
 - save_note: Save information to notes file. Params: {{"content": "text to save"}}
 - run_terminal_command: Execute a command in powershell/cmd. Params: {{"command": "mkdir new_project && code new_project"}}
 - write_file: Create or edit a file directly. Params: {{"path": "index.html", "content": "<html>..."}}
+- gitlab_action: Interact with GitLab repositories. Params: {{"operation": "create_issue|list_issues|create_mr|get_file", "project": "namespace/project", "title": "...", "description": "...", "file_path": "..."}}
+
 
 SAFETY LEVELS:
 - "read_only": Just observing (screenshot, verify, report)
@@ -92,14 +94,15 @@ Return ONLY valid JSON:
 
 RULES:
 1. Always start with opening the right app/URL if not already there
-2. Add "wait" steps after page navigation (2-3 seconds)
-3. Add "verify" steps after important actions to confirm success
-4. Add "screenshot" before complex interactions to see current state
-5. If the task involves money or sending messages, set requires_confirmation=true
-6. If unsure about an element's exact name, describe it clearly
-7. Include "on_failure" for each step
-8. Keep steps atomic — ONE action per step
-9. End with a "report" step to tell the user what happened"""
+2. For web searches (YouTube, Google, Amazon, etc), DO NOT use click and type. Instead, construct the direct search URL (e.g. "https://www.youtube.com/results?search_query=...") and use open_url.
+3. Add "wait" steps after page navigation (2-3 seconds)
+4. Add "verify" steps after important actions to confirm success
+5. Add "screenshot" before complex interactions to see current state
+6. If the task involves money or sending messages, set requires_confirmation=true
+7. If unsure about an element's exact name, describe it clearly
+8. Include "on_failure" for each step
+9. Keep steps atomic — ONE action per step
+10. End with a "report" step to tell the user what happened"""
 
     REPLAN_PROMPT = """The previous plan step FAILED.
 
@@ -260,31 +263,25 @@ Use the same JSON format as before. Start from the current screen state."""
 
     async def _call_llm(self, prompt: str) -> Optional[Dict]:
         """Call LLM and parse JSON response."""
-        if not self._gemini_client:
-            self.log("No LLM client available for planning")
-            return None
-
         try:
-            from google.genai import types
-            safety_settings = [
-                types.SafetySetting(category=c, threshold=types.HarmBlockThreshold.BLOCK_NONE)
-                for c in [
-                    types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-                    types.HarmCategory.HARM_CATEGORY_HARASSMENT,
-                    types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-                    types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-                ]
-            ]
+            # Route through our decoupled LLMService for robust fallbacks (Gemini -> Groq -> OpenAI)
+            import sys
+            import os
+            # Ensure core is in path if not already
+            if os.path.abspath('.') not in sys.path:
+                sys.path.append(os.path.abspath('.'))
+                
+            from core.llm_service import LLMService
             
-            model = self.config.get("gemini_model", "gemini-2.5-flash")
-            response = self._gemini_client.models.generate_content(
-                model=model,
-                contents=prompt,
-                config=types.GenerateContentConfig(safety_settings=safety_settings)
+            # Use the LLM service which automatically handles 429 rate limits and fallbacks
+            raw = LLMService.get_ai_response(
+                text=prompt,
+                history=[],
+                system_prompt_override="You are an autonomous JSON planner. You must ONLY return raw JSON. No markdown blocks, no backticks.",
+                cfg=self.config
             )
 
-            raw = response.text.strip()
-            # Strip markdown code fences
+            # Strip markdown code fences in case the LLM ignored instructions
             raw = re.sub(r"^```(?:json)?\s*", "", raw)
             raw = re.sub(r"\s*```$", "", raw)
             raw = raw.strip()

@@ -16,6 +16,7 @@ const log = (msg) => {
 };
 window.onerror = (msg, url, line) => log(`ERROR: ${msg} at ${url}:${line}`);
 log('Renderer started.');
+const nowSeconds = () => Date.now() / 1000;
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 const CONFIG_PATH = path.join(process.cwd(), 'config.json');
@@ -38,9 +39,15 @@ let isListening = false;
 let waveStartTime = 0;
 
 // Emotion system with smooth blending
-let currentEmotion = 'neutral';
+let currentEmotion = 'neutral'; // Text-driven emotion
 let currentMode = 'conversation';
 let emotionTimer = 0;
+let cameraEmotion = 'neutral';
+let cameraEmotionAt = 0;
+let activeEmotion = 'neutral';
+const EMOTION_TEXT_WEIGHT = 0.6;
+const EMOTION_CAMERA_WEIGHT = 0.4;
+const EMOTION_CAMERA_TTL = 4.0;
 let emotionBlends = { happy: 0, sad: 0, angry: 0, surprised: 0, relaxed: 0 };
 let targetBlends  = { happy: 0.8, sad: 0, angry: 0, surprised: 0, relaxed: 0.2 };
 
@@ -61,6 +68,18 @@ let blinkPhase = 0; // 0=closed, 1=open
 // Lip sync with smooth interpolation
 let audioAnalyzer = null;
 let audioDataArray = null;
+let micAnalyzer = null;
+let micDataArray = null;
+let micStream = null;
+let micSource = null;
+let micInitAttempted = false;
+let micGateUntil = 0;
+const MIC_GATE = 0.05;
+const MIC_GATE_LISTENING = 0.02;
+const MIC_GATE_HOLD = 0.25;
+const MIC_BOOST = 1.2;
+const LIP_SYNC_GATE = 0.03;
+const TTS_GATE = 0.01;
 let mouthVolume = 0;
 let smoothMouthA = 0;
 let smoothMouthOh = 0;
@@ -215,6 +234,30 @@ let isDragging = false;
 
 // ─── Audio Unlock (Fix C) ───────────────────────────────────────────────────
 let audioCtx = null;
+async function initMicLipSync() {
+    if (micInitAttempted) return;
+    micInitAttempted = true;
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        log('[MIC] getUserMedia not available in this environment.');
+        return;
+    }
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+            audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+        });
+        micStream = stream;
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') await audioCtx.resume();
+        micSource = audioCtx.createMediaStreamSource(stream);
+        micAnalyzer = audioCtx.createAnalyser();
+        micAnalyzer.fftSize = 256;
+        micDataArray = new Uint8Array(micAnalyzer.frequencyBinCount);
+        micSource.connect(micAnalyzer);
+        log('[MIC] Lip-sync mic capture enabled.');
+    } catch (e) {
+        log('[MIC] Mic capture failed: ' + (e.message || e));
+    }
+}
 async function resumeAudio() {
     if (!audioCtx) {
         audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -223,6 +266,7 @@ async function resumeAudio() {
         await audioCtx.resume();
         log('[AUDIO] Context resumed on user gesture.');
     }
+    initMicLipSync().catch(e => log('[MIC] Init error: ' + (e.message || e)));
 }
 
 // Global unlock on any interaction
@@ -367,27 +411,102 @@ function updateBlink(deltaTime) {
         }
     }
 
-    em.setValue('blink', blinkValue);
+    // Suppress blink if currently making an expression that closes eyes
+    // (prevents geometry clipping/blinding effect when eyes are already closed)
+    const suppressBlink = ['happy', 'smile', 'sleepy', 'blush', 'shy', 'excited'].includes(activeEmotion);
+    const finalBlink = suppressBlink ? 0 : blinkValue;
+
+    em.setValue('blink', finalBlink);
 }
 
 // ─── Emotion Blend System (smooth transitions) ────────────────────────────────
-function setTargetEmotion(emotion) {
-    targetBlends = { happy: 0, sad: 0, angry: 0, surprised: 0, relaxed: 0 };
-    targetBlush = 0;
+function normalizeEmotionName(raw) {
+    const key = (raw || '').toString().toLowerCase();
+    const map = {
+        joy: 'happy',
+        joyful: 'happy',
+        cheerful: 'happy',
+        surprise: 'surprised',
+        curious: 'thinking',
+    };
+    return map[key] || key;
+}
 
-    if (emotion === 'happy')          { targetBlends.happy = 1.0; }
-    else if (emotion === 'blush')     { targetBlends.happy = 0.6; targetBlush = 1.0; blushDecayTimer = 6.0; }
-    else if (emotion === 'smile')     { targetBlends.happy = 0.7; targetBlends.relaxed = 0.3; }
-    else if (emotion === 'sad')       { targetBlends.sad = 0.8; }
-    else if (emotion === 'angry')     { targetBlends.angry = 0.5; targetBlends.sad = 0.2; }
-    else if (emotion === 'surprised') { targetBlends.surprised = 1.0; }
-    // New emotions
-    else if (emotion === 'thinking')  { targetBlends.happy = 0.15; targetBlends.relaxed = 0.5; }
-    else if (emotion === 'pout')      { targetBlends.sad = 0.25; targetBlends.angry = 0.2; }
-    else if (emotion === 'excited')   { targetBlends.happy = 1.0; targetBlends.surprised = 0.3; }
-    else if (emotion === 'shy')       { targetBlends.happy = 0.4; targetBlush = 1.0; blushDecayTimer = 8.0; }
-    else if (emotion === 'sleepy')    { targetBlends.relaxed = 0.8; targetBlends.sad = 0.15; }
-    else                              { targetBlends.relaxed = 0.2; }
+function emotionToBlend(emotion) {
+    const blends = { happy: 0, sad: 0, angry: 0, surprised: 0, relaxed: 0 };
+    let blush = 0;
+    const e = normalizeEmotionName(emotion);
+
+    if (e === 'happy')          { blends.happy = 1.0; }
+    else if (e === 'blush')     { blends.happy = 0.6; blush = 1.0; }
+    else if (e === 'smile')     { blends.happy = 0.7; blends.relaxed = 0.3; }
+    else if (e === 'sad')       { blends.sad = 0.8; }
+    else if (e === 'angry')     { blends.angry = 0.5; blends.sad = 0.2; }
+    else if (e === 'surprised') { blends.surprised = 1.0; }
+    else if (e === 'thinking')  { blends.happy = 0.15; blends.relaxed = 0.5; }
+    else if (e === 'pout')      { blends.sad = 0.25; blends.angry = 0.2; }
+    else if (e === 'excited')   { blends.happy = 1.0; blends.surprised = 0.3; }
+    else if (e === 'shy')       { blends.happy = 0.4; blush = 1.0; }
+    else if (e === 'sleepy')    { blends.relaxed = 0.8; blends.sad = 0.15; }
+    else if (e === 'fear')      { blends.sad = 0.6; blends.surprised = 0.3; blends.relaxed = 0.1; }
+    else if (e === 'disgust')   { blends.angry = 0.3; blends.sad = 0.2; }
+    else                        { blends.relaxed = 0.2; }
+
+    return { blends, blush, name: e };
+}
+
+function setTextEmotion(emotion, duration = 5.0) {
+    const info = emotionToBlend(emotion);
+    currentEmotion = info.name;
+    emotionTimer = Math.max(0, duration);
+
+    if (info.name === 'blush') { targetBlush = 1.0; blushDecayTimer = 6.0; }
+    if (info.name === 'shy')   { targetBlush = 1.0; blushDecayTimer = 8.0; }
+}
+
+function applyBlendedEmotion(nowSec) {
+    const textActive = currentEmotion !== 'neutral' && emotionTimer > 0;
+    const cameraActive = cameraEmotion !== 'neutral' && (nowSec - cameraEmotionAt) <= EMOTION_CAMERA_TTL;
+
+    let textWeight = textActive ? EMOTION_TEXT_WEIGHT : 0;
+    let cameraWeight = cameraActive ? EMOTION_CAMERA_WEIGHT : 0;
+    const total = textWeight + cameraWeight;
+
+    if (total <= 0) {
+        const neutral = emotionToBlend('neutral');
+        for (const key of Object.keys(targetBlends)) {
+            targetBlends[key] = neutral.blends[key];
+        }
+        activeEmotion = 'neutral';
+        return;
+    }
+
+    textWeight /= total;
+    cameraWeight /= total;
+
+    const textBlend = emotionToBlend(currentEmotion);
+    const camBlend = emotionToBlend(cameraEmotion);
+
+    for (const key of Object.keys(targetBlends)) {
+        targetBlends[key] = (textBlend.blends[key] * textWeight) + (camBlend.blends[key] * cameraWeight);
+    }
+
+    if (textActive && (textBlend.name === 'blush' || textBlend.name === 'shy')) {
+        targetBlush = Math.max(targetBlush, 1.0);
+    }
+
+    activeEmotion = textActive ? textBlend.name : (cameraActive ? camBlend.name : 'neutral');
+}
+
+function setTargetEmotion(emotion) {
+    const info = emotionToBlend(emotion);
+    for (const key of Object.keys(targetBlends)) {
+        targetBlends[key] = info.blends[key];
+    }
+    if (info.blush > 0) {
+        targetBlush = info.blush;
+        blushDecayTimer = info.name === 'shy' ? 8.0 : 6.0;
+    }
 }
 
 function updateEmotionBlends(deltaTime) {
@@ -406,76 +525,108 @@ let smoothMouthIh = 0;
 let smoothMouthEe = 0;
 let smoothMouthOu = 0;
 
+function getBandsFromAnalyzer(analyzer, dataArray) {
+    if (!analyzer || !dataArray) return null;
+    analyzer.getByteFrequencyData(dataArray);
+    const len = dataArray.length;
+
+    let lowSum = 0, midSum = 0, highSum = 0;
+    const lowEnd = Math.min(4, len);
+    const midEnd = Math.min(10, len);
+    const highEnd = Math.min(20, len);
+
+    for (let i = 1; i < lowEnd; i++) lowSum += dataArray[i];
+    for (let i = lowEnd; i < midEnd; i++) midSum += dataArray[i];
+    for (let i = midEnd; i < highEnd; i++) highSum += dataArray[i];
+
+    const low = lowSum / Math.max(1, lowEnd - 1) / 255;
+    const mid = midSum / Math.max(1, midEnd - lowEnd) / 255;
+    const high = highSum / Math.max(1, highEnd - midEnd) / 255;
+    const volume = (low + mid + high) / 3;
+
+    return { low, mid, high, volume };
+}
+
 function updateLipSync(deltaTime, time) {
     if (!currentVrm || !currentVrm.expressionManager) return;
     const em = currentVrm.expressionManager;
     const lerpSpeed = deltaTime * 14.0; // smooth but responsive
 
-    if (isSpeaking) {
-        let lowBand = 0, midBand = 0, highBand = 0, rawVolume = 0;
+    const ttsBands = getBandsFromAnalyzer(audioAnalyzer, audioDataArray);
+    const micBandsRaw = getBandsFromAnalyzer(micAnalyzer, micDataArray);
+    const nowSec = nowSeconds();
+    let micBands = null;
+    let micVolume = 0;
 
-        if (audioAnalyzer) {
-            audioAnalyzer.getByteFrequencyData(audioDataArray);
-            const len = audioDataArray.length;
-
-            // Split into 3 frequency bands for vowel mapping
-            // Low (vowels like 'aa', 'oh'): bins 1-4
-            // Mid (vowels like 'ih', 'ou'): bins 4-10
-            // High (vowels like 'ee', consonants): bins 10-20
-            let lowSum = 0, midSum = 0, highSum = 0;
-            const lowEnd = Math.min(4, len);
-            const midEnd = Math.min(10, len);
-            const highEnd = Math.min(20, len);
-
-            for (let i = 1; i < lowEnd; i++) lowSum += audioDataArray[i];
-            for (let i = lowEnd; i < midEnd; i++) midSum += audioDataArray[i];
-            for (let i = midEnd; i < highEnd; i++) highSum += audioDataArray[i];
-
-            lowBand  = lowSum / Math.max(1, lowEnd - 1) / 255;
-            midBand  = midSum / Math.max(1, midEnd - lowEnd) / 255;
-            highBand = highSum / Math.max(1, highEnd - midEnd) / 255;
-            rawVolume = (lowBand + midBand + highBand) / 3;
-        } else {
-            // Fallback: simulate varied mouth movement with multiple frequencies (subtle)
-            rawVolume = 0.12
-                + 0.12 * Math.sin(time * 18.0)
-                + 0.06 * Math.sin(time * 31.0 + 1.2)
-                + 0.03 * Math.sin(time * 47.0 + 2.4);
-            lowBand  = 0.15 + 0.15 * Math.sin(time * 14.0);
-            midBand  = 0.12 + 0.12 * Math.sin(time * 22.0 + 0.8);
-            highBand = 0.08 + 0.10 * Math.sin(time * 35.0 + 1.5);
+    if (micBandsRaw) {
+        const boosted = {
+            low: micBandsRaw.low * MIC_BOOST,
+            mid: micBandsRaw.mid * MIC_BOOST,
+            high: micBandsRaw.high * MIC_BOOST,
+            volume: micBandsRaw.volume * MIC_BOOST,
+        };
+        const threshold = isListening ? MIC_GATE_LISTENING : MIC_GATE;
+        if (boosted.volume > threshold) {
+            micGateUntil = nowSec + MIC_GATE_HOLD;
         }
+        if (boosted.volume > threshold || nowSec < micGateUntil) {
+            micBands = boosted;
+            micVolume = boosted.volume;
+        }
+    }
 
-        mouthVolume = clamp(rawVolume, 0, 1);
+    const hasTtsAnalyzer = !!ttsBands;
+    const ttsVolume = ttsBands ? ttsBands.volume : 0;
+    const ttsActive = hasTtsAnalyzer && ttsVolume > TTS_GATE;
+    let lowBand = 0, midBand = 0, highBand = 0, rawVolume = 0;
+    let useFallback = false;
 
-        // Map frequency bands to vowel shapes (TUNED: smaller, cuter mouth movements)
-        // aa = wide open mouth (dominant low frequencies)
-        // oh = rounded mouth (low + some mid)
-        // ih = slight open (mid frequencies)
-        // ee = wide smile (high frequencies)
-        // ou = pursed lips (mid with low support)
-        const targetA  = clamp(lowBand * 1.1, 0, 0.45);
-        const targetOh = clamp(lowBand * 0.5 - highBand * 0.2, 0, 0.35);
-        const targetIh = clamp(midBand * 1.0 - lowBand * 0.3, 0, 0.30);
-        const targetEe = clamp(highBand * 1.2 - lowBand * 0.3, 0, 0.35);
-        const targetOu = clamp(midBand * 0.6 + lowBand * 0.2 - highBand * 0.3, 0, 0.25);
+    if (!ttsActive && !micBands) {
+        if (isSpeaking && !hasTtsAnalyzer) {
+            useFallback = true;
+        } else {
+            mouthVolume   = 0;
+            smoothMouthA  = lerp(smoothMouthA,  0, Math.min(lerpSpeed, 1.0));
+            smoothMouthOh = lerp(smoothMouthOh, 0, Math.min(lerpSpeed, 1.0));
+            smoothMouthIh = lerp(smoothMouthIh, 0, Math.min(lerpSpeed, 1.0));
+            smoothMouthEe = lerp(smoothMouthEe, 0, Math.min(lerpSpeed, 1.0));
+            smoothMouthOu = lerp(smoothMouthOu, 0, Math.min(lerpSpeed, 1.0));
+            em.setValue('aa', smoothMouthA);
+            em.setValue('oh', smoothMouthOh);
+            em.setValue('ih', smoothMouthIh);
+            em.setValue('ee', smoothMouthEe);
+            em.setValue('ou', smoothMouthOu);
 
-        // Add subtle micro-variation for naturalness
-        const micro = 0.03 * Math.sin(time * 25.0 + 0.7);
+            if (!isSpeaking && smoothMouthA < 0.01 && smoothMouthOh < 0.01 && smoothMouthIh < 0.01) {
+                audioAnalyzer = null;
+            }
+            return;
+        }
+    }
 
-        smoothMouthA  = lerp(smoothMouthA,  targetA + micro,  Math.min(lerpSpeed, 1.0));
-        smoothMouthOh = lerp(smoothMouthOh, targetOh,         Math.min(lerpSpeed * 0.8, 1.0));
-        smoothMouthIh = lerp(smoothMouthIh, targetIh,         Math.min(lerpSpeed * 0.9, 1.0));
-        smoothMouthEe = lerp(smoothMouthEe, targetEe,         Math.min(lerpSpeed * 0.7, 1.0));
-        smoothMouthOu = lerp(smoothMouthOu, targetOu,         Math.min(lerpSpeed * 0.7, 1.0));
-
-        em.setValue('aa', smoothMouthA);
-        em.setValue('oh', smoothMouthOh);
-        em.setValue('ih', smoothMouthIh);
-        em.setValue('ee', smoothMouthEe);
-        em.setValue('ou', smoothMouthOu);
+    if (useFallback) {
+        rawVolume = 0.12
+            + 0.12 * Math.sin(time * 18.0)
+            + 0.06 * Math.sin(time * 31.0 + 1.2)
+            + 0.03 * Math.sin(time * 47.0 + 2.4);
+        lowBand  = 0.15 + 0.15 * Math.sin(time * 14.0);
+        midBand  = 0.12 + 0.12 * Math.sin(time * 22.0 + 0.8);
+        highBand = 0.08 + 0.10 * Math.sin(time * 35.0 + 1.5);
     } else {
-        mouthVolume   = 0;
+        const ttsWeight = ttsActive ? ttsVolume : 0;
+        const micWeight = micBands ? micVolume : 0;
+        const total = ttsWeight + micWeight;
+        const wTts = total > 0 ? ttsWeight / total : 0;
+        const wMic = total > 0 ? micWeight / total : 0;
+
+        lowBand  = (ttsBands ? ttsBands.low : 0) * wTts + (micBands ? micBands.low : 0) * wMic;
+        midBand  = (ttsBands ? ttsBands.mid : 0) * wTts + (micBands ? micBands.mid : 0) * wMic;
+        highBand = (ttsBands ? ttsBands.high : 0) * wTts + (micBands ? micBands.high : 0) * wMic;
+        rawVolume = clamp(total, 0, 1);
+    }
+
+    if (!isSpeaking && !micBands && rawVolume < LIP_SYNC_GATE) {
+        mouthVolume = 0;
         smoothMouthA  = lerp(smoothMouthA,  0, Math.min(lerpSpeed, 1.0));
         smoothMouthOh = lerp(smoothMouthOh, 0, Math.min(lerpSpeed, 1.0));
         smoothMouthIh = lerp(smoothMouthIh, 0, Math.min(lerpSpeed, 1.0));
@@ -486,17 +637,44 @@ function updateLipSync(deltaTime, time) {
         em.setValue('ih', smoothMouthIh);
         em.setValue('ee', smoothMouthEe);
         em.setValue('ou', smoothMouthOu);
-
-        // Release analyzer only after mouth is fully closed
-        if (smoothMouthA < 0.01 && smoothMouthOh < 0.01 && smoothMouthIh < 0.01) {
-            audioAnalyzer = null;
-        }
+        return;
     }
+
+    mouthVolume = clamp(rawVolume, 0, 1);
+
+    const targetA  = clamp(lowBand * 1.1, 0, 0.45);
+    const targetOh = clamp(lowBand * 0.5 - highBand * 0.2, 0, 0.35);
+    const targetIh = clamp(midBand * 1.0 - lowBand * 0.3, 0, 0.30);
+    const targetEe = clamp(highBand * 1.2 - lowBand * 0.3, 0, 0.35);
+    const targetOu = clamp(midBand * 0.6 + lowBand * 0.2 - highBand * 0.3, 0, 0.25);
+
+    const micro = 0.03 * Math.sin(time * 25.0 + 0.7);
+
+    smoothMouthA  = lerp(smoothMouthA,  targetA + micro,  Math.min(lerpSpeed, 1.0));
+    smoothMouthOh = lerp(smoothMouthOh, targetOh,         Math.min(lerpSpeed * 0.8, 1.0));
+    smoothMouthIh = lerp(smoothMouthIh, targetIh,         Math.min(lerpSpeed * 0.9, 1.0));
+    smoothMouthEe = lerp(smoothMouthEe, targetEe,         Math.min(lerpSpeed * 0.7, 1.0));
+    smoothMouthOu = lerp(smoothMouthOu, targetOu,         Math.min(lerpSpeed * 0.7, 1.0));
+
+    em.setValue('aa', smoothMouthA);
+    em.setValue('oh', smoothMouthOh);
+    em.setValue('ih', smoothMouthIh);
+    em.setValue('ee', smoothMouthEe);
+    em.setValue('ou', smoothMouthOu);
 }
 
 // ─── Animation Loop ───────────────────────────────────────────────────────────
+let fpsInterval = 1000 / 30; // 30 FPS cap
+let lastFrameTime = performance.now();
+
 function animate() {
     requestAnimationFrame(animate);
+    
+    const now = performance.now();
+    const elapsed = now - lastFrameTime;
+    if (elapsed < fpsInterval) return;
+    lastFrameTime = now - (elapsed % fpsInterval);
+
     const deltaTime = clock.getDelta();
 
     if (currentVrm) {
@@ -510,7 +688,6 @@ function animate() {
             emotionTimer -= deltaTime;
             if (emotionTimer <= 0) {
                 currentEmotion = 'neutral';
-                setTargetEmotion('neutral');
             }
         }
 
@@ -518,26 +695,27 @@ function animate() {
         updateBlink(deltaTime);
 
         // ── Emotion blends ──
+        applyBlendedEmotion(nowSeconds());
         updateEmotionBlends(deltaTime);
         updateBlush(deltaTime);
 
         // ── Special emotion animations ──
         // Thinking: curious head tilt
-        if (currentEmotion === 'thinking') {
+        if (activeEmotion === 'thinking') {
             const thinkTilt = 0.12 * Math.sin(time * 0.5);
             if (humanoid.getRawBoneNode('head')) {
                 humanoid.getRawBoneNode('head').rotation.z += thinkTilt;
             }
         }
         // Sleepy: gentle head droop
-        if (currentEmotion === 'sleepy') {
+        if (activeEmotion === 'sleepy') {
             const droopAmount = 0.06 + 0.03 * Math.sin(time * 0.3);
             if (humanoid.getRawBoneNode('head')) {
                 humanoid.getRawBoneNode('head').rotation.x += droopAmount;
             }
         }
         // Excited: subtle bounce via spine
-        if (currentEmotion === 'excited') {
+        if (activeEmotion === 'excited') {
             const bounceVal = Math.abs(Math.sin(time * 6.0)) * 0.008;
             if (humanoid.getRawBoneNode('spine')) {
                 humanoid.getRawBoneNode('spine').position.y += bounceVal;
@@ -774,10 +952,9 @@ function connectWebSocket() {
         }
 
         if (msg.type === 'emotion') {
-            currentEmotion = msg.emotion;
-            emotionTimer = 5.0;
-            setTargetEmotion(msg.emotion);
-            logTerminal(`Emotion detected: ${msg.emotion}`, 'emotion');
+            const normalized = normalizeEmotionName(msg.emotion);
+            setTextEmotion(normalized, 5.0);
+            logTerminal(`Emotion detected: ${normalized}`, 'emotion');
         }
 
         if (msg.type === 'config_reloaded') {
@@ -827,20 +1004,24 @@ function connectWebSocket() {
         if (msg.type === 'emotion_track') {
             const emojiMap = {
                 happy: '😊', sad: '😢', angry: '😠', fear: '😨',
-                surprise: '😲', disgust: '🤢', neutral: '😐'
+                surprise: '😲', surprised: '😲', disgust: '🤢', neutral: '😐'
             };
             const colorMap = {
                 happy: 'rgba(46, 204, 113, 0.4)', sad: 'rgba(52, 152, 219, 0.4)',
                 angry: 'rgba(231, 76, 60, 0.4)', fear: 'rgba(155, 89, 182, 0.4)',
-                surprise: 'rgba(241, 196, 15, 0.4)', disgust: 'rgba(39, 174, 96, 0.4)',
+                surprise: 'rgba(241, 196, 15, 0.4)', surprised: 'rgba(241, 196, 15, 0.4)',
+                disgust: 'rgba(39, 174, 96, 0.4)',
                 neutral: 'rgba(167, 119, 227, 0.35)'
             };
             const hudEmoji = document.getElementById('emotion-hud-emoji');
             const hudLabel = document.getElementById('emotion-hud-label');
             const hud = document.getElementById('emotion-hud');
-            if (hudEmoji) hudEmoji.textContent = emojiMap[msg.emotion] || '😐';
-            if (hudLabel) hudLabel.textContent = msg.emotion || 'neutral';
-            if (hud) hud.style.borderColor = colorMap[msg.emotion] || colorMap.neutral;
+            const normalized = normalizeEmotionName(msg.emotion);
+            cameraEmotion = normalized || 'neutral';
+            cameraEmotionAt = nowSeconds();
+            if (hudEmoji) hudEmoji.textContent = emojiMap[msg.emotion] || emojiMap[normalized] || '😐';
+            if (hudLabel) hudLabel.textContent = normalized || 'neutral';
+            if (hud) hud.style.borderColor = colorMap[msg.emotion] || colorMap[normalized] || colorMap.neutral;
         }
 
         if (msg.type === 'status') {
@@ -878,9 +1059,7 @@ function connectWebSocket() {
 
         if (msg.type === 'listening_start') {
             isListening = true;
-            currentEmotion = 'surprised';
-            emotionTimer = 10.0; // Stay in this state until listening stops
-            setTargetEmotion('surprised');
+            setTextEmotion('surprised', 10.0); // Stay in this state until listening stops
             if (statusEl) {
                 statusEl.classList.add('listening');
                 statusEl.textContent = "Listening... (I can hear you!)";
@@ -890,8 +1069,7 @@ function connectWebSocket() {
         if (msg.type === 'listening_stop') {
             isListening = false;
             if (currentEmotion === 'surprised') {
-                currentEmotion = 'neutral';
-                setTargetEmotion('neutral');
+                setTextEmotion('neutral', 0);
             }
             if (statusEl) {
                 statusEl.classList.remove('listening');

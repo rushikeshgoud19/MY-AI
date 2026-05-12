@@ -47,7 +47,9 @@ class ActionExecutorAgent(BaseAgent):
         self._screen_width, self._screen_height = pyautogui.size()
         self._last_screenshot: Optional[Image.Image] = None
         self._action_count = 0
-        self._max_actions_per_session = 100  # Hard safety limit
+        # Load from config with fallback to default
+        _system_settings = config.get("system_settings", {})
+        self._max_actions_per_session = _system_settings.get("max_actions_per_session", 100)  # Hard safety limit
         self.log(f"ActionExecutorAgent initialized. Screen: {self._screen_width}x{self._screen_height}")
 
     async def execute(self, task_input: str, context: Optional[Dict] = None) -> Any:
@@ -111,6 +113,7 @@ class ActionExecutorAgent(BaseAgent):
             "ask_confirmation": self._action_ask_confirmation,
             "run_terminal_command": self._action_run_terminal_command,
             "write_file": self._action_write_file,
+            "gitlab_action": self._action_gitlab_action,
         }
 
         handler = handlers.get(action)
@@ -296,11 +299,90 @@ class ActionExecutorAgent(BaseAgent):
         question = params.get("question", "Should I proceed?")
         return {"success": True, "needs_confirmation": True, "question": question}
 
+    # ─── Security: Command Allowlist ─────────────────────────────────────────
+    # Commands that are SAFE to execute without user confirmation
+    _ALLOWED_COMMANDS = {
+        "python", "python3", "pip", "pip3", "node", "npm", "npx",
+        "git", "git clone", "git pull", "git push", "git status",
+        "cd", "dir", "ls", "pwd", "echo", "type", "cat",
+        "code", "notepad", "calc", "explorer", "start",
+        "curl", "wget", "ping", "ipconfig", "hostname",
+        "tasklist", "taskkill", "systeminfo", "whoami",
+    }
+
+    # Commands that require explicit user confirmation
+    _DANGEROUS_COMMANDS = {
+        "rm", "del", "rd", "rmdir", "format", "diskpart",
+        "reg", "regedit", "netsh", "shutdown", "restart",
+        "taskmgr", "msconfig", "gpedit", "cleanmgr",
+        "new-service", "new-netfirewallrule", "set-executionpolicy",
+    }
+
+    def _validate_command(self, command: str) -> Tuple[bool, str]:
+        """
+        Validate command for safety - prevents shell injection attacks.
+        Returns (is_safe, reason).
+        """
+        import re
+
+        # Block command chaining (;; && || |)
+        if any(op in command.lower() for op in [";;", "&&", "||", "|", ">>", "2>", "1>", "0>"]):
+            return False, "Command chaining not allowed"
+
+        # Block environment variable manipulation
+        if re.search(r'\$\([^)]+\)|\$\w+|`[^`]+`', command):
+            return False, "Variable substitution not allowed"
+
+        # Block I/O redirection
+        if re.search(r'[<>]\s*\d?', command):
+            return False, "I/O redirection not allowed"
+
+        # Block known dangerous commands
+        cmd_lower = command.lower().strip()
+        for dangerous in self._DANGEROUS_COMMANDS:
+            if cmd_lower.startswith(dangerous) or f" {dangerous}" in cmd_lower:
+                return False, f"Dangerous command '{dangerous}' requires confirmation"
+
+        # Block paths outside user directories (unless explicitly allowed)
+        # Allow: %USERPROFILE%, %APPDATA%, %TEMP%, C:\Users\<user>
+        user_home = os.path.expanduser("~").lower()
+        allowed_prefixes = [user_home.lower()]
+
+        # Extract paths from command
+        path_pattern = r'([A-Za-z]:\\[^\s]+|[/~][^\s]+)'
+        paths = re.findall(path_pattern, command)
+        for path in paths:
+            expanded = os.path.expanduser(path).lower()
+            if not any(expanded.startswith(prefix) for prefix in allowed_prefixes):
+                # Allow temp directory
+                if "temp" in expanded or "tmp" in expanded:
+                    continue
+                return False, f"Path not allowed: {path}"
+
+        # If command is in allowlist, it's safe
+        for allowed in self._ALLOWED_COMMANDS:
+            if cmd_lower.startswith(allowed) or f" {allowed}" in cmd_lower:
+                return True, "Command in allowlist"
+
+        # Unknown command - require confirmation
+        return False, "Command not in allowlist - confirmation required"
+
     async def _action_run_terminal_command(self, params: Dict, context: Optional[Dict]) -> Dict:
-        """Execute a command in PowerShell/CMD."""
+        """Execute a command in PowerShell/CMD with security validation."""
         command = params.get("command", "")
         if not command:
             return {"success": False, "error": "No command provided"}
+
+        # Security validation
+        is_safe, reason = self._validate_command(command)
+        if not is_safe:
+            self.log(f"COMMAND BLOCKED: {reason}")
+            return {
+                "success": False,
+                "error": f"Command blocked for safety: {reason}",
+                "needs_confirmation": True,
+                "raw_command": command
+            }
 
         self.log(f"Running command: {command}")
         try:
@@ -327,25 +409,131 @@ class ActionExecutorAgent(BaseAgent):
             return {"success": False, "error": f"Failed to run command: {e}"}
 
     async def _action_write_file(self, params: Dict, context: Optional[Dict]) -> Dict:
-        """Create or edit a file directly."""
+        """Create or edit a file directly with path validation."""
         path = params.get("path", "")
         content = params.get("content", "")
         if not path:
             return {"success": False, "error": "No path provided"}
 
-        self.log(f"Writing file: {path}")
+        # Security: Validate and sanitize path
+        user_home = os.path.expanduser("~")
+        allowed_dirs = [
+            user_home,
+            os.path.join(user_home, "Desktop"),
+            os.path.join(user_home, "Documents"),
+            os.path.join(user_home, "Downloads"),
+            os.path.join(user_home, "Projects"),
+            os.path.join(user_home, "Code"),
+        ]
+
         try:
             # Expand ~ if used
             expanded_path = os.path.expanduser(path)
-            # Create directories if they don't exist
-            os.makedirs(os.path.dirname(os.path.abspath(expanded_path)), exist_ok=True)
-            
-            with open(expanded_path, "w", encoding="utf-8") as f:
+            # Get absolute path and normalize
+            abs_path = os.path.abspath(expanded_path)
+            # Resolve any .. or symlinks
+            resolved_path = os.path.realpath(abs_path)
+
+            # Check if path is in allowed directories
+            is_allowed = False
+            for allowed_dir in allowed_dirs:
+                allowed_abs = os.path.abspath(allowed_dir)
+                if resolved_path.startswith(allowed_abs):
+                    is_allowed = True
+                    break
+
+            if not is_allowed:
+                self.log(f"PATH BLOCKED: {resolved_path} not in allowed directories")
+                return {
+                    "success": False,
+                    "error": "Path not allowed. Files can only be written to Desktop, Documents, Downloads, Projects, or Code folders.",
+                    "needs_confirmation": True,
+                    "requested_path": path
+                }
+
+            # Additional check: prevent overwriting system files
+            filename = os.path.basename(resolved_path).lower()
+            system_files = {
+                "autoexec.bat", "config.sys", "boot.ini", "ntldr",
+                "bootmgr", "pagefile.sys", "hiberfil.sys",
+                ".bashrc", ".bash_profile", ".bash_history",
+                ".zshrc", ".profile", ".ssh", "known_hosts"
+            }
+            if filename in system_files or filename.startswith("."):
+                self.log(f"PATH BLOCKED: Attempted to write system/hidden file: {filename}")
+                return {"success": False, "error": f"Cannot write to system or hidden file: {filename}"}
+
+            self.log(f"Writing file: {resolved_path}")
+            # Create directories if they don't exist (only within allowed dirs)
+            parent_dir = os.path.dirname(resolved_path)
+            if os.path.isdir(parent_dir):
+                os.makedirs(parent_dir, exist_ok=True)
+
+            with open(resolved_path, "w", encoding="utf-8") as f:
                 f.write(content)
-                
-            return {"success": True, "message": f"Successfully wrote to {expanded_path}"}
+
+            return {"success": True, "message": f"Successfully wrote to {resolved_path}"}
         except Exception as e:
             return {"success": False, "error": f"Failed to write file: {e}"}
+
+    async def _action_gitlab_action(self, params: Dict, context: Optional[Dict]) -> Dict:
+        """Handle GitLab operations (MCP-style integration)."""
+        operation = params.get("operation", "")
+        project = params.get("project", "")
+        
+        self.log(f"GitLab Action: {operation} on {project}")
+        
+        # In a real MCP setup, we would call the MCP server here.
+        # For the hackathon, we can use the python-gitlab library or simple requests.
+        
+        token = self.config.get("gitlab_token")
+        url = self.config.get("gitlab_url", "https://gitlab.com")
+        
+        if not token:
+            return {
+                "success": False, 
+                "error": "GitLab token not found in config. Please add 'gitlab_token' to config.json"
+            }
+
+        try:
+            import gitlab
+            gl = gitlab.Gitlab(url, private_token=token)
+            
+            if operation == "create_issue":
+                p = gl.projects.get(project)
+                issue = p.issues.create({
+                    'title': params.get("title", "Mizune AI Issue"),
+                    'description': params.get("description", "Created by Mizune AI")
+                })
+                return {"success": True, "message": f"Issue created: {issue.web_url}", "url": issue.web_url}
+                
+            elif operation == "list_issues":
+                p = gl.projects.get(project)
+                issues = p.issues.list(state='opened', limit=5)
+                issue_list = [f"#{i.iid}: {i.title}" for i in issues]
+                return {"success": True, "message": f"Found {len(issue_list)} issues", "issues": issue_list}
+                
+            elif operation == "get_file":
+                p = gl.projects.get(project)
+                f = p.files.get(file_path=params.get("file_path"), ref='main')
+                content = f.decode().decode('utf-8')
+                return {"success": True, "message": "File content retrieved", "content": content}
+            
+            elif operation == "create_mr":
+                p = gl.projects.get(project)
+                mr = p.mergerequests.create({
+                    'source_branch': params.get("source_branch", "mizune-patch"),
+                    'target_branch': params.get("target_branch", "main"),
+                    'title': params.get("title", "Mizune AI Improvement"),
+                })
+                return {"success": True, "message": f"MR created: {mr.web_url}", "url": mr.web_url}
+
+            return {"success": False, "error": f"Unsupported GitLab operation: {operation}"}
+            
+        except ImportError:
+            return {"success": False, "error": "python-gitlab library not installed. Run 'pip install python-gitlab'"}
+        except Exception as e:
+            return {"success": False, "error": f"GitLab error: {str(e)}"}
 
     # ─── Utilities ────────────────────────────────────────────────────────────
 
