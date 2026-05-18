@@ -219,6 +219,10 @@ class IntentClassifier:
         if cls._SYSTEM_VOLUME.search(clean):
             return "system"
 
+        # SYSTEM: Messaging commands ("tell [name]", "message [name]")
+        if re.search(r"\b(tell|message)\s+(?!me\b|us\b|them\b|him\b|her\b)\w{2,}\b", clean):
+            return "system"
+
         # AUTONOMOUS: Multi-step tasks
         if cls._AUTONOMOUS_MULTI_STEP.search(clean):
             return "autonomous"

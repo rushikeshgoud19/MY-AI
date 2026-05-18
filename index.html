@@ -2,57 +2,38 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>Mizune — AI Companion</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <!-- Three.js canvas container -->
-    <div id="container"></div>
-
-    <!-- Drag hint (fades in on hover) -->
-    <div id="drag-hint">drag me ✦</div>
-
-    <!-- Terminal Overlay -->
-    <div id="terminal-overlay">
-        <div class="terminal-header">
-            <span>Mizune Terminal</span>
-            <button type="button" class="terminal-close" onclick="toggleTerminal()">✕</button>
+    <!-- Draggable title bar (for frameless window) -->
+    <div id="title-bar" data-tauri-drag-region>
+        <span id="title-text">Mizune</span>
+        <div id="title-controls">
+            <button type="button" id="btn-minimize" title="Minimize">─</button>
+            <button type="button" id="btn-close" title="Close">✕</button>
         </div>
-        <div id="terminal-content"></div>
     </div>
+
+    <!-- Three.js canvas container (full window behind UI) -->
+    <div id="container"></div>
 
     <!-- Status dot -->
     <div id="status-indicator"></div>
 
-    <!-- Interaction hint -->
-    <div id="interaction-hint">Hold Alt and click to interact</div>
-
-    <!-- Vision indicator -->
-    <div id="vision-indicator" class="hidden">
-        <span class="vision-dot"></span>
-        <span id="vision-text">SCANNING: 0</span>
-    </div>
-
-    <!-- Emotion HUD (shows detected emotion in real-time) -->
+    <!-- Emotion HUD (compact) -->
     <div id="emotion-hud">
         <span id="emotion-hud-emoji">😐</span>
-        <span id="emotion-hud-label">neutral</span>
     </div>
 
-    <!-- Settings button (top-left, appears on hover) -->
-    <button type="button" id="settings-btn" title="Settings" onclick="openSettings()">⚙</button>
+    <!-- Response bubble (compact speech bubble) -->
+    <div id="response-bubble" class="hidden"></div>
 
-    <!-- UI Overlay -->
-    <div id="ui-overlay">
-        <div id="response-bubble" class="hidden"></div>
-        <div id="status"></div>
-    </div>
-
-    <!-- Text Chat Input Bar -->
+    <!-- Chat input (minimal, bottom) -->
     <div id="chat-bar">
-        <input id="chat-input" type="text" placeholder="Type to Mizune..." maxlength="300" />
-        <button type="button" id="chat-send" onclick="sendTextMessage()">↑</button>
+        <input id="chat-input" type="text" placeholder="Talk to Mizune..." maxlength="300" />
+        <button type="button" id="chat-send" title="Send">↑</button>
     </div>
 
     <!-- Import Map for ES Modules -->

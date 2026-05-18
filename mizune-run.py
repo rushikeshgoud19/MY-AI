@@ -26,7 +26,7 @@ async def self_heal_crash(command, stderr_output):
     try:
         with open("config.json", "r") as f:
             config = json.load(f)
-    except:
+    except (FileNotFoundError, json.JSONDecodeError):
         config = {}
 
     planner = TaskPlannerAgent(config)

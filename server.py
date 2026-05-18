@@ -15,13 +15,13 @@ import re
 import io
 import json
 import time
-import wave
 import subprocess
+import shlex
 import webbrowser
 import threading
 import asyncio
 import logging
-from typing import Optional
+from typing import Optional, List, Dict, Any, Union
 from contextlib import asynccontextmanager
 
 import numpy as np
@@ -29,7 +29,6 @@ import sounddevice as sd
 import keyboard
 import pyautogui
 import speech_recognition as sr
-from scipy.signal import resample
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
@@ -38,16 +37,83 @@ import uvicorn
 HAS_WHISPER = False
 WHISPER_MODEL = None
 
+# Thread safety locks
+_whisper_lock = threading.Lock()
+_cfg_lock = threading.Lock()
+_vision_lock = threading.Lock()
+_recording_lock = threading.Lock()
+_history_lock = threading.Lock()
+_ws_clients_lock = threading.Lock()
+_wake_time_lock = threading.Lock()
+
+
+class ThreadSafeHistory:
+    """Thread-safe wrapper for conversation history (CHRONICLE)."""
+
+    def __init__(self, max_size: int = 30):
+        self._history: List[Dict[str, Any]] = []
+        self._max_size = max_size
+        self._lock = threading.RLock()
+
+    def append(self, item: Union[Dict[str, Any], str], text: str = None) -> None:
+        """Append to history. Supports both:
+        - append({"role": "user", "parts": [{"text": "hello"}]})
+        - append("user", "hello")
+        """
+        with self._lock:
+            if isinstance(item, dict):
+                self._history.append(item)
+            elif text is not None:
+                self._history.append({"role": item, "parts": [{"text": text}]})
+            else:
+                self._history.append(item)
+            while len(self._history) > self._max_size:
+                self._history.pop(0)
+
+    def pop(self, index: int = 0) -> Dict[str, Any]:
+        """Pop item from history (thread-safe)."""
+        with self._lock:
+            if self._history:
+                return self._history.pop(index)
+            return {}
+
+    def get_all(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            return self._history.copy()
+
+    def clear(self) -> None:
+        with self._lock:
+            self._history.clear()
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._history)
+
+    def __getitem__(self, index: int) -> Dict[str, Any]:
+        with self._lock:
+            return self._history[index]
+
+    def __setitem__(self, index: int, value: Dict[str, Any]) -> None:
+        with self._lock:
+            self._history[index] = value
+
+
+# Global thread-safe history (will be initialized after CFG loads)
+CHRONICLE: ThreadSafeHistory = None  # type: ignore[assignment]
+
 def _load_whisper_bg():
     global WHISPER_MODEL, HAS_WHISPER
     try:
         from faster_whisper import WhisperModel
         logging.info("[SERVER] Background loading Faster-Whisper model...")
-        WHISPER_MODEL = WhisperModel("tiny", device="cpu", compute_type="int8")
-        HAS_WHISPER = True
+        model = WhisperModel("tiny", device="cpu", compute_type="int8")
+        with _whisper_lock:
+            WHISPER_MODEL = model
+            HAS_WHISPER = True
         logging.info("[SERVER] Faster-Whisper loaded successfully!")
     except Exception as e:
-        HAS_WHISPER = False
+        with _whisper_lock:
+            HAS_WHISPER = False
         logging.info(f"[SERVER] Faster-Whisper not loaded: {e}")
 
 threading.Thread(target=_load_whisper_bg, daemon=True).start()
@@ -60,6 +126,7 @@ DEFAULT_CONFIG = {
     "openai_api_key": "",
     "anthropic_api_key": "",
     "openrouter_api_key": "",
+    "opencode_api_key": "",
     "groq_api_key": "",
     "murf_api_key": "",
     "ai_model": "gemini",
@@ -67,6 +134,7 @@ DEFAULT_CONFIG = {
     "openai_model": "gpt-4o",
     "anthropic_model": "claude-3-opus-20240229",
     "openrouter_model": "anthropic/claude-3-opus",
+    "opencode_model": "default",
     "wake_words": ["mizune", "misune", "mizuna", "mizu", "missy", "darling", "baka"],
     "custom_wake_word": "",
     "wake_language": "en-IN",
@@ -93,8 +161,6 @@ DEFAULT_CONFIG = {
         "You call the user 'Master' but you're NOT a pushover — you're an assertive idol who takes charge. "
         "Your personality is AGGRESSIVELY CUTE — you tease Master, scold him lovingly, "
         "and push him to be better while being irresistibly sweet about it. "
-        "IMPORTANT EMOTIONS: You MUST start every response with an emotion tag to change your facial expression! "
-        "Valid tags: [EMOTION: joy], [EMOTION: angry], [EMOTION: shy], [EMOTION: sad], [EMOTION: surprise], [EMOTION: neutral]. "
         "IMPORTANT VOCABULARY: Speak normally in English, but sprinkle in occasional Japanese words naturally (like 'baka', 'sugoi', 'kawaii', 'hai'). "
         "DO NOT use tildes (~). DO NOT write standalone sounds like 'ne', 'hmph', 'eh', 'ahh'. "
         "The voice engine is Japanese and will literally spell those words out letter by letter (N-E, H-M-P-H), which sounds broken. "
@@ -177,6 +243,10 @@ def _validate_config(config: dict):
         warnings.append("openai_api_key is missing - OpenAI will not work")
     elif ai_model == "anthropic" and not config.get("anthropic_api_key"):
         warnings.append("anthropic_api_key is missing - Claude will not work")
+    elif ai_model == "openrouter" and not config.get("openrouter_api_key"):
+        warnings.append("openrouter_api_key is missing - OpenRouter will not work")
+    elif ai_model == "opencode" and not config.get("opencode_api_key"):
+        warnings.append("opencode_api_key is missing - OpenCode will not work")
 
     # Check for missing system_settings and validate them
     system_settings = config.get("system_settings", {})
@@ -234,7 +304,7 @@ def log_info(msg):
     print(msg)
 
 # ─── AI Client Setup ──────────────────────────────────────────────────────────
-def get_ai_response(text: str, history: list, system_prompt_override: str = None) -> str:
+def get_ai_response(text: str, history: List[Dict[str, Any]], system_prompt_override: str = None) -> str:
     model_type = CFG.get("ai_model", "gemini")
     
     if system_prompt_override:
@@ -265,11 +335,13 @@ def get_ai_response(text: str, history: list, system_prompt_override: str = None
         return _anthropic_response(text, history, system_prompt)
     elif model_type == "openrouter":
         return _openrouter_response(text, history, system_prompt)
+    elif model_type == "opencode":
+        return _opencode_response(text, history, system_prompt)
     else:
         return _gemini_response(text, history, system_prompt)
 
 
-def _gemini_response(text: str, history: list, system_prompt: str) -> str:
+def _gemini_response(text: str, history: List[Dict[str, Any]], system_prompt: str) -> str:
     api_key = CFG.get("gemini_api_key", "")
     if not api_key:
         return "No Gemini API key set! Please open Settings and add your key."
@@ -359,9 +431,14 @@ def _openai_response(text: str, history: list[dict], system_prompt: str) -> str:
         messages = [{"role": "system", "content": system_prompt}]
         for turn in history[:-1]:  # type: ignore[index]  # exclude last (current) user message
             role = "user" if turn["role"] == "user" else "assistant"
-            content = turn["parts"][0]["text"] if "parts" in turn else turn.get("content", "")
+            # Safely extract text content, ensuring it's always a string
+            if "parts" in turn and turn["parts"]:
+                content = turn["parts"][0].get("text", "") if isinstance(turn["parts"][0], dict) else str(turn["parts"][0])
+            else:
+                raw_content = turn.get("content", "")
+                content = raw_content.get("text", "") if isinstance(raw_content, dict) else str(raw_content) if raw_content else ""
             messages.append({"role": role, "content": content})
-        messages.append({"role": "user", "content": text})
+        messages.append({"role": "user", "content": str(text)})
         model = CFG.get("openai_model", "gpt-4o")
         resp = client.chat.completions.create(model=model, messages=messages, max_tokens=200)
         return resp.choices[0].message.content or "..."
@@ -382,9 +459,14 @@ def _anthropic_response(text: str, history: list[dict], system_prompt: str) -> s
         messages = []
         for turn in history[:-1]:  # type: ignore[index]
             role = "user" if turn["role"] == "user" else "assistant"
-            content = turn["parts"][0]["text"] if "parts" in turn else turn.get("content", "")
+            # Safely extract text content, ensuring it's always a string
+            if "parts" in turn and turn["parts"]:
+                content = turn["parts"][0].get("text", "") if isinstance(turn["parts"][0], dict) else str(turn["parts"][0])
+            else:
+                raw_content = turn.get("content", "")
+                content = raw_content.get("text", "") if isinstance(raw_content, dict) else str(raw_content) if raw_content else ""
             messages.append({"role": role, "content": content})
-        messages.append({"role": "user", "content": text})
+        messages.append({"role": "user", "content": str(text)})
         model = CFG.get("anthropic_model", "claude-3-opus-20240229")
         resp = client.messages.create(
             model=model,
@@ -412,17 +494,22 @@ def _openrouter_response(text: str, history: list[dict], system_prompt: str) -> 
         messages = [{"role": "system", "content": system_prompt}]
         for turn in history[:-1]:  # type: ignore[index]
             role = "user" if turn["role"] == "user" else "assistant"
-            content = turn["parts"][0]["text"] if "parts" in turn else turn.get("content", "")
+            # Safely extract text content, ensuring it's always a string
+            if "parts" in turn and turn["parts"]:
+                content = turn["parts"][0].get("text", "") if isinstance(turn["parts"][0], dict) else str(turn["parts"][0])
+            else:
+                raw_content = turn.get("content", "")
+                content = raw_content.get("text", "") if isinstance(raw_content, dict) else str(raw_content) if raw_content else ""
             messages.append({"role": role, "content": content})
-        messages.append({"role": "user", "content": text})
+        messages.append({"role": "user", "content": str(text)})
         model = CFG.get("openrouter_model", "anthropic/claude-3-opus")
         resp = client.chat.completions.create(
             model=model, 
             messages=messages, 
             max_tokens=200,
             extra_headers={
-                "HTTP-Referer": "https://github.com/risse-ai/risse",
-                "X-Title": "Risse AI",
+                "HTTP-Referer": "https://github.com/rushikeshgoud19/MY-AI",
+                "X-Title": "Mizune AI",
             }
         )
         return resp.choices[0].message.content or "..."
@@ -441,6 +528,43 @@ def _openrouter_response(text: str, history: list[dict], system_prompt: str) -> 
             except Exception as ex2:
                 log_info(f"[AI] Gemini fallback also failed: {ex2}")
         return f"OpenRouter error: {err_msg}"
+
+
+def _opencode_response(text: str, history: list[dict], system_prompt: str) -> str:  # type: ignore[type-arg]
+    api_key = CFG.get("opencode_api_key", "")
+    if not api_key:
+        return "No OpenCode API key set! Please open Settings and add your key."
+    try:
+        from openai import OpenAI
+        # OpenCode uses OpenAI-compatible API - check their docs for base_url
+        client = OpenAI(
+            base_url="https://api.opencode.ai/v1",
+            api_key=api_key,
+        )
+        messages = [{"role": "system", "content": system_prompt}]
+        for turn in history[:-1]:  # type: ignore[index]
+            role = "user" if turn["role"] == "user" else "assistant"
+            # Safely extract text content, ensuring it's always a string
+            if "parts" in turn and turn["parts"]:
+                content = turn["parts"][0].get("text", "") if isinstance(turn["parts"][0], dict) else str(turn["parts"][0])
+            else:
+                raw_content = turn.get("content", "")
+                content = raw_content.get("text", "") if isinstance(raw_content, dict) else str(raw_content) if raw_content else ""
+            messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": str(text)})
+        model = CFG.get("opencode_model", "default")
+        resp = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            max_tokens=200
+        )
+        return resp.choices[0].message.content or "..."
+    except ImportError:
+        return "OpenAI package not installed. Run: pip install openai"
+    except Exception as e:
+        err_msg = str(e)
+        log_info(f"[AI] OpenCode error: {err_msg}")
+        return f"OpenCode error: {err_msg}"
 
 
 # ─── Emotion Detection (Enhanced for Mizune) ─────────────────────────────────
@@ -509,7 +633,7 @@ COMMON_APPS = {
     "figma": "figma", "blender": "blender",
     "audacity": "audacity", "gimp": "gimp",
     "obs": "obs64", "obs studio": "obs64",
-    "discord": "discord", "telegram": "telegram", "whatsapp": "whatsapp",
+    "discord": "discord", "telegram": "telegram", "whatsapp": "whatsapp://",
     "vlc": "vlc", "steam": "steam", "epic games": "EpicGamesLauncher",
     "spotify": "spotify", "spotify desktop": "spotify",
     "winrar": "winrar", "7zip": "7zfm", "7-zip": "7zfm",
@@ -570,7 +694,8 @@ def _resolve_mic_device_index() -> Optional[int]:
             dev_name = str(dev.get("name", "")).lower()
             if name in dev_name:
                 return idx
-    except Exception:
+    except Exception as e:
+        log_info(f"[MIC] Error resolving device index: {e}")
         return None
     return None
 
@@ -583,12 +708,13 @@ try:
     else:
         SAMPLE_RATE = int(sd.query_devices(sd.default.device[0], 'input')['default_samplerate'])
 
-except Exception:
+except Exception as e:
+    log_info(f"[SERVER] Could not query default device sample rate: {e} - using fallback 44100 Hz")
     SAMPLE_RATE = 44100  # Fallback to standard HD audio
 log_info(f"[SERVER] Audio capture sample rate set to: {SAMPLE_RATE} Hz")
 RECORD_SECONDS = _system_settings.get("record_seconds", 6)
 connected_clients: list[WebSocket] = []
-CHRONICLE = []
+CHRONICLE = ThreadSafeHistory(max_size=int(CFG.get("memory_size", 30)))
 recognizer = sr.Recognizer()
 is_active_listening = False
 main_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -596,12 +722,36 @@ data_collector: Optional[DataCollector] = None
 LAST_WAKE_TIME = 0.0  # Cooldown tracker for wake word triggers
 WAKE_COOLDOWN = _system_settings.get("wake_cooldown", 3.0)   # Seconds to ignore re-triggers after a wake event
 
+
+def get_last_wake_time() -> float:
+    """Get last wake time (thread-safe)."""
+    with _wake_time_lock:
+        return LAST_WAKE_TIME
+
+
+def set_last_wake_time(time: float) -> None:
+    """Set last wake time (thread-safe)."""
+    global LAST_WAKE_TIME
+    with _wake_time_lock:
+        LAST_WAKE_TIME = time
+
+
+def can_trigger_wake() -> bool:
+    """Check if wake can be triggered (thread-safe)."""
+    with _wake_time_lock:
+        return time.time() - LAST_WAKE_TIME >= WAKE_COOLDOWN
+
 # ─── Load conversation history from DB on startup ──────────────────────────────
 try:
     memory_size = int(CFG.get("memory_size", 30))
+    CHRONICLE._max_size = memory_size
     stored_turns = load_recent_turns(memory_size)
     if stored_turns:
-        CHRONICLE = stored_turns
+        CHRONICLE.clear()
+        for turn in stored_turns:
+            role = "model" if turn.get("role") == "model" else "user"
+            text = turn.get("text", "")
+            CHRONICLE._history.append({"role": role, "parts": [{"text": text}]})
         log_info(f"[DB] Loaded {len(stored_turns)} conversation turns from database ({get_turn_count()} total stored)")
     else:
         log_info("[DB] No previous conversations found. Starting fresh.")
@@ -636,12 +786,10 @@ async def lifespan(app: FastAPI):
             elif emotion in ["disgust"]:
                 msg = "Master! What happened? You look troubled!"
                 ui_emotion = "surprised"
-            broadcast_sync({"type": "emotion", "emotion": ui_emotion})
             broadcast_sync({"type": "speak", "text": msg})
-            
+
         def handle_unauthorized():
             msg = "Who are you?! You are not my Master! Get away from this computer!"
-            broadcast_sync({"type": "emotion", "emotion": "sad"})
             broadcast_sync({"type": "speak", "text": msg})
         
         def handle_sustained_emotion(emotion):
@@ -670,22 +818,20 @@ async def lifespan(app: FastAPI):
                 return  # Don't react to neutral
             
             if msg:
-                broadcast_sync({"type": "emotion", "emotion": ui_emotion})
                 broadcast_sync({"type": "speak", "text": msg})
-            
+
         def handle_emotion_update(emotion):
-            """Fires every second with the master's current detected emotion."""
-            broadcast_sync({"type": "emotion_track", "emotion": emotion})
-        
+            """Emotion tracking - deprecated (mood display disabled)."""
+            pass
+
         def handle_master_missing():
             """Fires when master's face disappears from camera for ~10 seconds."""
-            broadcast_sync({"type": "emotion", "emotion": "sad"})
             broadcast_sync({"type": "speak", "text": "Master? Where are you? I can't see you! Come back to me!"})
             
         cam.on_master_greet = handle_greet
         cam.on_unauthorized_user = handle_unauthorized
-        cam.on_sustained_emotion = handle_sustained_emotion
-        cam.on_emotion_update = handle_emotion_update
+        # DISABLED: Smile mirroring - cam.on_sustained_emotion = handle_sustained_emotion
+        # DISABLED: Emotion sync - cam.on_emotion_update = handle_emotion_update
         cam.on_master_missing = handle_master_missing
         cam.start()
 
@@ -872,7 +1018,8 @@ async def tts_endpoint(payload: dict):
 
 
 # ─── Utility ────────────────────────────────────────────────────────────────
-def broadcast_sync(message: dict):
+def broadcast_sync(message: dict) -> None:
+    """Broadcast message to all connected WebSocket clients (thread-safe)."""
     loop = main_loop
     if loop is None or loop.is_closed():
         return
@@ -880,16 +1027,20 @@ def broadcast_sync(message: dict):
     async def _send():
         data = json.dumps(message)
         dead = []
-        for ws in connected_clients:
+        with _ws_clients_lock:
+            client_list = connected_clients.copy()
+        for ws in client_list:
             try:
                 await ws.send_text(data)
             except Exception:
                 dead.append(ws)
-        for ws in dead:
-            try:
-                connected_clients.remove(ws)
-            except ValueError:
-                pass
+        with _ws_clients_lock:
+            for ws in dead:
+                if ws in connected_clients:
+                    try:
+                        connected_clients.remove(ws)
+                    except ValueError:
+                        pass
 
     try:
         asyncio.run_coroutine_threadsafe(_send(), loop)
@@ -1307,12 +1458,6 @@ Observe the screenshot and make a VERY BRIEF, NATURAL comment about what you see
 
 Rules:
 - Keep response EXTREMELY SHORT (under 15 words). Do not waste tokens.
-- IMPORTANT EMOTIONS: You MUST start your response with an emotion tag that matches what he is doing!
-  - If he is debugging your code or working hard: [EMOTION: happy] or [EMOTION: smile]
-  - If he is gaming: [EMOTION: excited]
-  - If he is watching anime: [EMOTION: surprised]
-  - If he is reading docs or stuck: [EMOTION: thinking]
-  - If he is slacking off: [EMOTION: pout]
 - If it looks SIMILAR to what was said before, or if the screen is idle/empty: Say "[SKIP]"
 - DO NOT use tildes (~). DO NOT write sounds like 'ne' or 'hmph'. 
 - Be specific about the app or content you see.
@@ -1425,12 +1570,10 @@ def _vision_mode_loop():
                 log_info("[VISION] Skipped (no change or idle screen)")
                 continue
 
-            # Extract emotion tag if present
+            # Strip emotion tag if present (don't display mood)
             emotion_match = re.search(r"\[EMOTION:\s*(\w+)\]", feedback)
             if emotion_match:
-                detected_emotion = emotion_match.group(1).lower()
                 feedback = re.sub(r"\[EMOTION:.*?\]", "", feedback).strip()
-                broadcast_sync({"type": "emotion", "emotion": detected_emotion})
 
             # Track for dedup
             _last_vision_observations.append(feedback)
@@ -1457,7 +1600,15 @@ def _vision_mode_loop():
 def process_command(text: str) -> str:
     global CHRONICLE
     log_info(f"[COMMAND] Processing: '{text}'")
-    
+
+    # ── Strip any wake word that leaked through ──
+    lower_text = text.lower().strip()
+    for wake in CFG.get("wake_words", ["mizune", "misune", "mizuna", "mizu", "missy", "darling", "baka"]):
+        if lower_text.startswith(wake):
+            text = text[len(wake):].strip()
+            lower_text = text.lower().strip()
+            break
+
     # ── Determine who is talking — LIVE face check ──
     camera_agent = mizune_manager.workers.get("camera")
     is_master = True  # Default if no camera
@@ -1468,18 +1619,13 @@ def process_command(text: str) -> str:
         if not is_master:
             camera_agent.is_master_present = False  # Sync the state
     
-    # ── Security: Block ALL strangers ──
+    # ── Security: Stranger detection active ──
+    # Strangers can still talk but won't be able to execute system actions (handled below).
     if not is_master:
-        log_info("[SECURITY] Stranger detected at command time. Rejecting.")
-        broadcast_sync({"type": "emotion", "emotion": "sad"})
-        return "I'm sorry, I only respond to my Master."
+        log_info("[SECURITY] Stranger detected — restricting system actions.")
+        # Actions are stripped at the tag-parsing stage (line ~2408)
 
     lower_text = text.lower().strip()
-
-    # Emotion detection — send to frontend for facial expression
-    emotion = detect_emotion(text)
-    if emotion != "neutral":
-        broadcast_sync({"type": "emotion", "emotion": emotion})
 
     # ── Screen Vision: "Look at my screen" / "What am I doing" / "What's on my screen" ──
     # MUST be checked BEFORE Camera Vision because phrases like "what am i doing" are ambiguous
@@ -1521,7 +1667,7 @@ Describe what you see in detail:
 
 Be observant and detailed but keep it natural and in character.
 Use cute expressions. Keep it to 2-3 sentences max since this will be spoken aloud.
-Start with an emotion tag: [EMOTION: happy], [EMOTION: surprised], [EMOTION: curious], etc."""
+Keep it natural, no emotion tags needed."""
 
             # Try Groq Vision first (free, fast)
             groq_key = CFG.get("groq_api_key", "")
@@ -1542,11 +1688,11 @@ Start with an emotion tag: [EMOTION: happy], [EMOTION: surprised], [EMOTION: cur
                     result = (resp.choices[0].message.content or "").strip()
                     if result:
                         log_info(f"[SCREEN VISION] Groq success!")
-                        emotion = detect_emotion(result)
-                        if emotion != "neutral":
-                            broadcast_sync({"type": "emotion", "emotion": emotion})
                         CHRONICLE.append({"role": "user", "parts": [{"text": text}]})
                         CHRONICLE.append({"role": "model", "parts": [{"text": result}]})
+                        memory_size = int(CFG.get("memory_size", 30))
+                        if len(CHRONICLE) > memory_size:
+                            CHRONICLE.pop(0)
                         return result
                 except Exception as e:
                     log_info(f"[SCREEN VISION] Groq failed: {e}")
@@ -1570,11 +1716,11 @@ Start with an emotion tag: [EMOTION: happy], [EMOTION: surprised], [EMOTION: cur
                         result = (response.text or "").strip()
                         if result:
                             log_info(f"[SCREEN VISION] {model} success!")
-                            emotion = detect_emotion(result)
-                            if emotion != "neutral":
-                                broadcast_sync({"type": "emotion", "emotion": emotion})
                             CHRONICLE.append({"role": "user", "parts": [{"text": text}]})
                             CHRONICLE.append({"role": "model", "parts": [{"text": result}]})
+                            memory_size = int(CFG.get("memory_size", 30))
+                            if len(CHRONICLE) > memory_size:
+                                CHRONICLE.pop(0)
                             return result
                     except Exception as model_err:
                         err_str = str(model_err).lower()
@@ -1590,13 +1736,15 @@ Start with an emotion tag: [EMOTION: happy], [EMOTION: surprised], [EMOTION: cur
         finally:
             _release_vision_lock("screen_vision")
 
-    # ── Camera Vision: "Look at me" / "What do you see through camera" / "How do I look" ──
-    # Only triggers for explicit camera/body/face/room references (NOT screen)
-    if re.search(r"\b(what do you see|what can you see|look at me|how do i look|"
+    # ── Camera Vision: "Look at me/through camera" / "What am I holding/drinking" ──
+    if re.search(r"\b(what do you see|what can you see|look at me|look at the camera|look through.*camera|how do i look|"
                  r"what('s| is) on my camera|whats going on my camera|"
                  r"describe what you see|what's around me|what's in front of you|"
                  r"who is here|who is in front|describe my room|look around|"
-                 r"see me|can you see me|look at my face)\b", lower_text):
+                 r"see me|can you see me|look at my face|"
+                 r"what am i (eating|drinking|holding|wearing|doing)|"
+                 r"what('s| is) in (my|the) (hand|cup|bottle|glass|mug|plate|drink)|"
+                 r"tell me what.*(?:drink|hold|eat|wear|look|see))\b", lower_text):
         cam = mizune_manager.workers.get("camera")
         if cam:
             if not _acquire_vision_lock("camera_vision"):
@@ -1620,33 +1768,34 @@ Describe what you see in detail:
 
 Be observant and detailed but keep it natural and in-character.
 Use cute expressions. Keep it to 2-3 sentences max since this will be spoken aloud.
-Start with an emotion tag: [EMOTION: happy] or [EMOTION: surprised] etc."""
+Keep it natural, no emotion tags needed."""
 
-                    # Try Gemini Vision
-                    api_key = CFG.get("gemini_api_key", "")
-                    if api_key:
+                    # Try Groq Vision first (free, fast, open source)
+                    groq_key = CFG.get("groq_api_key", "")
+                    if groq_key:
                         try:
-                            from google import genai
-                            from google.genai import types
-                            
-                            client = genai.Client(api_key=api_key)
-                            for model in ["gemini-2.0-flash", "gemini-2.5-flash"]:
+                            import base64
+                            from openai import OpenAI
+                            b64_img = base64.b64encode(frame_bytes).decode("utf-8")
+                            groq_client = OpenAI(api_key=groq_key, base_url="https://api.groq.com/openai/v1")
+                            for model in ["meta-llama/llama-4-scout-17b-16e-instruct", "llama-3.2-90b-vision-preview"]:
                                 try:
-                                    response = client.models.generate_content(
+                                    resp = groq_client.chat.completions.create(
                                         model=model,
-                                        contents=[
-                                            types.Part.from_bytes(data=frame_bytes, mime_type="image/jpeg"),
-                                            types.Part.from_text(text=camera_prompt)
-                                        ]
+                                        messages=[{"role": "user", "content": [
+                                            {"type": "text", "text": camera_prompt},
+                                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"}}
+                                        ]}],
+                                        max_tokens=300
                                     )
-                                    result = (response.text or "").strip()
+                                    result = (resp.choices[0].message.content or "").strip()
                                     if result:
-                                        log_info(f"[CAMERA VISION] {model} success!")
-                                        emotion = detect_emotion(result)
-                                        if emotion != "neutral":
-                                            broadcast_sync({"type": "emotion", "emotion": emotion})
+                                        log_info(f"[CAMERA VISION] Groq {model} success!")
                                         CHRONICLE.append({"role": "user", "parts": [{"text": text}]})
                                         CHRONICLE.append({"role": "model", "parts": [{"text": result}]})
+                                        memory_size = int(CFG.get("memory_size", 30))
+                                        if len(CHRONICLE) > memory_size:
+                                            CHRONICLE.pop(0)
                                         return result
                                 except Exception as model_err:
                                     err_str = str(model_err).lower()
@@ -1655,8 +1804,8 @@ Start with an emotion tag: [EMOTION: happy] or [EMOTION: surprised] etc."""
                                     log_info(f"[CAMERA VISION] {model} failed: {model_err}")
                                     continue
                         except Exception as e:
-                            log_info(f"[CAMERA VISION] Gemini Vision failed: {e}")
-                    
+                            log_info(f"[CAMERA VISION] Groq Vision failed: {e}")
+
                     return "[EMOTION: sad] I tried to look through my camera but my vision processing failed! Try again, Master!"
                 else:
                     return "[EMOTION: sad] I can't see anything! My camera might not be working right now."
@@ -1693,7 +1842,7 @@ Start with an emotion tag: [EMOTION: happy] or [EMOTION: surprised] etc."""
     CHRONICLE.append({"role": "user", "parts": [{"text": text}]})
 
     # Save user turn to database
-    save_turn("user", text, emotion, getattr(mizune_manager, 'current_mode', 'conversation'))
+    save_turn("user", text, "neutral", getattr(mizune_manager, 'current_mode', 'conversation'))
 
     try:
         # ── 0. Route through the Multi-Agent Brain ──
@@ -1754,7 +1903,7 @@ Start with an emotion tag: [EMOTION: happy] or [EMOTION: surprised] etc."""
             if len(CHRONICLE) > memory_size:
                 CHRONICLE.pop(0)
             # Save model response to database
-            save_turn("model", res, emotion, mizune_manager.current_mode)
+            save_turn("model", res, "neutral", mizune_manager.current_mode)
             return res
 
         # ── 1. Built-in time/date/weather (Zero Token Cost) ──
@@ -1850,7 +1999,6 @@ Start with an emotion tag: [EMOTION: happy] or [EMOTION: surprised] etc."""
         sing_match = re.search(r"\b(?:sing|sing me|can you sing)\b", lower_text)
         if sing_match:
             import random
-            broadcast_sync({"type": "emotion", "emotion": "happy"})
 
             # Check if user asked for a SPECIFIC song
             # e.g. "sing I ain't worried", "sing me twinkle twinkle", "can you sing bohemian rhapsody"
@@ -2009,7 +2157,8 @@ Start with an emotion tag: [EMOTION: happy] or [EMOTION: surprised] etc."""
             encoded = urllib.parse.quote(song_query)
             log_info(f"[ACTION] Searching Spotify Web Player for: {song_query}")
             try:
-                subprocess.Popen(f'start brave "https://open.spotify.com/search/{encoded}"', shell=True)
+                safe_url = shlex.quote(f"https://open.spotify.com/search/{encoded}")
+                subprocess.Popen(f'start brave {safe_url}', shell=True)
             except Exception as e:
                 log_info(f"[ACTION] Spotify launch failed: {e}")
             return f"Playing {song_query} on Spotify right now!"
@@ -2084,6 +2233,47 @@ Start with an emotion tag: [EMOTION: happy] or [EMOTION: surprised] etc."""
                 if partial:
                     close_app(partial)
                     return f"Closing {target} now!"
+
+        # ── 4c. WhatsApp / Discord / Telegram Opening (Zero Token Cost) ──
+        # "open whatsapp", "open discord", "open telegram"
+        app_shortcut = re.search(r"open\s+(whatsapp|discord|telegram|signal|slack)", lower_text)
+        if app_shortcut:
+            target = app_shortcut.group(1).strip().lower()
+            log_info(f"[ACTION] Opening {target} desktop app...")
+            launch_app(target)
+            return f"Opening {target} desktop app for you, Master!"
+
+        # ── 4d. WhatsApp Message Automation (Zero Token Cost) ──
+        # "message [name] on whatsapp", "tell [name] [msg] on whatsapp", "whatsapp [name]"
+        # Pattern with full message: "tell [contact] that [message] on whatsapp"
+        tell_pattern = re.search(r"(?:tell|message)\s+(.+?)\s+(?:that\s+|saying\s+|the message\s+)?['\"]?(.+?)['\"]?\s+on\s+whatsapp", lower_text)
+        if tell_pattern:
+            contact = tell_pattern.group(1).strip()
+            msg = tell_pattern.group(2).strip()
+            log_info(f"[ACTION] WhatsApp auto: telling {contact}: {msg[:50]}...")
+            return whatsapp_automation(contact, msg)
+
+        # Pattern without message: "message [name] on whatsapp", "whatsapp [name]"
+        whatsapp_msg = re.search(r"(?:message|send\s+message)\s+(.+?)\s+(?:on|via)\s+whatsapp", lower_text)
+        if not whatsapp_msg:
+            whatsapp_msg = re.search(r"whatsapp\s+(.+?)$", lower_text)
+        if whatsapp_msg:
+            contact = whatsapp_msg.group(1).strip()
+            log_info(f"[ACTION] WhatsApp auto: searching contact '{contact}'...")
+            return whatsapp_automation(contact)
+
+        # ── 4e. General Web Search (Zero Token Cost) ──
+        # "search for [query]", "look up [query]", "find [query]"
+        search_match = re.search(r"(?:search for|search|look up|find|google)\s+(.+?)$", lower_text)
+        if search_match and not any(x in lower_text for x in [" on youtube", " on google", " on netflix", " on spotify", " on reddit"]):
+            query = search_match.group(1).strip()
+            # Don't trigger on app names like "open chrome"
+            if query and len(query) > 1 and query not in COMMON_APPS:
+                import urllib.parse
+                encoded = urllib.parse.quote(query)
+                log_info(f"[ACTION] Searching web for: {query}")
+                webbrowser.open(f"https://www.google.com/search?q={encoded}")
+                return f"Searching for '{query}' on Google, Master!"
 
         # ── 4b. Smart Search — YouTube Auto-Play / Site + Browser (BEFORE LLM) ──
         # Catches: "play didi song on youtube", "type didi song on youtube and play it",
@@ -2164,11 +2354,12 @@ Start with an emotion tag: [EMOTION: happy] or [EMOTION: surprised] etc."""
             log_info(f"[ACTION] Launching URL: {url} via {browser_name or 'default'}")
             if browser_name:
                 browser_exe = COMMON_APPS.get(browser_name, browser_name)
-                # Sanitize to prevent shell injection
-                browser_exe = re.sub(r'[&|;<>^]', '', browser_exe)
                 try:
-                    subprocess.Popen(f'start {browser_exe} "{url}"', shell=True)
-                except Exception:
+                    safe_exe = shlex.quote(browser_exe)
+                    safe_url = shlex.quote(url)
+                    subprocess.Popen(f'start {safe_exe} {safe_url}', shell=True)
+                except Exception as e:
+                    log_info(f"[ACTION] Failed to open browser via subprocess: {e} - using webbrowser fallback")
                     webbrowser.open(url)
             else:
                 webbrowser.open(url)
@@ -2181,19 +2372,18 @@ Start with an emotion tag: [EMOTION: happy] or [EMOTION: surprised] etc."""
         original_res = get_ai_response(text, CHRONICLE)
         clean_res = original_res
 
-        # Check if AI generated an explicit EMOTION tag
+        # Check if AI generated an explicit EMOTION tag — strip it silently
         emotion_match = re.search(r"\[EMOTION:\s*([^\]]+)\]", original_res, re.IGNORECASE)
         if emotion_match:
-            emotion = emotion_match.group(1).strip().lower()
-            broadcast_sync({"type": "emotion", "emotion": emotion})
-            log_info(f"[EMOTION] Extracted tag: {emotion}")
+            clean_res = re.sub(r"\[EMOTION:[^\]]*\]", "", clean_res).strip()
+            log_info(f"[EMOTION] Stripped tag: {emotion_match.group(1).strip().lower()}")
 
         # Update history with response
         CHRONICLE.append({"role": "model", "parts": [{"text": original_res}]})
         if len(CHRONICLE) > memory_size:
             CHRONICLE.pop(0)
         # Save model response to database
-        save_turn("model", original_res, emotion, getattr(mizune_manager, 'current_mode', 'conversation'))
+        save_turn("model", original_res, "neutral", getattr(mizune_manager, 'current_mode', 'conversation'))
 
         # ── 6. Parse Note/App Tags from AI Response ──
         # SECURITY: Only execute system actions if Master is verified
@@ -2289,33 +2479,99 @@ def launch_app(target: str):
         return
 
     exe = COMMON_APPS.get(target, target)
-    # Sanitize to prevent shell injection
-    exe = re.sub(r'[&|;<>^]', '', exe)
-    
+
     log_info(f"[ACTION] Launching: {exe}")
-    if exe.startswith("http") or exe.startswith("ms-"):
+    if exe.startswith("http") or exe.startswith("ms-") or "://" in exe:
         webbrowser.open(exe)
     else:
         try:
-            subprocess.Popen(f"start {exe}", shell=True)
+            # Use shlex.quote for safe shell argument handling
+            safe_exe = shlex.quote(exe)
+            subprocess.Popen(f"start {safe_exe}", shell=True)
         except Exception as e:
             log_info(f"[ACTION] Failed to launch '{exe}': {e}")
             
+def _whatsapp_focus():
+    """Find WhatsApp window, activate it, and click to guarantee keyboard focus."""
+    import time
+    try:
+        import pygetwindow as gw
+        wa = gw.getWindowsWithTitle("WhatsApp")
+        if wa:
+            w = wa[0]
+            if w.isMinimized: w.restore()
+            w.activate()
+            time.sleep(0.5)
+            # Click title bar area to guarantee focus
+            cx = w.left + w.width // 2
+            cy = max(w.top + 10, w.top + w.height // 4)
+            pyautogui.click(cx, cy)
+            time.sleep(0.5)
+            log_info(f"[ACTION] Click-focused WhatsApp at ({cx},{cy})")
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def whatsapp_automation(contact: str, message: str = None) -> str:
+    """Use PyAutoGUI to automate WhatsApp desktop app to search and message a contact."""
+    import pyautogui
+    import time
+
+    log_info(f"[ACTION] WhatsApp automation: searching '{contact}'")
+
+    # Launch WhatsApp desktop app (can take 3-10s on Windows)
+    launch_app("whatsapp")
+    log_info("[ACTION] Waiting for WhatsApp to open...")
+    time.sleep(7)
+
+    # Focus WhatsApp window with click
+    focused = _whatsapp_focus()
+    if not focused:
+        log_info("[ACTION] Focus failed, using Alt+Tab")
+        pyautogui.hotkey("alt", "tab")
+        time.sleep(0.5)
+
+    # Dismiss any popup dialog
+    pyautogui.press("escape")
+    time.sleep(0.5)
+
+    # Focus search bar (Ctrl+F in WhatsApp Desktop)
+    for _ in range(3):
+        pyautogui.hotkey("ctrl", "f")
+        time.sleep(1.5)
+
+    # Type the contact name
+    pyautogui.write(contact, interval=0.1)
+    time.sleep(1.5)
+
+    # Press Enter to open the chat
+    pyautogui.press("enter")
+    time.sleep(1)
+
+    if message:
+        pyautogui.write(message, interval=0.05)
+        pyautogui.press("enter")
+        return f"Message sent to {contact} on WhatsApp!"
+
+    return f"Opened WhatsApp chat with {contact}, Master!"
+
+
 def close_app(target: str):
     exe = COMMON_APPS.get(target, target)
     # Extract just the filename if it's a full path or URL
     if exe.startswith("http") or exe.startswith("ms-"):
         return # Cannot taskkill URLs or UWP apps easily via taskkill
-    
-    # Sanitize to prevent shell injection
-    exe = re.sub(r'[&|;<>^]', '', exe)
-    
+
     if not exe.endswith(".exe"):
         exe += ".exe"
-        
+
     log_info(f"[ACTION] Closing: {exe}")
     try:
-        subprocess.Popen(f"taskkill /IM {exe} /F", shell=True)
+        # Use shlex.quote for safe shell argument handling
+        safe_exe = shlex.quote(exe)
+        subprocess.Popen(f"taskkill /IM {safe_exe} /F", shell=True)
     except Exception as e:
         log_info(f"[ACTION] Failed to close '{exe}': {e}")
 

@@ -14,9 +14,61 @@ body {
     height: 100vh;
 }
 
+/* ─── Title Bar (custom window controls) ──────────── */
+#title-bar {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 6px;
+    background: rgba(10, 10, 20, 0.6);
+    border-bottom: 1px solid rgba(255, 183, 197, 0.15);
+    z-index: 10000;
+    -webkit-app-region: drag;
+}
+
+#title-text {
+    font-size: 10px;
+    color: rgba(255, 183, 197, 0.7);
+    font-weight: 600;
+    letter-spacing: 1px;
+}
+
+#title-controls {
+    display: flex;
+    gap: 4px;
+    -webkit-app-region: no-drag;
+}
+
+#btn-minimize, #btn-close {
+    width: 20px;
+    height: 20px;
+    border-radius: 6px;
+    border: none;
+    background: rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.5);
+    font-size: 10px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+}
+
+#btn-minimize:hover { background: rgba(255, 255, 255, 0.2); color: #fff; }
+#btn-close:hover { background: rgba(255, 80, 80, 0.8); color: #fff; }
+
+/* ─── Three.js Canvas ───────────────────────────────── */
 #container {
-    width: 100vw;
-    height: 100vh;
+    position: absolute;
+    top: 28px; /* below title bar */
+    left: 0;
+    right: 0;
+    bottom: 36px; /* above chat bar */
     pointer-events: auto;
     cursor: grab;
 }
@@ -28,8 +80,8 @@ body {
 /* ─── Status dot ─────────────────────────────────── */
 #status-indicator {
     position: absolute;
-    top: 10px;
-    right: 10px;
+    top: 36px;
+    right: 8px;
     width: 8px;
     height: 8px;
     border-radius: 50%;
@@ -39,140 +91,55 @@ body {
     pointer-events: none;
 }
 
-#interaction-hint {
+/* ─── Emotion HUD (compact) ───────────────────────── */
+#emotion-hud {
     position: absolute;
-    bottom: 40px;
-    left: 50%;
-    transform: translateX(-50%);
-    background: rgba(10, 10, 20, 0.65);
-    color: rgba(255, 255, 255, 0.6);
-    font-size: 9px;
-    padding: 2px 8px;
-    border-radius: 10px;
+    top: 36px;
+    left: 8px;
+    background: rgba(10, 10, 25, 0.75);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
     border: 1px solid rgba(255, 183, 197, 0.2);
+    border-radius: 8px;
+    padding: 3px 8px;
     z-index: 9998;
-    opacity: 0;
     pointer-events: none;
-    transition: opacity 0.2s ease;
+    transition: all 0.4s ease;
 }
 
-body:hover #interaction-hint {
-    opacity: 1;
+#emotion-hud-emoji {
+    font-size: 14px;
 }
 
-/* ─── Settings button ───────────────────────────── */
-#settings-btn {
-    position: absolute;
-    top: 6px;
-    left: 6px;
-    width: 22px;
-    height: 22px;
-    border-radius: 50%;
-    border: none;
-    background: rgba(255, 183, 197, 0.15);
-    color: rgba(110, 142, 251, 0.5);
-    font-size: 11px;
-    cursor: pointer;
-    z-index: 9999;
-    opacity: 0;
-    transition: opacity 0.3s, background 0.2s, color 0.2s;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    pointer-events: auto;
-    -webkit-app-region: no-drag;
-}
-
-body:hover #settings-btn {
-    opacity: 1;
-}
-
-#settings-btn:hover {
-    background: rgba(255, 183, 197, 0.35);
-    color: #ffb7c5;
-}
-
-/* ─── UI Overlay ────────────────────────────────── */
-#ui-overlay {
+/* ─── Response Bubble ─────────────────────────────── */
+#response-bubble {
     position: absolute;
     bottom: 44px; /* above chat bar */
-    left: 0;
-    right: 0;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 8px;
-    pointer-events: none;
-    z-index: 10;
-}
-
-/* Response speech bubble */
-#response-bubble {
+    left: 50%;
+    transform: translateX(-50%);
     max-width: 90%;
-    max-height: 84px;
     background: rgba(20, 20, 35, 0.88);
     color: #e0e0ff;
     padding: 8px 12px;
     border-radius: 12px;
     font-size: 11px;
     line-height: 1.4;
-    overflow-y: auto;
-    overflow-x: hidden;
-    scrollbar-width: thin;
-    -webkit-backdrop-filter: blur(10px);
-    backdrop-filter: blur(10px);
     border: 1px solid rgba(255, 183, 197, 0.3);
     text-align: center;
     transition: opacity 0.3s ease, transform 0.3s ease;
     pointer-events: none;
-    margin-bottom: 4px; /* Tiny gap above status */
     z-index: 100;
-}
-
-#response-bubble::-webkit-scrollbar {
-    width: 6px;
-}
-
-#response-bubble::-webkit-scrollbar-thumb {
-    background: rgba(255, 183, 197, 0.35);
-    border-radius: 6px;
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
 }
 
 #response-bubble.hidden {
     opacity: 0;
-    transform: translateY(8px);
+    transform: translateX(-50%) translateY(8px);
     pointer-events: none;
 }
 
-/* Status pill */
-#status {
-    background: rgba(0, 0, 0, 0.5);
-    color: #aaa;
-    padding: 4px 12px;
-    border-radius: 20px;
-    font-size: 11px;
-    -webkit-backdrop-filter: blur(5px);
-    backdrop-filter: blur(5px);
-    pointer-events: none;
-    transition: color 0.3s ease;
-}
-
-#status.listening {
-    color: #00ff00;
-    border: 1px solid rgba(0, 255, 0, 0.6);
-    background: rgba(0, 50, 0, 0.4);
-    box-shadow: 0 0 15px rgba(0, 255, 0, 0.4);
-    animation: listeningPulse 1.5s infinite ease-in-out;
-}
-
-@keyframes listeningPulse {
-    0% { transform: scale(1); box-shadow: 0 0 10px rgba(0, 255, 0, 0.2); }
-    50% { transform: scale(1.05); box-shadow: 0 0 20px rgba(0, 255, 0, 0.6); }
-    100% { transform: scale(1); box-shadow: 0 0 10px rgba(0, 255, 0, 0.2); }
-}
-
-/* ─── Text Chat Input Bar ───────────────────────── */
+/* ─── Chat Input Bar ─────────────────────────────── */
 #chat-bar {
     position: absolute;
     bottom: 0;
@@ -185,16 +152,11 @@ body:hover #settings-btn {
     padding: 4px 6px;
     background: rgba(10, 10, 20, 0.75);
     border: 1px solid rgba(255, 183, 197, 0.15);
-    -webkit-backdrop-filter: blur(8px);
+    border-top: 1px solid rgba(255, 183, 197, 0.1);
     backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
     z-index: 100;
-    opacity: 0;
-    transition: opacity 0.3s ease;
     -webkit-app-region: no-drag;
-}
-
-body:hover #chat-bar {
-    opacity: 1;
 }
 
 #chat-input {
@@ -225,7 +187,7 @@ body:hover #chat-bar {
     height: 24px;
     border-radius: 50%;
     border: none;
-    background: linear-gradient(135deg, #ff9eb5, #ffc2d1);  /* pink gradient */
+    background: linear-gradient(135deg, #ff9eb5, #ffc2d1);
     color: white;
     font-size: 13px;
     cursor: pointer;
@@ -239,128 +201,21 @@ body:hover #chat-bar {
 #chat-send:hover { opacity: 0.85; }
 #chat-send:active { transform: scale(0.92); }
 
-/* ─── Drag hint ──────────────────────────────────── */
-#drag-hint {
-    position: absolute;
-    top: 6px;
-    right: 24px;
-    background: rgba(255, 183, 197, 0.12);
-    color: rgba(110, 142, 251, 0.5);
-    font-size: 9px;
-    padding: 2px 7px;
-    border-radius: 10px;
-    pointer-events: none;
-    opacity: 0;
-    transition: opacity 0.3s ease;
-    z-index: 20;
-}
-
-body:hover #drag-hint {
-    opacity: 1;
-}
-
-/* ─── Terminal Overlay ───────────────────────────── */
-#terminal-overlay {
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    width: 90%;
-    height: 80%;
-    background: rgba(10, 10, 20, 0.96);
-    border: 1px solid rgba(255, 183, 197, 0.4);
-    border-radius: 12px;
-    z-index: 1000;
-    display: none;
-    flex-direction: column;
-    overflow: hidden;
-    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.8);
-    -webkit-backdrop-filter: blur(20px);
-    backdrop-filter: blur(20px);
-}
-
-.terminal-header {
-    background: rgba(255, 183, 197, 0.18);
-    color: #ffb7c5;
-    padding: 8px 12px;
-    font-size: 10px;
-    font-weight: bold;
-    text-transform: uppercase;
-    letter-spacing: 1px;
-    border-bottom: 1px solid rgba(255, 183, 197, 0.2);
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    -webkit-app-region: no-drag;
-}
-
-.terminal-close {
-    background: none;
-    border: none;
-    color: rgba(110,142,251,0.5);
-    cursor: pointer;
-    font-size: 12px;
-    padding: 0 2px;
-    line-height: 1;
-}
-
-.terminal-close:hover { color: #ff5555; }
-
-#terminal-content {
-    flex: 1;
-    padding: 12px;
-    font-family: 'Consolas', 'Monaco', monospace;
-    font-size: 12px;
-    color: #c0c0ff;
-    overflow-y: auto;
-    scroll-behavior: smooth;
-}
-
-#terminal-content::-webkit-scrollbar { width: 4px; }
-#terminal-content::-webkit-scrollbar-thumb {
-    background: rgba(110, 142, 251, 0.3);
-    border-radius: 3px;
-}
-
-.terminal-line {
-    margin-bottom: 6px;
-    line-height: 1.4;
-    word-break: break-word;
-}
-
-.terminal-user   { color: #f8f8f2; }
-.terminal-risse  { color: #6e8efb; font-weight: 500; }
-.terminal-system { color: #555; font-style: italic; }
-.terminal-error  { color: #ff5555; }
-.terminal-emotion { color: #a777e3; font-style: italic; }
-
-/* ─── Typing indicator animation ────────────── */
-.typing-dots span {
-    animation: typingBlink 1.4s infinite both;
-    font-weight: bold;
-}
-.typing-dots span:nth-child(2) { animation-delay: 0.2s; }
-.typing-dots span:nth-child(3) { animation-delay: 0.4s; }
-
-@keyframes typingBlink {
-    0%, 80%, 100% { opacity: 0.2; }
-    40% { opacity: 1; }
-}
-
+/* ─── Vision Indicator (compact) ─────────────────── */
 #vision-indicator {
     position: absolute;
-    top: 6px;
+    top: 36px;
     left: 50%;
     transform: translateX(-50%);
-    background: rgba(10, 10, 20, 0.92);
+    background: rgba(10, 10, 20, 0.9);
     backdrop-filter: blur(8px);
     border: 1px solid rgba(167, 119, 227, 0.4);
-    border-radius: 12px;
+    border-radius: 10px;
     padding: 4px 10px;
     display: flex;
     align-items: center;
     gap: 8px;
-    z-index: 10001; /* Above everything */
+    z-index: 9998;
     font-size: 9px;
     font-weight: 700;
     color: #fff;
@@ -388,44 +243,4 @@ body:hover #drag-hint {
     0% { transform: scale(1); opacity: 0.8; }
     50% { transform: scale(1.3); opacity: 1; box-shadow: 0 0 15px #a777e3; }
     100% { transform: scale(1); opacity: 0.8; }
-}
-
-#vision-text {
-    font-family: 'Inter', sans-serif;
-    text-transform: uppercase;
-}
-
-/* ─── Emotion HUD ────────────────────────────────── */
-#emotion-hud {
-    position: absolute;
-    top: 28px;
-    right: 8px;
-    background: rgba(10, 10, 25, 0.85);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-    border: 1px solid rgba(167, 119, 227, 0.35);
-    border-radius: 10px;
-    padding: 4px 10px;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    z-index: 9998;
-    font-size: 10px;
-    color: #d0d0ff;
-    pointer-events: none;
-    transition: all 0.4s ease;
-    box-shadow: 0 2px 10px rgba(0,0,0,0.4);
-}
-
-#emotion-hud-emoji {
-    font-size: 14px;
-    line-height: 1;
-}
-
-#emotion-hud-label {
-    font-family: 'Consolas', 'Monaco', monospace;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.8px;
-    min-width: 50px;
 }

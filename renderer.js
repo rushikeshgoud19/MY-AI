@@ -2,16 +2,43 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader';
 import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
 
-// Node built-ins in Electron
-const { ipcRenderer } = window.require('electron');
-const fs = window.require('fs');
-const path = window.require('path');
+// ─── Platform Detection & Compatibility ──────────────────────────────────────
+let isTauri = false;
+let ipcRenderer = null;
+let fs = null;
+let path = null;
 
-const logFile = path.join(process.cwd(), 'renderer.log');
+if (typeof window !== 'undefined' && window.__TAURI__) {
+    // Tauri environment
+    isTauri = true;
+    const { getCurrentWindow } = await import('@tauri-apps/api/window');
+    const { relaunch, exit } = await import('@tauri-apps/plugin-shell');
+    const { listen } = await import('@tauri-apps/api/event');
+    const { invoke } = await import('@tauri-apps/api/core');
+    window.mizuneWindow = getCurrentWindow();
+    window.mizuneRelaunch = relaunch;
+    window.mizuneExit = exit;
+    window.mizuneInvoke = invoke;
+    window.mizuneListen = listen;
+    console.log('[TAURI] Running in Tauri environment');
+} else if (typeof window !== 'undefined' && window.require) {
+    // Electron environment
+    const electron = window.require('electron');
+    ipcRenderer = electron.ipcRenderer;
+    fs = window.require('fs');
+    path = window.require('path');
+    console.log('[ELECTRON] Running in Electron environment');
+} else {
+    console.log('[BROWSER] Running in browser environment (no IPC)');
+}
+
+const logFile = isTauri ? null : (path ? path.join(process.cwd(), 'renderer.log') : null);
 const lerp = (x, y, a) => x * (1 - a) + y * a;
 const log = (msg) => {
     const timestamp = new Date().toISOString();
-    try { fs.appendFileSync(logFile, `[${timestamp}] ${msg}\n`); } catch(e) {}
+    if (fs && logFile) {
+        try { fs.appendFileSync(logFile, `[${timestamp}] ${msg}\n`); } catch(e) {}
+    }
     console.log(msg);
 };
 window.onerror = (msg, url, line) => log(`ERROR: ${msg} at ${url}:${line}`);
@@ -19,11 +46,18 @@ log('Renderer started.');
 const nowSeconds = () => Date.now() / 1000;
 
 // ─── Config ──────────────────────────────────────────────────────────────────
-const CONFIG_PATH = path.join(process.cwd(), 'config.json');
+const CONFIG_PATH = isTauri ? 'config.json' : path.join(process.cwd(), 'config.json');
 let cfg = {};
-function loadCfg() {
-    try { cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')); }
-    catch(e) { cfg = {}; }
+async function loadCfg() {
+    try {
+        if (isTauri) {
+            const { readTextFile } = await import('@tauri-apps/plugin-fs');
+            const text = await readTextFile(CONFIG_PATH);
+            cfg = JSON.parse(text);
+        } else {
+            cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+        }
+    } catch(e) { cfg = {}; }
 }
 loadCfg();
 
@@ -128,7 +162,11 @@ window.openSettings = openSettings;
 window.sendTextMessage = sendTextMessage;
 
 function setIgnoreMouse(ignore) {
-    ipcRenderer.send('set-ignore-mouse', ignore);
+    if (isTauri && window.mizuneWindow) {
+        // Tauri doesn't have mouse passthrough like Electron, skip
+    } else if (ipcRenderer) {
+        ipcRenderer.send('set-ignore-mouse', ignore);
+    }
 }
 
 function logTerminal(text, type = 'system') {
@@ -143,17 +181,35 @@ function logTerminal(text, type = 'system') {
 
 // ─── Settings ─────────────────────────────────────────────────────────────────
 function openSettings() {
-    ipcRenderer.send('open-settings');
+    if (isTauri && window.mizuneWindow) {
+        // In Tauri, settings are handled via event from Rust
+        window.mizuneWindow.emit('open-settings');
+    } else if (ipcRenderer) {
+        ipcRenderer.send('open-settings');
+    }
 }
 
-ipcRenderer.on('config-updated', (_event, newCfg) => {
-    const oldFile = cfg.character_file;
-    cfg = newCfg;
-    if (newCfg.character_file !== oldFile) {
-        log(`[CONFIG] Character changed to: ${newCfg.character_file}`);
-        loadVRM(newCfg.character_file);
-    }
-});
+// Listen for config updates (Tauri events)
+if (isTauri && window.mizuneListen) {
+    window.mizuneListen('config-updated', (event) => {
+        const newCfg = event.payload;
+        const oldFile = cfg.character_file;
+        cfg = newCfg;
+        if (newCfg.character_file !== oldFile) {
+            log(`[CONFIG] Character changed to: ${newCfg.character_file}`);
+            loadVRM(newCfg.character_file);
+        }
+    });
+} else if (typeof ipcRenderer !== 'undefined') {
+    ipcRenderer.on('config-updated', (_event, newCfg) => {
+        const oldFile = cfg.character_file;
+        cfg = newCfg;
+        if (newCfg.character_file !== oldFile) {
+            log(`[CONFIG] Character changed to: ${newCfg.character_file}`);
+            loadVRM(newCfg.character_file);
+        }
+    });
+}
 
 // ─── Text Chat ────────────────────────────────────────────────────────────────
 function sendTextMessage() {
@@ -346,12 +402,13 @@ function loadVRM(vrmPath) {
                 log('[VRM] gltf loaded but no VRM data found');
                 return;
             }
-            vrm.scene.scale.set(1.0, 1.0, 1.0);
+            // CHIBI MODE: Scale down for cute chibi look (55% of normal size)
+            vrm.scene.scale.set(0.55, 0.55, 0.55);
             vrm.scene.rotation.y = Math.PI;
             vrm.scene.position.set(0, 0, 0);
             scene.add(vrm.scene);
             currentVrm = vrm;
-            log('[VRM] Model loaded and added to scene.');
+            log('[VRM] Model loaded (chibi mode) and added to scene.');
         },
         (xhr) => {
             const pct = (xhr.loaded / xhr.total * 100).toFixed(1);
@@ -741,21 +798,30 @@ function animate() {
                        + 0.006 * Math.sin(time * 2.8 + breathPhaseOffset); // slight double-breath
         const chest = humanoid.getRawBoneNode('chest');
         if (chest) {
-            chest.rotation.x = breathe;
+            // CHIBI: More bouncy breathing (faster + bigger amplitude)
+            chest.rotation.x = breathe * 1.3;
             chest.rotation.z = 0.006 * Math.sin(time * 0.7 + breathPhaseOffset);
         }
         const spine = humanoid.getRawBoneNode('spine');
         if (spine) {
-            spine.rotation.x = breathe * 0.4;
+            spine.rotation.x = breathe * 0.5;
+        }
+
+        // ── CHIBI: Happy bounce animation ──
+        // Add a subtle vertical bounce when happy/excited
+        const bounceIntensity = emotionBlends.happy * 0.015 + emotionBlends.excited * 0.02;
+        const bounce = bounceIntensity * Math.abs(Math.sin(time * 2.5));
+        if (hips) {
+            hips.position.y = (hips.position.y || 0) + bounce;
         }
 
         // ── Idle body sway (hips) ──
-        const hipSwayX = 0.008 * Math.sin(time * 0.55 + hipSwayPhase);
-        const hipSwayZ = 0.005 * Math.cos(time * 0.38 + hipSwayPhase + 0.8);
-        const hips = humanoid.getRawBoneNode('hips');
+        // CHIBI: Slightly faster sway
+        const hipSwayX = 0.008 * Math.sin(time * 0.7 + hipSwayPhase);
+        const hipSwayZ = 0.005 * Math.cos(time * 0.5 + hipSwayPhase + 0.8);
         if (hips) {
             hips.rotation.z = hipSwayZ;
-            hips.rotation.x = hipSwayX * 0.3;
+            hips.rotation.x = hipSwayX * 0.4;
         }
 
         // ── Head movement ──
@@ -792,7 +858,8 @@ function animate() {
             }
             head.rotation.y = headY;
             head.rotation.z = headZ + shyTiltValue * 0.12; // shy tilt when blushing
-            head.rotation.x = headX + shyTiltValue * 0.06; // slight downward look when shy
+            // CHIBI: More dramatic cute tilt when interested/happy
+            head.rotation.x = headX + shyTiltValue * 0.06 + 0.03 * Math.sin(time * 0.8);
         }
 
         // ── Absolute Magnetic Camera Lock (Eye-Level) ──
@@ -800,11 +867,10 @@ function animate() {
         if (headNode) {
             const headPos = new THREE.Vector3();
             headNode.getWorldPosition(headPos);
-            // Ignore (0,0,0) before skeleton loads completely
-            if (headPos.y > 0.5) {
-                // Eye-Level gaze at exact head height, pulled back to Z=0.65 to fit shoulders
-                camera.position.set(headPos.x, headPos.y + 0.05, headPos.z + 0.70);
-                camera.lookAt(headPos.x, headPos.y - 0.05, headPos.z);
+            // CHIBI: Camera adjusts for smaller scale (0.55)
+            if (headPos.y > 0.3) {
+                camera.position.set(headPos.x, headPos.y + 0.03, headPos.z + 0.50);
+                camera.lookAt(headPos.x, headPos.y - 0.03, headPos.z);
             }
         }
 
@@ -1370,12 +1436,16 @@ if (window.speechSynthesis) {
 // ─── Keyboard Shortcuts ───────────────────────────────────────────────────────
 document.addEventListener('keydown', (e) => {
     if (e.altKey && e.shiftKey) {
-        if (e.code === 'KeyP') { ipcRenderer.send('scale-up'); }
-        else if (e.code === 'KeyO') { ipcRenderer.send('scale-down'); }
-        else if (e.code === 'KeyQ') { ipcRenderer.send('quit-app'); }
-        else if (e.code === 'KeyT') { toggleTerminal(); }
-        else if (e.code === 'KeyK') { window.location.reload(); }
-        else if (e.code === 'KeyS') { openSettings(); }
+        if (isTauri && window.mizuneWindow) {
+            if (e.code === 'KeyQ') { window.mizuneExit(); }
+        } else if (ipcRenderer) {
+            if (e.code === 'KeyP') { ipcRenderer.send('scale-up'); }
+            else if (e.code === 'KeyO') { ipcRenderer.send('scale-down'); }
+            else if (e.code === 'KeyQ') { ipcRenderer.send('quit-app'); }
+            else if (e.code === 'KeyT') { toggleTerminal(); }
+            else if (e.code === 'KeyK') { window.location.reload(); }
+            else if (e.code === 'KeyS') { openSettings(); }
+        }
     }
 });
 

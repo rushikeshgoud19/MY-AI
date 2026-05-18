@@ -39,6 +39,8 @@ class LLMService:
             return LLMService._anthropic_response(text, history, system_prompt, cfg)
         elif model_type == "openrouter":
             return LLMService._openrouter_response(text, history, system_prompt, cfg)
+        elif model_type == "opencode":
+            return LLMService._opencode_response(text, history, system_prompt, cfg)
         else:
             return LLMService._gemini_response(text, history, system_prompt, cfg)
 
@@ -183,8 +185,35 @@ class LLMService:
             messages.append({"role": "user", "content": text})
             resp = client.chat.completions.create(
                 model=cfg.get("openrouter_model", "anthropic/claude-3-opus"),
-                messages=messages
+                messages=messages,
+                extra_headers={
+                    "HTTP-Referer": "https://github.com/rushikeshgoud19/MY-AI",
+                    "X-Title": "Mizune AI",
+                }
             )
             return resp.choices[0].message.content or "I'm speechless!"
         except Exception as e:
             return f"OpenRouter error: {e}"
+    @staticmethod
+    def _opencode_response(text: str, history: list, system_prompt: str, cfg: dict) -> str:
+        api_key = cfg.get("opencode_api_key", "")
+        if not api_key:
+            return "No OpenCode API key set! Please add your key to config.json."
+        try:
+            from openai import OpenAI
+            # OpenCode often uses OpenAI compatible endpoint
+            client = OpenAI(api_key=api_key, base_url=cfg.get("opencode_url", "https://api.opencode.ai/v1"))
+            messages = [{"role": "system", "content": system_prompt}]
+            for turn in history[:-1]:
+                role = "assistant" if turn.get("role") == "model" else "user"
+                parts_text = " ".join(p.get("text", "") for p in turn.get("parts", []))
+                if parts_text:
+                    messages.append({"role": role, "content": parts_text})
+            messages.append({"role": "user", "content": text})
+            resp = client.chat.completions.create(
+                model=cfg.get("opencode_model", "gpt-4o"),
+                messages=messages
+            )
+            return resp.choices[0].message.content or "I'm speechless!"
+        except Exception as e:
+            return f"OpenCode error: {e}"
