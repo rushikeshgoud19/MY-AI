@@ -31,7 +31,7 @@ print("=" * 50)
 
 try:
     sr_val = int(sd.query_devices(sd.default.device[0], "input")["default_samplerate"])
-except:
+except (KeyError, ValueError, Exception):
     sr_val = 44100
 
 audio = sd.rec(int(3 * sr_val), samplerate=sr_val, channels=1, dtype="int16")

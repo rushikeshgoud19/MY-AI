@@ -117,7 +117,7 @@ class CameraAgent(BaseAgent):
                     img2_path=path,
                     enforce_detection=False,
                     model_name="Facenet",
-                    threshold=0.40
+                    threshold=0.55
                 )
                 distance = result.get("distance", 9.0)
                 best_distance = min(best_distance, distance)
@@ -304,7 +304,7 @@ class CameraAgent(BaseAgent):
         try:
             cv2.imwrite(self.temp_path, face_crop)
             is_verified, distance = self._verify_against_master()
-            self.log(f"Auth check: verified={is_verified}, distance={distance:.3f} (threshold=0.30)")
+            self.log(f"Auth check: verified={is_verified}, distance={distance:.3f} (threshold=0.55)")
         except Exception:
             return
 

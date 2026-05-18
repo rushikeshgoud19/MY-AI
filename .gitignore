@@ -42,3 +42,4 @@ tts_cache/
 dataset/
 data/
 *.db
+src-tauri/target/
