@@ -60,6 +60,20 @@ class ManagerAgent(BaseAgent):
         self._pending_plan = None
         self.log("ManagerAgent Brain initialized. Silent intent routing active.")
 
+    def initialize(self, config: dict, workers: dict = None):
+        """Initialize the background workers for the agent."""
+        if workers:
+            self.workers.update(workers)
+        for w in self.workers.values():
+            if hasattr(w, 'start'):
+                w.start()
+
+    def stop_all(self):
+        """Stop all background workers."""
+        for w in self.workers.values():
+            if hasattr(w, 'stop'):
+                w.stop()
+
     async def execute(self, text: str, context: Optional[Dict] = None) -> Any:
         """
         The Brain. Takes ANY user input and routes it to the right handler.
@@ -69,7 +83,7 @@ class ManagerAgent(BaseAgent):
         self.log(f"[Brain] Input: '{text[:80]}' | Background mode: {self.current_mode}")
 
         # ── 0. Handle pending autonomous confirmation ──
-        if self._autonomous_pending_confirm:
+        if getattr(self, "_autonomous_pending_confirm", False) or getattr(self, "_autonomous_waiting_user_input", False):
             return await self._handle_autonomous_confirmation(text)
 
         # ── 1. Sticky mode commands (only if user explicitly asked for a mode before) ──
@@ -92,7 +106,7 @@ class ManagerAgent(BaseAgent):
             return await self._activate_mode(explicit_mode, text)
 
         # ── 3. THE BRAIN — Intent Classification ──
-        intent = self._classify_intent(text)
+        intent = await self._classify_intent(text)
         self.log(f"[Brain] Classified intent: {intent}")
 
         # ── 4. Route to handler based on intent ──
@@ -145,14 +159,47 @@ class ManagerAgent(BaseAgent):
     # TIER 2: SMART INTENT CLASSIFICATION (regex + keyword scoring)
     # ═══════════════════════════════════════════════════════════════════════════
 
-    def _classify_intent(self, text: str) -> str:
+    async def _classify_intent(self, text: str) -> str:
         """
         The core brain. Classifies user intent WITHOUT requiring trigger words.
-        Uses prioritized pattern matching — first match wins.
-
-        Delegates to IntentClassifier for zero-token classification.
+        Uses prioritized 3-tier classification:
+          Tier 1: Zero-cost regex pattern matching
+          Tier 2: Keyword scoring weights
+          Tier 3: LLM classification for low-confidence fallbacks
         """
-        return IntentClassifier.classify(text)
+        intent, confidence = IntentClassifier.classify_with_confidence(text)
+        
+        # Tier 3: If confidence is low (ambiguous) and we have API credentials, use LLM
+        if confidence < 0.65 and (self.config.get("gemini_api_key") or self.config.get("openai_api_key")):
+            self.log(f"[Brain] Intent confidence low ({confidence:.2f}). Running Tier 3 LLM Classification...")
+            try:
+                # Use LLM to classify intent
+                prompt = (
+                    "Classify the user's intent into exactly one of these categories:\n"
+                    "- conversation: General chatting, greeting, questioning, jokes\n"
+                    "- system: Requesting to open/close apps, lock screen, sleep PC, take screenshots, adjust volume/brightness\n"
+                    "- autonomous: Complex multi-step task involving screen use or web automation (like booking a flight, searching amazon for earbuds, ordering food)\n"
+                    "- research: Search the web, lookup doc, find info about something\n"
+                    "- entertainment: Play music, sing, recommend anime/movies/songs\n"
+                    "- coding: Check code, review code, debug, find bugs, watch me code\n"
+                    "- vision: What is on screen, describe screen, see screen\n"
+                    "- writing: Take note, write this down, dictate\n"
+                    "- focus: Start pomodoro, timer, help focus\n\n"
+                    f"User message: '{text}'\n"
+                    "Respond with ONLY the category name in lowercase (e.g. coding, conversation, system)."
+                )
+                from server.ai import get_ai_response
+                llm_response, _ = get_ai_response(prompt, [], self.config, system_prompt_override="You are a precise classifier. Return only the class name.")
+                llm_response = llm_response.lower().strip()
+                # Clean up and validate
+                for valid_intent in self.INTENTS:
+                    if valid_intent in llm_response:
+                        self.log(f"[Brain] Tier 3 classification resolved: {valid_intent}")
+                        return valid_intent
+            except Exception as e:
+                self.log(f"[Brain] Tier 3 classification failed: {e}")
+                
+        return intent
 
     # ═══════════════════════════════════════════════════════════════════════════
     # TIER 3: INTENT ROUTING (silent — no announcements)
@@ -188,8 +235,9 @@ class ManagerAgent(BaseAgent):
             return await self._handle_coding(text, context)
 
         elif intent == "research":
-            self.current_mode = "research"
-            return await self._handle_research(text, context)
+            # Handled by headless_web_agent in the ReAct loop now!
+            self.current_mode = "conversation"
+            return None
 
         elif intent == "entertainment":
             self.current_mode = "entertainment"
@@ -283,37 +331,58 @@ class ManagerAgent(BaseAgent):
             return "[CODING_RESUME] Watching your screen again~!"
 
         # Screen review triggers
-        if re.search(r"\b(how is|how's|is this|is it|am i|what do you think|look at|check|review|"
+        if re.search(r"\b(how is|how's|what do you think|look at|check|review|"
                      r"analyze|rate|evaluate|correct|wrong|right|good|bad|okay|better|improve|"
-                     r"did i|fix|debug)\b", lower):
+                     r"fix|debug)\s+(my\s+|the\s+)?(code|script|function|class)\b", lower):
             return "[CODING_REVIEW_NOW] Let me take a look at your code, Master~!"
         if re.search(r"\b(what's wrong|any error|any mistake|any bug|see anything|spot anything)\b", lower):
             return "[CODING_REVIEW_NOW] Let me check for bugs, Master~!"
         if re.search(r"\b(give me a hint|hint|stuck)\b", lower):
             return "[CODING_HINT] Hmm, let's see... I'll give you a small hint~"
-        
-        # If they asked a coding question and we are in coding mode, just review the screen by default.
-        return "[CODING_REVIEW_NOW] Let me check your screen to answer that~!"
+        # If we are explicitly in 'coding' mode, default to screen review.
+        # Otherwise, fall through to normal intent processing!
+        if self.current_mode == "coding":
+            return "[CODING_REVIEW_NOW] Let me check your screen to answer that~!"
+            
+        return None
 
     # ─── Autonomous Mode ──────────────────────────────────────────────────────
 
     async def _handle_autonomous_confirmation(self, text: str) -> Optional[str]:
-        """Handle user's response to an autonomous plan confirmation."""
+        """Handle user's response to an autonomous plan confirmation or freeform question."""
         lower = text.lower()
-        if re.search(r"\b(go ahead|proceed|yes|do it|confirm|approved|sure|okay|yep|yea)\b", lower):
-            self._autonomous_pending_confirm = False
-            if self._pending_plan:
+        
+        # Binary Confirmation Flow
+        if getattr(self, "_autonomous_pending_confirm", False):
+            if re.search(r"\b(go ahead|proceed|yes|do it|confirm|approved|sure|okay|yep|yea)\b", lower):
+                self._autonomous_pending_confirm = False
+                if self._pending_plan:
+                    plan = self._pending_plan
+                    self._pending_plan = None
+                    return await self._execute_autonomous_plan(plan)
+                return "I lost track of the plan, Master... Can you tell me again?"
+            elif re.search(r"\b(cancel|no|stop|abort|don't|nah|nope|nevermind)\b", lower):
+                self._autonomous_pending_confirm = False
+                self._pending_plan = None
+                self.current_mode = "conversation"
+                return "Got it! Cancelled. What else can I do, Master?"
+            else:
+                return "I'm waiting for your confirmation, Master~ Say 'go ahead' or 'cancel'!"
+                
+        # Freeform User Input Flow (Checkpoint System)
+        if getattr(self, "_autonomous_waiting_user_input", False):
+            self._autonomous_waiting_user_input = False
+            if getattr(self, "_pending_plan", None):
+                # Inject the user's answer into the next step's context
                 plan = self._pending_plan
                 self._pending_plan = None
+                
+                # We resume the plan, but inject the user answer into the executor state
+                if "executor" in self.workers:
+                    self.workers["executor"]._last_user_input = text
+                    
                 return await self._execute_autonomous_plan(plan)
-            return "I lost track of the plan, Master... Can you tell me again?"
-        elif re.search(r"\b(cancel|no|stop|abort|don't|nah|nope|nevermind)\b", lower):
-            self._autonomous_pending_confirm = False
-            self._pending_plan = None
-            self.current_mode = "conversation"
-            return "Got it! Cancelled. What else can I do, Master?"
-        else:
-            return "I'm waiting for your confirmation, Master~ Say 'go ahead' or 'cancel'!"
+            return "I lost track of the plan, Master... What were we doing?"
 
     async def _handle_autonomous(self, text: str, context: Optional[Dict]) -> Optional[str]:
         """Autonomous mode: Mizune operates the computer herself."""
@@ -414,6 +483,13 @@ class ManagerAgent(BaseAgent):
                 self._autonomous_pending_confirm = True
                 self._pending_plan = {"steps": steps[i:], "goal": plan.get("goal", ""), "safety_level": plan.get("safety_level", "input")}
                 return f"Step {i+1}: {result.get('question', 'Proceed?')}\nSay 'go ahead' or 'cancel'."
+
+            if result.get("needs_user_input"):
+                self._autonomous_waiting_user_input = True
+                self._pending_plan = {"steps": steps[i:], "goal": plan.get("goal", ""), "safety_level": plan.get("safety_level", "input")}
+                opts = result.get("options", [])
+                opts_str = "\n".join([f"[{opt}]" for opt in opts]) if opts else ""
+                return f"[CHECKPOINT] {result.get('question', 'I need input before proceeding:')}\n{opts_str}"
 
             if result.get("report"):
                 return f"[EMOTION: happy] {result.get('message', 'Done!')}"

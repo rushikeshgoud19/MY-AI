@@ -10,8 +10,8 @@ start "Mizune Backend" cmd /k "cd /d %~dp0 && .venv\Scripts\python.exe server.py
 :: Wait 3 seconds for backend to initialize before starting frontend
 timeout /t 3 /noq >nul
 
-:: Start Electron frontend in a new terminal
-start "Mizune Frontend" cmd /k "cd /d %~dp0 && npm start"
+:: Start Tauri frontend in a new terminal
+start "Mizune Frontend" cmd /k "cd /d %~dp0 && npx tauri dev"
 
 echo.
 echo  Both terminals launched! You can close this window.

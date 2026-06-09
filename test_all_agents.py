@@ -6,6 +6,7 @@ Run: python test_all_agents.py
 """
 import re
 import sys
+import asyncio
 
 # ─── Import the ManagerAgent classifier ───────────────────────────────────────
 sys.path.insert(0, ".")
@@ -36,7 +37,6 @@ def classify_vision(text: str) -> str:
     
     return "NONE"
 
-
 # ─── Test Runner ──────────────────────────────────────────────────────────────
 passed = 0
 failed = 0
@@ -46,7 +46,11 @@ def test(test_name: str, input_text: str, expected: str, test_type: str = "inten
     global passed, failed
     
     if test_type == "intent":
-        result = manager._classify_intent(input_text)
+        try:
+            result = asyncio.run(manager._classify_intent(input_text))
+        except RuntimeError:
+            loop = asyncio.get_event_loop()
+            result = loop.run_until_complete(manager._classify_intent(input_text))
     elif test_type == "vision":
         result = classify_vision(input_text)
     else:

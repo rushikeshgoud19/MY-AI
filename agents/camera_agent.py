@@ -1,4 +1,5 @@
 import os
+os.environ["OPENCV_LOG_LEVEL"] = "FATAL"
 import cv2
 import threading
 import time

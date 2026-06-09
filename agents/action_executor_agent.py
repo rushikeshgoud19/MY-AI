@@ -111,9 +111,11 @@ class ActionExecutorAgent(BaseAgent):
             "verify": self._action_verify,
             "report": self._action_report,
             "ask_confirmation": self._action_ask_confirmation,
+            "ask_user": self._action_ask_user,
             "run_terminal_command": self._action_run_terminal_command,
             "write_file": self._action_write_file,
             "gitlab_action": self._action_gitlab_action,
+            "agent_builder_search": self._action_agent_builder_search,
         }
 
         handler = handlers.get(action)
@@ -123,6 +125,12 @@ class ActionExecutorAgent(BaseAgent):
         return await handler(params, context)
 
     # ─── Action Handlers ──────────────────────────────────────────────────────
+
+    async def _action_ask_user(self, params: Dict, context: Optional[Dict]) -> Dict:
+        """Pause task to ask the user a question and wait for their response."""
+        question = params.get("question", "I have a question before I proceed:")
+        options = params.get("options", [])
+        return {"success": True, "needs_user_input": True, "question": question, "options": options}
 
     async def _action_open_url(self, params: Dict, context: Optional[Dict]) -> Dict:
         """Open a URL in the default browser."""
@@ -477,18 +485,13 @@ class ActionExecutorAgent(BaseAgent):
             return {"success": False, "error": f"Failed to write file: {e}"}
 
     async def _action_gitlab_action(self, params: Dict, context: Optional[Dict]) -> Dict:
-        """Handle GitLab operations (MCP-style integration)."""
+        """Handle GitLab operations via official MCP Server."""
         operation = params.get("operation", "")
         project = params.get("project", "")
         
         self.log(f"GitLab Action: {operation} on {project}")
         
-        # In a real MCP setup, we would call the MCP server here.
-        # For the hackathon, we can use the python-gitlab library or simple requests.
-        
         token = self.config.get("gitlab_token")
-        url = self.config.get("gitlab_url", "https://gitlab.com")
-        
         if not token:
             return {
                 "success": False, 
@@ -496,44 +499,82 @@ class ActionExecutorAgent(BaseAgent):
             }
 
         try:
-            import gitlab
-            gl = gitlab.Gitlab(url, private_token=token)
+            # TRUE HACKATHON-COMPLIANT MCP IMPLEMENTATION
+            from mcp import ClientSession, StdioServerParameters
+            from mcp.client.stdio import stdio_client
+            import os
             
-            if operation == "create_issue":
-                p = gl.projects.get(project)
-                issue = p.issues.create({
-                    'title': params.get("title", "Mizune AI Issue"),
-                    'description': params.get("description", "Created by Mizune AI")
-                })
-                return {"success": True, "message": f"Issue created: {issue.web_url}", "url": issue.web_url}
-                
-            elif operation == "list_issues":
-                p = gl.projects.get(project)
-                issues = p.issues.list(state='opened', limit=5)
-                issue_list = [f"#{i.iid}: {i.title}" for i in issues]
-                return {"success": True, "message": f"Found {len(issue_list)} issues", "issues": issue_list}
-                
-            elif operation == "get_file":
-                p = gl.projects.get(project)
-                f = p.files.get(file_path=params.get("file_path"), ref='main')
-                content = f.decode().decode('utf-8')
-                return {"success": True, "message": "File content retrieved", "content": content}
+            env = os.environ.copy()
+            env["GITLAB_PERSONAL_ACCESS_TOKEN"] = token
             
-            elif operation == "create_mr":
-                p = gl.projects.get(project)
-                mr = p.mergerequests.create({
-                    'source_branch': params.get("source_branch", "mizune-patch"),
-                    'target_branch': params.get("target_branch", "main"),
-                    'title': params.get("title", "Mizune AI Improvement"),
-                })
-                return {"success": True, "message": f"MR created: {mr.web_url}", "url": mr.web_url}
+            server_params = StdioServerParameters(
+                command="npx",
+                args=["-y", "@modelcontextprotocol/server-gitlab"],
+                env=env
+            )
+            
+            async with stdio_client(server_params) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    
+                    if operation == "create_issue":
+                        result = await session.call_tool("create_issue", arguments={
+                            "project_id": project, 
+                            "title": params.get("title", "Mizune AI Issue"), 
+                            "description": params.get("description", "Created by Mizune AI via MCP")
+                        })
+                        return {"success": True, "result": [content.text for content in result.content]}
+                        
+                    elif operation == "list_issues":
+                        # Attempt to use standard list issues tool
+                        result = await session.call_tool("list_issues", arguments={"project_id": project})
+                        return {"success": True, "result": [content.text for content in result.content]}
+                        
+                    elif operation == "get_file":
+                        result = await session.call_tool("get_file_contents", arguments={
+                            "project_id": project,
+                            "file_path": params.get("file_path", ""),
+                            "ref": "main"
+                        })
+                        return {"success": True, "result": [content.text for content in result.content]}
+                        
+                    elif operation == "create_mr":
+                        result = await session.call_tool("create_merge_request", arguments={
+                            "project_id": project,
+                            "source_branch": params.get("source_branch", "mizune-patch"),
+                            "target_branch": params.get("target_branch", "main"),
+                            "title": params.get("title", "Mizune AI Improvement")
+                        })
+                        return {"success": True, "result": [content.text for content in result.content]}
 
             return {"success": False, "error": f"Unsupported GitLab operation: {operation}"}
             
         except ImportError:
-            return {"success": False, "error": "python-gitlab library not installed. Run 'pip install python-gitlab'"}
+            return {"success": False, "error": "mcp library not installed. Run 'pip install mcp'"}
         except Exception as e:
-            return {"success": False, "error": f"GitLab error: {str(e)}"}
+            return {"success": False, "error": f"MCP error: {str(e)}"}
+
+    async def _action_agent_builder_search(self, params: Dict, context: Optional[Dict]) -> Dict:
+        """Handle Google Cloud Agent Builder (Vertex AI Search) operations."""
+        query = params.get("query", "")
+        project_id = self.config.get("gcp_project_id", "")
+        location = self.config.get("gcp_location", "global")
+        data_store_id = self.config.get("gcp_data_store_id", "")
+        
+        self.log(f"Agent Builder Search: '{query}'")
+        
+        if not project_id or not data_store_id:
+            return {
+                "success": False, 
+                "error": "Missing GCP config. Please add 'gcp_project_id' and 'gcp_data_store_id' to config.json"
+            }
+            
+        try:
+            from server.agent_builder_search import search_data_store
+            result = search_data_store(project_id, location, data_store_id, query)
+            return {"success": True, "result": result}
+        except Exception as e:
+            return {"success": False, "error": f"Search error: {str(e)}"}
 
     # ─── Utilities ────────────────────────────────────────────────────────────
 

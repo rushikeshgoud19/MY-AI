@@ -64,8 +64,9 @@ ACTIONS:
 - copy_text: Copy visible text from screen. Params: {{"target": "element with text"}}
 - save_note: Save information to notes file. Params: {{"content": "text to save"}}
 - run_terminal_command: Execute a command in powershell/cmd. Params: {{"command": "mkdir new_project && code new_project"}}
-- write_file: Create or edit a file directly. Params: {{"path": "index.html", "content": "<html>..."}}
-- gitlab_action: Interact with GitLab repositories. Params: {{"operation": "create_issue|list_issues|create_mr|get_file", "project": "namespace/project", "title": "...", "description": "...", "file_path": "..."}}
+- write_file: Create or edit a file directly. Params: {"path": "index.html", "content": "<html>..."}
+- gitlab_action: Interact with GitLab repositories via official MCP Server. Params: {"operation": "create_issue|list_issues|create_mr|get_file", "project": "namespace/project", "title": "...", "description": "...", "file_path": "..."}
+- agent_builder_search: Query Google Cloud Agent Builder (Vertex AI Search) Knowledge Base. Params: {"query": "What is the policy?"}
 
 
 SAFETY LEVELS:

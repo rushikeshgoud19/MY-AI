@@ -36,10 +36,17 @@ server_debug_utf8.log
 # Exclude local databases and caches
 .chroma_db/
 .claude/
+.data/
 lumina/
 package-lock.json
 tts_cache/
 dataset/
 data/
+data_collector/
 *.db
 src-tauri/target/
+
+# Exclude old monolith server file
+server_old.py
+.wwebjs_auth/
+.wwebjs_cache/

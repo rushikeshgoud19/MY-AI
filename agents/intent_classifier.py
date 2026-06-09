@@ -98,6 +98,10 @@ class IntentClassifier:
         r"describe\s+(my\s+)?(screen|what)|"
         r"what('s|\s+is)\s+(this|that)\s+(on\s+)?(my\s+)?screen|"
         r"read\s+(my\s+)?screen|read\s+what's\s+on|"
+        r"(how\s+many\s+)?calories\s+(in\s+)?(this|that|food|meal)|"
+        r"look\s+at\s+(this|me|the\s+camera)|"
+        r"what\s+am\s+i\s+(eating|holding)|"
+        r"what('s|\s+is)\s+(this|in\s+front\s+of\s+you|on\s+camera)|"
         r"on\s+(the\s+)?screen\s+(right\s+)?now|"
         r"what\s+am\s+i\s+(looking\s+at|doing|watching)|"
         r"(see|check|lemme\s+see|let\s+me\s+see)\s+(whats|what's|what\s+is)\s+on\s+screen|"
@@ -119,8 +123,8 @@ class IntentClassifier:
         r"make\s+(this|my|the)?\s*(code)?\s*better|improve\s+(this|my|the)\s+code|"
         r"(code|solution)\s+(better|correct|wrong|right|good|bad)|"
         r"coding\s+question|"
-        r"can\s+you\s+(check|look\s+at|review)\s+(it|this|my|the)|"
-        r"(is|was)\s+(it|this|that)\s+(correct|right|wrong|good|bad))\b"
+        r"can\s+you\s+(check|look\s+at|review)\s+(my\s+|the\s+)?(code|script|function|class)|"
+        r"(is|was)\s+(this|that|my)\s+(code|script|solution)\s+(correct|right|wrong|good|bad))\b"
     )
 
     _RESEARCH_PATTERNS = re.compile(
@@ -178,6 +182,16 @@ class IntentClassifier:
             One of: "conversation", "system", "autonomous", "vision",
                     "coding", "research", "entertainment", "writing", "focus"
         """
+        intent, _ = cls.classify_with_confidence(text)
+        return intent
+
+    @classmethod
+    def classify_with_confidence(cls, text: str) -> tuple[str, float]:
+        """
+        Classify user intent with a confidence score.
+        Returns:
+            (intent_name, confidence_score)
+        """
         lower = text.lower().strip()
         # Strip trailing punctuation only (keep apostrophes for contractions)
         clean = re.sub(r"[!?.,\"]+", "", lower).strip()
@@ -185,11 +199,11 @@ class IntentClassifier:
         # GUARD: Very short conversational inputs
         word_count = len(clean.split())
         if word_count <= 2 and not cls._GUARD_SHORT_PATTERNS.search(clean):
-            return "conversation"
+            return "conversation", 0.95
 
         # AUTONOMOUS: EXTREME COMPLEXITY GUARD
         if cls._AUTONOMOUS_EXTREME_PATTERNS.search(clean):
-            return "autonomous"
+            return "autonomous", 0.95
 
         # Action density heuristic for very long orchestrations
         if word_count >= 10:
@@ -197,58 +211,58 @@ class IntentClassifier:
             conjunctions = cls._CONJUNCTION_PATTERNS.findall(clean)
 
             if len(set(actions)) >= 3:
-                return "autonomous"
+                return "autonomous", 0.90
             if len(actions) >= 2 and len(conjunctions) >= 2:
-                return "autonomous"
+                return "autonomous", 0.90
 
         # SYSTEM: App control + PC commands
         if cls._SYSTEM_APP_PATTERNS.search(clean):
             if re.search(r"\b(and\s+(go|navigate|search|find|then|also|do))\b", clean):
-                return "autonomous"
-            return "system"
+                return "autonomous", 0.90
+            return "system", 0.95
 
         if re.search(rf"\b(closing|opening|launching|starting)\b.*\b({cls._APP_NAMES})\b", clean):
-            return "system"
+            return "system", 0.95
 
         if cls._SYSTEM_SCREENSHOT.search(clean):
-            return "system"
+            return "system", 0.95
 
         if cls._SYSTEM_LOCK_SHUTDOWN.search(clean):
-            return "system"
+            return "system", 0.98
 
         if cls._SYSTEM_VOLUME.search(clean):
-            return "system"
+            return "system", 0.95
 
         # SYSTEM: Messaging commands ("tell [name]", "message [name]")
         if re.search(r"\b(tell|message)\s+(?!me\b|us\b|them\b|him\b|her\b)\w{2,}\b", clean):
-            return "system"
+            return "system", 0.90
 
         # AUTONOMOUS: Multi-step tasks
         if cls._AUTONOMOUS_MULTI_STEP.search(clean):
-            return "autonomous"
+            return "autonomous", 0.95
 
         # Chain detection
         if cls._AUTONOMOUS_CHAIN.search(clean):
-            return "autonomous"
+            return "autonomous", 0.95
 
         if cls._AUTONOMOUS_REQUEST.search(clean):
-            return "autonomous"
+            return "autonomous", 0.95
 
         if cls._AUTONOMOUS_SLANG.search(clean):
-            return "autonomous"
+            return "autonomous", 0.90
 
         # VISION: What's on screen
         if cls._VISION_PATTERNS.search(clean):
-            return "vision"
+            return "vision", 0.95
 
         # CODING: Code review, debugging
         if cls._CODING_PATTERNS.search(clean):
-            return "coding"
+            return "coding", 0.95
 
         # RESEARCH: Information lookup
         if cls._RESEARCH_PATTERNS.search(clean):
             if not re.search(r"\b(and\s+(then|apply|save|sort|add|buy|order|book|also|filter))\b", clean):
-                return "research"
+                return "research", 0.90
 
         # "what is X" / "who is X"
         non_research = r"(this|that|it|up|happening|going|wrong|good|bad|ok|2\+2|\d+\+\d+)"
@@ -258,22 +272,53 @@ class IntentClassifier:
                      rf"how\s+does\s+\w{{3,}}\s+work|"
                      rf"best\s+\w+\s+of\s+\d{{4}}|"
                      rf"what\s+is\s+the\s+\w{{3,}}\s+of\s+\w{{3,}})\b", clean):
-            return "research"
+            return "research", 0.95
 
         # ENTERTAINMENT: Music, media, anime
         if cls._ENTERTAINMENT_PATTERNS.search(clean):
-            return "entertainment"
+            return "entertainment", 0.95
 
         # WRITING: Note-taking
         if cls._WRITING_PATTERNS.search(clean):
-            return "writing"
+            return "writing", 0.95
 
         # FOCUS: Productivity
         if cls._FOCUS_PATTERNS.search(clean):
-            return "focus"
+            return "focus", 0.95
 
-        # FALLBACK: Conversation
-        return "conversation"
+        # TIER 2: Keyword scoring for ambiguous matches
+        weights = {
+            "system": {"open": 2, "close": 2, "launch": 2, "kill": 2, "app": 1, "run": 1, "screenshot": 3, "lock": 3, "sleep": 3, "volume": 3, "mute": 3, "unmute": 3},
+            "autonomous": {"do": 1, "order": 2, "book": 2, "buy": 2, "search": 1, "automatically": 2, "for me": 3, "yourself": 2},
+            "vision": {"screen": 2, "see": 1, "look": 1, "describe": 2, "monitor": 2, "camera": 2},
+            "coding": {"code": 3, "bug": 3, "debug": 3, "fix": 2, "error": 2, "programming": 2},
+            "research": {"search": 1, "lookup": 2, "google": 2, "info": 2, "what is": 2, "who is": 2},
+            "entertainment": {"play": 1, "music": 3, "song": 3, "anime": 3, "movie": 3, "sing": 3, "spotify": 2},
+            "writing": {"write": 3, "note": 3, "dictate": 3, "type": 2},
+            "focus": {"focus": 3, "pomodoro": 3, "timer": 2}
+        }
+        
+        scores = {intent: 0 for intent in weights}
+        for word in clean.split():
+            for intent, keywords in weights.items():
+                if word in keywords:
+                    scores[intent] += keywords[word]
+                    
+        best_intent = "conversation"
+        best_score = 0
+        for intent, score in scores.items():
+            if score > best_score:
+                best_score = score
+                best_intent = intent
+                
+        if best_score >= 3:
+            # Map score to confidence 0.7 - 0.85
+            confidence = min(0.7 + (best_score - 3) * 0.05, 0.85)
+            return best_intent, confidence
+
+        # FALLBACK: Conversation (low confidence, triggers Tier 3 LLM classification if needed)
+        return "conversation", 0.4
+
 
     @classmethod
     def get_intent_description(cls, intent: str) -> str:

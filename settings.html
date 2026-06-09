@@ -304,6 +304,7 @@
         <div class="tab" data-tab="character">Character</div>
         <div class="tab" data-tab="behavior">Behavior</div>
         <div class="tab" data-tab="advanced">Advanced</div>
+        <div class="tab" data-tab="memory">Memory</div>
     </div>
 
     <div class="container">
@@ -571,6 +572,27 @@
             </div>
         </div>
 
+        <!-- ── Memory Tab ── -->
+        <div class="tab-content" id="tab-memory">
+            <div class="section">
+                <div class="section-header">Vault Settings</div>
+                <div class="section-body">
+                    <div class="field">
+                        <label>Obsidian Vault Path</label>
+                        <input type="text" id="obsidian_vault_path" placeholder="C:\path\to\vault" />
+                        <span class="hint">The directory where Mizune saves and reads her memories. Changes require restart.</span>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="section">
+                <div class="section-header">Memory Graph (Obsidian Vault Visualization)</div>
+                <div class="section-body" style="padding: 0;">
+                    <canvas id="memory-canvas" width="560" height="400" style="width: 100%; height: 400px; display: block; background: #080811;"></canvas>
+                </div>
+            </div>
+        </div>
+
     </div><!-- /container -->
 
     <div class="btn-row">
@@ -633,6 +655,7 @@
             set('twitch_channel', cfg.twitch_channel);
             set('always_on_top', cfg.always_on_top);
             set('window_scale', cfg.window_scale);
+            set('obsidian_vault_path', cfg.obsidian_vault_path);
 
             updateRangeDisplays();
             updateModelFields();
@@ -694,14 +717,170 @@
         }
 
         // ── Tabs ──
+        let graphAnimId = null;
         document.querySelectorAll('.tab').forEach(tab => {
             tab.addEventListener('click', () => {
                 document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
                 document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
                 tab.classList.add('active');
                 document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
+                
+                if (tab.dataset.tab === 'memory') {
+                    renderMemoryGraph();
+                } else if (graphAnimId) {
+                    cancelAnimationFrame(graphAnimId);
+                    graphAnimId = null;
+                }
             });
         });
+
+        // ── Memory Graph Parser & Physics Engine ──
+        function renderMemoryGraph() {
+            if (graphAnimId) cancelAnimationFrame(graphAnimId);
+            const canvas = document.getElementById('memory-canvas');
+            if (!canvas) return;
+            const ctx = canvas.getContext('2d');
+            const vaultPath = document.getElementById('obsidian_vault_path').value || config.obsidian_vault_path;
+            
+            if (!vaultPath || !fs.existsSync(vaultPath)) {
+                ctx.fillStyle = '#080811';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.fillStyle = '#ff5555';
+                ctx.font = '12px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText('Vault path not found.', canvas.width/2, canvas.height/2);
+                return;
+            }
+
+            let files = [];
+            function walk(dir) {
+                try {
+                    const list = fs.readdirSync(dir);
+                    list.forEach(file => {
+                        const full = path.join(dir, file);
+                        const stat = fs.statSync(full);
+                        if (stat.isDirectory() && !file.startsWith('.')) {
+                            walk(full);
+                        } else if (file.endsWith('.md')) {
+                            files.push(full);
+                        }
+                    });
+                } catch (e) {}
+            }
+            walk(vaultPath);
+
+            let nodes = [];
+            let edges = [];
+            let nodeMap = {};
+
+            files.forEach(f => {
+                const name = path.basename(f, '.md');
+                const content = fs.readFileSync(f, 'utf8');
+                const n = { id: name, x: Math.random()*canvas.width, y: Math.random()*canvas.height, vx: 0, vy: 0, rad: 4 + Math.random()*3, active: false };
+                nodes.push(n);
+                nodeMap[name] = n;
+                
+                // Extract [[Links]]
+                const links = [...content.matchAll(/\[\[(.*?)\]\]/g)].map(m => m[1].split('|')[0].trim());
+                links.forEach(l => edges.push({ source: name, target: l }));
+            });
+
+            edges.forEach(e => {
+                if (!nodeMap[e.target]) {
+                    const n = { id: e.target, x: Math.random()*canvas.width, y: Math.random()*canvas.height, vx: 0, vy: 0, rad: 3, active: false };
+                    nodes.push(n);
+                    nodeMap[e.target] = n;
+                }
+            });
+
+            edges = edges.map(e => ({ source: nodeMap[e.source], target: nodeMap[e.target] }));
+
+            // Interactive Mouse
+            let mouseX = -1000, mouseY = -1000;
+            canvas.onmousemove = (e) => {
+                const rect = canvas.getBoundingClientRect();
+                mouseX = (e.clientX - rect.left) * (canvas.width / rect.width);
+                mouseY = (e.clientY - rect.top) * (canvas.height / rect.height);
+            };
+            canvas.onmouseleave = () => { mouseX = -1000; mouseY = -1000; };
+
+            function simulate() {
+                const center = { x: canvas.width/2, y: canvas.height/2 };
+                
+                for (let i=0; i<nodes.length; i++) {
+                    // Mouse Repulsion
+                    let mdx = nodes[i].x - mouseX;
+                    let mdy = nodes[i].y - mouseY;
+                    let mdist = Math.sqrt(mdx*mdx + mdy*mdy);
+                    nodes[i].active = mdist < 40;
+                    if (mdist < 80) {
+                        nodes[i].vx += (mdx / mdist) * 0.5;
+                        nodes[i].vy += (mdy / mdist) * 0.5;
+                    }
+
+                    // Node Repulsion
+                    for (let j=i+1; j<nodes.length; j++) {
+                        let dx = nodes[i].x - nodes[j].x;
+                        let dy = nodes[i].y - nodes[j].y;
+                        let dist = Math.sqrt(dx*dx + dy*dy) || 1;
+                        if (dist < 80) {
+                            let force = (80 - dist) / dist * 0.05;
+                            nodes[i].vx += dx * force;
+                            nodes[i].vy += dy * force;
+                            nodes[j].vx -= dx * force;
+                            nodes[j].vy -= dy * force;
+                        }
+                    }
+                    nodes[i].vx += (center.x - nodes[i].x) * 0.001;
+                    nodes[i].vy += (center.y - nodes[i].y) * 0.001;
+                }
+
+                edges.forEach(e => {
+                    let dx = e.target.x - e.source.x;
+                    let dy = e.target.y - e.source.y;
+                    let dist = Math.sqrt(dx*dx + dy*dy) || 1;
+                    let force = (dist - 40) * 0.005;
+                    e.source.vx += dx * force;
+                    e.source.vy += dy * force;
+                    e.target.vx -= dx * force;
+                    e.target.vy -= dy * force;
+                });
+
+                ctx.fillStyle = '#080811';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                ctx.strokeStyle = 'rgba(110, 142, 251, 0.2)';
+                ctx.lineWidth = 1.5;
+                edges.forEach(e => {
+                    ctx.beginPath();
+                    ctx.moveTo(e.source.x, e.source.y);
+                    ctx.lineTo(e.target.x, e.target.y);
+                    ctx.stroke();
+                });
+
+                nodes.forEach(n => {
+                    n.x += n.vx;
+                    n.y += n.vy;
+                    n.vx *= 0.82;
+                    n.vy *= 0.82;
+
+                    ctx.fillStyle = n.active ? '#fff' : '#a777e3';
+                    ctx.beginPath();
+                    ctx.arc(n.x, n.y, n.active ? n.rad + 2 : n.rad, 0, Math.PI*2);
+                    ctx.fill();
+                    
+                    if (n.rad > 4 || nodes.length < 30 || n.active) {
+                        ctx.fillStyle = n.active ? '#fff' : '#c0c0ff';
+                        ctx.font = n.active ? 'bold 12px sans-serif' : '10px sans-serif';
+                        ctx.textAlign = 'center';
+                        ctx.fillText(n.id, n.x, n.y - (n.active ? 10 : 8));
+                    }
+                });
+
+                graphAnimId = requestAnimationFrame(simulate);
+            }
+            simulate();
+        }
 
         // ── Save ──
         function saveSettings() {
@@ -741,6 +920,7 @@
                 twitch_channel: get('twitch_channel'),
                 always_on_top: get('always_on_top'),
                 window_scale: get('window_scale'),
+                obsidian_vault_path: get('obsidian_vault_path'),
             };
 
             fs.writeFileSync(CONFIG_PATH, JSON.stringify(newCfg, null, 2));

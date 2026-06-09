@@ -1,11 +1,17 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::sync::Mutex;
 use tauri::{
     AppHandle, Emitter, Manager,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
+use tauri_plugin_global_shortcut::{Code, Modifiers, ShortcutState};
+
+struct WindowState {
+    is_click_through: Mutex<bool>,
+}
 
 fn toggle_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
@@ -23,6 +29,33 @@ fn main() {
     log::info!("Starting Mizune AI...");
 
     tauri::Builder::default()
+        .manage(WindowState {
+            is_click_through: Mutex::new(true), // Start as click-through
+        })
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_shortcut("ctrl+m")
+                .unwrap()
+                .with_handler(|app, shortcut, event| {
+                    if event.state == ShortcutState::Pressed {
+                        if shortcut.matches(Modifiers::CONTROL, Code::KeyM) {
+                            let state = app.state::<WindowState>();
+                            let mut is_click_through = state.is_click_through.lock().unwrap();
+                            *is_click_through = !*is_click_through;
+
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.set_ignore_cursor_events(*is_click_through);
+                                if !*is_click_through {
+                                    let _ = window.set_focus();
+                                }
+                                let _ = window.emit("focus-mode-changed", *is_click_through);
+                                log::info!("Toggled click-through mode: {}", *is_click_through);
+                            }
+                        }
+                    }
+                })
+                .build(),
+        )
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
@@ -81,6 +114,7 @@ fn main() {
             if let Some(window) = app.get_webview_window("main") {
                 log::info!("Main window configured");
                 let _ = window.set_decorations(false);
+                let _ = window.set_ignore_cursor_events(true); // Default to click-through
             }
 
             Ok(())
