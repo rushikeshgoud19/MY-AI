@@ -50,3 +50,4 @@ src-tauri/target/
 server_old.py
 .wwebjs_auth/
 .wwebjs_cache/
+.wwebjs_auth_baileys/

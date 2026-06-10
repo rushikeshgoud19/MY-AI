@@ -57,15 +57,16 @@ async def lifespan(app: FastAPI):
     init_auto_fetch(CFG)
     start_proactive_agent(CFG, on_wake_trigger, _processing_lock)
     
-    # Start Headless WhatsApp Bridge Listener
-    from server.whatsapp_listener import start_whatsapp_listener
-    start_whatsapp_listener()
+    # Start Headless WhatsApp Bridge Listener (Baileys Super-Architecture)
+    from server.platforms.whatsapp.core import start_whatsapp_core
+    global whatsapp_core_instance
+    whatsapp_core_instance = start_whatsapp_core(CFG)
     
     yield
     
     log_info("[SERVER] Shutting down background tasks...")
-    from server.whatsapp_listener import stop_whatsapp_listener
-    stop_whatsapp_listener()
+    from server.platforms.whatsapp.core import stop_whatsapp_core
+    stop_whatsapp_core()
     
     from server.memory_worker import stop_memory_worker
     stop_memory_worker()
@@ -251,7 +252,7 @@ async def websocket_endpoint(websocket: WebSocket):
 if __name__ == "__main__":
     import socket
 
-    PORT = 8000
+    PORT = 8001
     def is_port_in_use(port: int) -> bool:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             return s.connect_ex(('localhost', port)) == 0
