@@ -26,25 +26,27 @@ class MizuneWhatsAppBridge {
   }
 
   async start() {
-    // Start IPC server for Python core
-    this.wss = new WebSocket.Server({ port: IPC_PORT });
-    this.wss.on('connection', (ws) => {
-      console.log('[Bridge] Python core connected');
-      this.pythonConnected = true;
-      this.pythonWS = ws;
-      
-      // Flush queued messages
-      while (this.messageQueue.length > 0) {
-        ws.send(JSON.stringify(this.messageQueue.shift()));
-      }
-      
-      ws.on('message', (data) => this.handlePythonCommand(JSON.parse(data)));
-      ws.on('close', () => {
-          console.log('[Bridge] Python core disconnected');
-          this.pythonConnected = false;
-          this.pythonWS = null;
+    // Start IPC server for Python core only once
+    if (!this.wss) {
+      this.wss = new WebSocket.Server({ port: IPC_PORT });
+      this.wss.on('connection', (ws) => {
+        console.log('[Bridge] Python core connected');
+        this.pythonConnected = true;
+        this.pythonWS = ws;
+        
+        // Flush queued messages
+        while (this.messageQueue.length > 0) {
+          ws.send(JSON.stringify(this.messageQueue.shift()));
+        }
+        
+        ws.on('message', (data) => this.handlePythonCommand(JSON.parse(data)));
+        ws.on('close', () => {
+            console.log('[Bridge] Python core disconnected');
+            this.pythonConnected = false;
+            this.pythonWS = null;
+        });
       });
-    });
+    }
 
     // Auth state
     const { state, saveCreds } = await useMultiFileAuthState(SESSION_PATH);
@@ -65,7 +67,14 @@ class MizuneWhatsAppBridge {
 
     this.sock.ev.on('creds.update', saveCreds);
     
-    this.sock.ev.on('connection.update', ({ connection, lastDisconnect }) => {
+    this.sock.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
+      if (qr) {
+        console.log('\n==================================================');
+        console.log('SCAN THIS QR CODE WITH WHATSAPP!');
+        console.log('==================================================\n');
+        require('qrcode-terminal').generate(qr, { small: true });
+      }
+
       if (connection === 'close') {
         const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== 401;
         if (shouldReconnect) {

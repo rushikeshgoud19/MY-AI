@@ -562,7 +562,7 @@ def start_whatsapp_core(config):
             pass
 
         logger.info("[WHATSAPP] Launching Node.js Baileys Bridge in background...")
-        script_path = os.path.join(os.path.dirname(__file__), "baileys_bridge.js")
+        script_path = os.path.join(os.path.dirname(__file__), "baileys_bridge.cjs")
         log_file = open(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "baileys_bridge.log"), "w")
         CREATE_NO_WINDOW = 0x08000000
         _bridge_process = subprocess.Popen(
