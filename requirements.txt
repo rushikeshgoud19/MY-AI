@@ -9,6 +9,8 @@ pyautogui
 keyboard
 google-generativeai
 google-genai
+openai
+anthropic
 pyperclip
 chromadb
 faster-whisper
@@ -23,8 +25,7 @@ edge-tts
 deepface
 opencv-python
 mediapipe
-mcp
-google-cloud-discoveryengine
+python-gitlab
 psutil
 torch
 python_speech_features

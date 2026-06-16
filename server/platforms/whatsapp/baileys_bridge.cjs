@@ -174,7 +174,7 @@ class MizuneWhatsAppBridge {
       type: 'incoming_message',
       platform: 'whatsapp',
       message_id: msg.key.id,
-      timestamp: msg.messageTimestamp * 1000,
+      timestamp: msg.messageTimestamp,
       chat_jid: jid,
       chat_type: isGroup ? 'group' : 'dm',
       sender_jid: sender,

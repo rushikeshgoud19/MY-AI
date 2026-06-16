@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body {
+    margin: 0;
+    padding: 0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    background-color: transparent;
+    height: 100vh;
+    overflow: hidden;
+  }
+  .slime {
+    width: 100px;
+    height: 100px;
+    background: linear-gradient(135deg, #a777e3, #6a11cb);
+    box-shadow: 0 0 20px rgba(167, 119, 227, 0.5);
+    border-radius: 40% 60% 70% 30% / 40% 50% 60% 50%;
+    animation: morph 4s ease-in-out infinite;
+    transition: all 0.5s ease;
+    position: relative;
+  }
+  
+  /* Slime Eyes */
+  .slime::before, .slime::after {
+    content: '';
+    position: absolute;
+    width: 12px;
+    height: 12px;
+    background: white;
+    border-radius: 50%;
+    top: 35px;
+    box-shadow: 0 0 5px rgba(255,255,255,0.8);
+    transition: all 0.3s ease;
+  }
+  .slime::before { left: 25px; }
+  .slime::after { right: 25px; }
+
+  /* Blinking animation */
+  @keyframes blink {
+    0%, 96%, 98% { transform: scaleY(1); }
+    97% { transform: scaleY(0.1); }
+  }
+  .slime::before, .slime::after {
+    animation: blink 4s infinite;
+  }
+  
+  @keyframes morph {
+    0% { border-radius: 40% 60% 70% 30% / 40% 50% 60% 50%; transform: scale(1) translateY(0); }
+    34% { border-radius: 70% 30% 50% 50% / 30% 30% 70% 70%; transform: scale(1.05) translateY(5px); }
+    67% { border-radius: 100% 60% 60% 100% / 100% 100% 60% 60%; transform: scale(0.95) translateY(-5px); }
+    100% { border-radius: 40% 60% 70% 30% / 40% 50% 60% 50%; transform: scale(1) translateY(0); }
+  }
+
+  /* Responsive states */
+  .slime.thinking {
+    animation: pulse 1s ease-in-out infinite;
+    background: linear-gradient(135deg, #a777e3, #ffcc00);
+    box-shadow: 0 0 25px rgba(255, 204, 0, 0.6);
+  }
+  .slime.thinking::before, .slime.thinking::after {
+    transform: scaleY(0.3); /* squinting */
+    animation: none;
+  }
+
+  .slime.listening {
+    animation: morph 1s ease-in-out infinite;
+    background: linear-gradient(135deg, #0f52ba, #a777e3);
+    box-shadow: 0 0 30px rgba(15, 82, 186, 0.7);
+    transform: scale(1.1);
+  }
+
+  .slime.speaking {
+    animation: bounce 0.5s alternate infinite;
+  }
+  .slime.speaking::before, .slime.speaking::after {
+    animation: none;
+    height: 8px; /* happy eyes */
+    border-radius: 50% 50% 10% 10%;
+  }
+  
+  @keyframes pulse {
+    0% { transform: scale(0.95); border-radius: 50%; }
+    50% { transform: scale(1.05); border-radius: 40% 60% 70% 30%; }
+    100% { transform: scale(0.95); border-radius: 50%; }
+  }
+
+  @keyframes bounce {
+    0% { transform: translateY(0) scale(1, 1); border-radius: 50% 50% 40% 40%; }
+    100% { transform: translateY(-15px) scale(0.95, 1.05); border-radius: 50%; }
+  }
+</style>
+</head>
+<body>
+  <div id="blob" class="slime"></div>
+  <script>
+    function setState(state) {
+      const blob = document.getElementById('blob');
+      blob.className = 'slime'; // reset
+      if(state && state !== 'idle') {
+        blob.classList.add(state);
+      }
+    }
+  </script>
+</body>
+</html>

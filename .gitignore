@@ -51,3 +51,27 @@ server_old.py
 .wwebjs_auth/
 .wwebjs_cache/
 .wwebjs_auth_baileys/
+
+# Biometric / Voice data (SENSITIVE)
+biometric_config.json
+biometric_sample_*.wav
+mizune_voice_profile.npy
+record_biometric.py
+
+# Character assets (too large for git)
+character/*.vrm
+character/*.vroid
+
+# QR Codes / Auth tokens
+qr_code.txt
+
+# Temp execution files
+.temp_exec.py
+test_output.txt
+
+# Kernel events DB
+kernel_events.db
+
+# MizuneVault (personal notes)
+MizuneVault/
+

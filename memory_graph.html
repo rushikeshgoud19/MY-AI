@@ -1,0 +1,57 @@
+
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Mizune Knowledge Graph</title>
+      <style> 
+        body { margin: 0; background-color: #0b0f19; color: #fff; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; overflow: hidden; } 
+        #legend { position: absolute; top: 20px; left: 20px; z-index: 100; background: rgba(0,0,0,0.7); padding: 15px; border-radius: 10px; border: 1px solid #333; }
+        h2 { margin-top: 0; background: -webkit-linear-gradient(#00ffff, #ff00ff); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+      </style>
+      <script src="https://unpkg.com/3d-force-graph"></script>
+    </head>
+    <body>
+      <div id="legend">
+          <h2>Neural Memory Graph</h2>
+          <div style="color: #4CAF50;">● Core Network</div>
+          <div style="color: #ff00ff;">● Acquired Skills</div>
+          <div style="color: #00ffff;">● Session Timeline</div>
+          <div style="color: #ffff00;">● Semantic Memories</div>
+      </div>
+      <div id="3d-graph"></div>
+      
+      <script>
+        const gData = {"nodes": [{"id": "Mizune Core", "name": "Mizune's Brain", "group": 0, "val": 20}, {"id": "Skill: autonomous_sales", "name": "autonomous_sales", "group": 1, "val": 10}, {"id": "Skill: calendar_agent", "name": "calendar_agent", "group": 1, "val": 10}, {"id": "Skill: discord_agent", "name": "discord_agent", "group": 1, "val": 10}, {"id": "Skill: github_agent", "name": "github_agent", "group": 1, "val": 10}, {"id": "Skill: gmail_agent", "name": "gmail_agent", "group": 1, "val": 10}, {"id": "Skill: notion_agent", "name": "notion_agent", "group": 1, "val": 10}, {"id": "Skill: real_estate_agent_finder", "name": "real_estate_agent_finder", "group": 1, "val": 10}, {"id": "Skill: spotify_agent", "name": "spotify_agent", "group": 1, "val": 10}, {"id": "Skill: weather_news", "name": "weather_news", "group": 1, "val": 10}, {"id": "Session_0", "name": "USER: not\ud558\ub2c8 \uac00\uc27d Hollow Light...", "group": 2, "val": 5}, {"id": "Session_1", "name": "MODEL: [EMOTION: happy] To provide mo...", "group": 2, "val": 5}, {"id": "Session_2", "name": "USER: [MESSAGE FROM MASTER RUSHI (vi...", "group": 2, "val": 5}, {"id": "Session_3", "name": "MODEL: [EMOTION: neutral] To optimize...", "group": 2, "val": 5}, {"id": "Session_4", "name": "USER: [MESSAGE FROM MASTER RUSHI (vi...", "group": 2, "val": 5}, {"id": "Session_5", "name": "MODEL: [EMOTION: happy] Yoo, Master! ...", "group": 2, "val": 5}, {"id": "Session_6", "name": "USER: [MESSAGE FROM MASTER RUSHI (vi...", "group": 2, "val": 5}, {"id": "Session_7", "name": "MODEL: [EMOTION: happy] Anime baka! G...", "group": 2, "val": 5}, {"id": "Session_8", "name": "USER: , anime, baka, goshujin-sama...", "group": 2, "val": 5}, {"id": "Session_9", "name": "MODEL: [EMOTION: happy] Hi there, Mas...", "group": 2, "val": 5}, {"id": "Session_10", "name": "USER: Hi mizune...", "group": 2, "val": 5}, {"id": "Session_11", "name": "MODEL: ...", "group": 2, "val": 5}, {"id": "Session_12", "name": "USER: Hi Mizune...", "group": 2, "val": 5}, {"id": "Session_13", "name": "MODEL: [EMOTION: happy] Haii, Master!...", "group": 2, "val": 5}, {"id": "Session_14", "name": "USER: [MESSAGE FROM MASTER RUSHI (vi...", "group": 2, "val": 5}, {"id": "Session_15", "name": "MODEL: [EMOTION: happy] Yes, I'll tal...", "group": 2, "val": 5}, {"id": "Session_16", "name": "USER: [MESSAGE FROM MASTER RUSHI (vi...", "group": 2, "val": 5}, {"id": "Session_17", "name": "MODEL: [EMOTION: happy] Konichiwa, Ma...", "group": 2, "val": 5}, {"id": "Session_18", "name": "USER: [MESSAGE FROM MASTER RUSHI (vi...", "group": 2, "val": 5}, {"id": "Session_19", "name": "MODEL: ...", "group": 2, "val": 5}, {"id": "Session_20", "name": "USER: [MESSAGE FROM MASTER RUSHI (vi...", "group": 2, "val": 5}, {"id": "Session_21", "name": "USER: [MESSAGE FROM MASTER RUSHI (vi...", "group": 2, "val": 5}, {"id": "Session_22", "name": "MODEL: I can help you with that, but ...", "group": 2, "val": 5}, {"id": "Session_23", "name": "USER: [MESSAGE FROM MASTER RUSHI (vi...", "group": 2, "val": 5}, {"id": "Session_24", "name": "MODEL: I can help you with that, but ...", "group": 2, "val": 5}, {"id": "Session_25", "name": "USER: [MESSAGE FROM MASTER RUSHI (vi...", "group": 2, "val": 5}, {"id": "Session_26", "name": "MODEL: I can help you with that, but ...", "group": 2, "val": 5}, {"id": "Session_27", "name": "MODEL: [EMOTION: interested] Hmm, cou...", "group": 2, "val": 5}, {"id": "Session_28", "name": "USER: They go to the stage....", "group": 2, "val": 5}, {"id": "Session_29", "name": "MODEL: ...", "group": 2, "val": 5}, {"id": "Semantic_0", "name": "Created skill 'real_estate_agent_finder'...", "group": 3, "val": 8}, {"id": "Semantic_1", "name": "The Eiffel Tower can be 15 cm taller dur...", "group": 3, "val": 8}, {"id": "Semantic_2", "name": "The WhatsApp message 'Hey man, just test...", "group": 3, "val": 8}, {"id": "Semantic_3", "name": "Master Rushi wants me to only respond wh...", "group": 3, "val": 8}, {"id": "Semantic_4", "name": "Mathew works as a carer for a person wit...", "group": 3, "val": 8}, {"id": "Semantic_5", "name": "Mathew works as a carer for a person wit...", "group": 3, "val": 8}, {"id": "Semantic_6", "name": "Mathew works as a carer for a person wit...", "group": 3, "val": 8}, {"id": "Semantic_7", "name": "Mathew works as a carer for a person wit...", "group": 3, "val": 8}, {"id": "Semantic_8", "name": "Mathew works as a carer for a person wit...", "group": 3, "val": 8}, {"id": "Semantic_9", "name": "Mathew works as a carer for a person wit...", "group": 3, "val": 8}, {"id": "Semantic_10", "name": "Mathew works as a carer for a person wit...", "group": 3, "val": 8}, {"id": "Semantic_11", "name": "Mathew works as a carer for a person wit...", "group": 3, "val": 8}, {"id": "Semantic_12", "name": "Mathew works as a carer for a person wit...", "group": 3, "val": 8}], "links": [{"source": "Mizune Core", "target": "Skill: autonomous_sales"}, {"source": "Mizune Core", "target": "Skill: calendar_agent"}, {"source": "Mizune Core", "target": "Skill: discord_agent"}, {"source": "Mizune Core", "target": "Skill: github_agent"}, {"source": "Mizune Core", "target": "Skill: gmail_agent"}, {"source": "Mizune Core", "target": "Skill: notion_agent"}, {"source": "Mizune Core", "target": "Skill: real_estate_agent_finder"}, {"source": "Mizune Core", "target": "Skill: spotify_agent"}, {"source": "Mizune Core", "target": "Skill: weather_news"}, {"source": "Mizune Core", "target": "Session_0"}, {"source": "Session_0", "target": "Session_1"}, {"source": "Session_1", "target": "Session_2"}, {"source": "Mizune Core", "target": "Session_3"}, {"source": "Session_2", "target": "Session_3"}, {"source": "Session_3", "target": "Session_4"}, {"source": "Session_4", "target": "Session_5"}, {"source": "Mizune Core", "target": "Session_6"}, {"source": "Session_5", "target": "Session_6"}, {"source": "Session_6", "target": "Session_7"}, {"source": "Session_7", "target": "Session_8"}, {"source": "Mizune Core", "target": "Session_9"}, {"source": "Session_8", "target": "Session_9"}, {"source": "Session_9", "target": "Session_10"}, {"source": "Session_10", "target": "Session_11"}, {"source": "Mizune Core", "target": "Session_12"}, {"source": "Session_11", "target": "Session_12"}, {"source": "Session_12", "target": "Session_13"}, {"source": "Session_13", "target": "Session_14"}, {"source": "Mizune Core", "target": "Session_15"}, {"source": "Session_14", "target": "Session_15"}, {"source": "Session_15", "target": "Session_16"}, {"source": "Session_16", "target": "Session_17"}, {"source": "Mizune Core", "target": "Session_18"}, {"source": "Session_17", "target": "Session_18"}, {"source": "Session_18", "target": "Session_19"}, {"source": "Session_19", "target": "Session_20"}, {"source": "Mizune Core", "target": "Session_21"}, {"source": "Session_20", "target": "Session_21"}, {"source": "Session_21", "target": "Session_22"}, {"source": "Session_22", "target": "Session_23"}, {"source": "Mizune Core", "target": "Session_24"}, {"source": "Session_23", "target": "Session_24"}, {"source": "Session_24", "target": "Session_25"}, {"source": "Session_25", "target": "Session_26"}, {"source": "Mizune Core", "target": "Session_27"}, {"source": "Session_26", "target": "Session_27"}, {"source": "Session_27", "target": "Session_28"}, {"source": "Session_28", "target": "Session_29"}, {"source": "Mizune Core", "target": "Semantic_0"}, {"source": "Mizune Core", "target": "Semantic_1"}, {"source": "Mizune Core", "target": "Semantic_2"}, {"source": "Mizune Core", "target": "Semantic_3"}, {"source": "Mizune Core", "target": "Semantic_4"}, {"source": "Mizune Core", "target": "Semantic_5"}, {"source": "Mizune Core", "target": "Semantic_6"}, {"source": "Mizune Core", "target": "Semantic_7"}, {"source": "Mizune Core", "target": "Semantic_8"}, {"source": "Mizune Core", "target": "Semantic_9"}, {"source": "Mizune Core", "target": "Semantic_10"}, {"source": "Mizune Core", "target": "Semantic_11"}, {"source": "Mizune Core", "target": "Semantic_12"}]};
+        
+        // Custom color mapping based on groups
+        const colorMap = {
+            0: '#4CAF50', // Core
+            1: '#ff00ff', // Skills
+            2: '#00ffff', // Sessions
+            3: '#ffff00'  // Semantic
+        };
+        
+        const Graph = ForceGraph3D()
+          (document.getElementById('3d-graph'))
+            .graphData(gData)
+            .nodeLabel('name')
+            .nodeColor(node => colorMap[node.group] || '#ffffff')
+            .nodeRelSize(5)
+            .linkDirectionalParticles(2)
+            .linkDirectionalParticleSpeed(0.005)
+            .linkDirectionalParticleWidth(1.5)
+            .linkColor(() => 'rgba(255,255,255,0.2)');
+            
+        // Orbit camera automatically
+        let angle = 0;
+        setInterval(() => {
+            angle += Math.PI / 1000;
+            Graph.cameraPosition({
+                x: 300 * Math.sin(angle),
+                z: 300 * Math.cos(angle)
+            });
+        }, 20);
+      </script>
+    </body>
+    </html>
+    

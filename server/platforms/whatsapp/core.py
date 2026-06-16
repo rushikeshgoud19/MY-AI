@@ -11,8 +11,7 @@ import websockets
 import os
 import logging
 from server.processor import process_command
-
-logger = logging.getLogger("mizune.whatsapp.core")
+from server.config import log_info
 
 # ─────────────────────────────────────────────────────────────
 # DATA MODELS
@@ -104,7 +103,7 @@ class ImportanceEngine:
     ]
     
     def __init__(self, cortex_db_path: str):
-        self.conn = sqlite3.connect(cortex_db_path)
+        self.conn = sqlite3.connect(cortex_db_path, check_same_thread=False)
         self._init_db()
     
     def _init_db(self):
@@ -275,7 +274,7 @@ class ContactTierGuard:
     }
     
     def __init__(self, db_path: str):
-        self.conn = sqlite3.connect(db_path)
+        self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self._init_schema()
     
     def _init_schema(self):
@@ -319,7 +318,8 @@ class ContactTierGuard:
                 last_interaction=row[6],
                 common_topics=self._get_common_topics(phone),
                 personality_notes=row[9] or "",
-                preferred_language="en"
+                preferred_language="en",
+                timezone_hint="local"
             )
         
         self.conn.execute("""
@@ -333,7 +333,8 @@ class ContactTierGuard:
             relationship_score=0.0, message_count=0,
             last_interaction=datetime.now().timestamp(),
             common_topics=[], personality_notes="",
-            preferred_language="en"
+            preferred_language="en",
+            timezone_hint="local"
         )
     
     def _get_common_topics(self, phone: str) -> List[str]:
@@ -349,8 +350,9 @@ class ContactTierGuard:
 # ─────────────────────────────────────────────────────────────
 
 class WhatsAppMemoryLearner:
-    def __init__(self, cortex_db_path: str):
-        self.conn = sqlite3.connect(cortex_db_path)
+    def __init__(self, cortex_db_path: str, max_buffer_size: int = 100):
+        self.conn = sqlite3.connect(cortex_db_path, check_same_thread=False)
+        self.max_size = max_buffer_size
         self._init_schema()
     
     def _init_schema(self):
@@ -410,16 +412,47 @@ class DashboardBroadcaster:
     async def start(self):
         pass
     async def send_alert(self, alert):
-        pass
+        try:
+            from server.websocket import ws_manager
+            ws_manager.broadcast_sync(alert)
+        except Exception as e:
+            logger.error(f"[Dashboard] Failed to broadcast: {e}")
     async def trigger_vtuber_reaction(self, reaction, intensity):
-        pass
+        try:
+            from server.websocket import ws_manager
+            ws_manager.broadcast_sync({"type": "vtuber_reaction", "reaction": reaction, "intensity": intensity})
+        except:
+            pass
 
 class VoiceAlertPipeline:
-    def __init__(self, tts_engine, dashboard_broadcaster):
-        self.tts = tts_engine
+    def __init__(self, config, dashboard_broadcaster):
+        self.config = config
         self.dashboard = dashboard_broadcaster
+        
     async def trigger_alert(self, msg, contact):
-        pass
+        try:
+            sender = contact.name if contact.name != 'unknown' else msg.sender_name
+            alert_text = f"Master, you have an urgent message from {sender}!"
+            
+            # 1. Send Dashboard Alert
+            await self.dashboard.send_alert({
+                "type": "whatsapp_alert",
+                "sender": sender,
+                "message": msg.text,
+                "urgency": msg.urgency.name
+            })
+            
+            # 2. Subtitle alert
+            await self.dashboard.send_alert({"type": "speak", "text": alert_text})
+            
+            # 3. Audio TTS alert
+            from server.tts import generate_tts
+            from server.audio import play_audio_bytes
+            audio = await generate_tts(alert_text, self.config)
+            if audio:
+                play_audio_bytes(audio)
+        except Exception as e:
+            logger.error(f"[VoiceAlert] Failed: {e}")
 
 # ─────────────────────────────────────────────────────────────
 # MAIN WHATSAPP CORE ORCHESTRATOR
@@ -437,7 +470,7 @@ class MizuneWhatsAppCore:
         self.memory = WhatsAppMemoryLearner(self.db_path)
         
         self.dashboard = DashboardBroadcaster()
-        self.voice = VoiceAlertPipeline(None, self.dashboard)
+        self.voice = VoiceAlertPipeline(self.config, self.dashboard)
         
         # We don't want strict mentions in DMs anymore for VIPs, but we still respect wake words
         self.require_mention = config.get('whatsapp', {}).get('require_mention', True)
@@ -449,16 +482,16 @@ class MizuneWhatsAppCore:
             try:
                 async with websockets.connect(self.bridge_uri) as ws:
                     self.bridge_ws = ws
-                    logger.info("[Core] Connected to Baileys bridge on port 9876")
+                    log_info("[Core] Connected to Baileys bridge on port 9876")
                     
                     async for message in ws:
                         await self.handle_bridge_message(message)
                         
             except websockets.exceptions.ConnectionClosed:
-                logger.warning("[Core] Bridge disconnected, retrying in 5s...")
+                log_info("[Core] Bridge disconnected, retrying in 5s...")
                 await asyncio.sleep(5)
             except Exception as e:
-                logger.error(f"[Core] Connection error: {e}")
+                log_info(f"[Core] Connection error: {e}")
                 await asyncio.sleep(5)
     
     async def handle_bridge_message(self, raw_message: str):
@@ -469,7 +502,7 @@ class MizuneWhatsAppCore:
             elif data.get('type') == 'status_update':
                 pass # Process read receipts
         except Exception as e:
-            logger.error(f"[Core] Error handling message: {e}")
+            log_info(f"[Core] Error handling message: {e}")
     
     async def process_incoming_message(self, data: Dict):
         msg = WhatsAppMessage(
@@ -503,7 +536,9 @@ class MizuneWhatsAppCore:
         session_id = f"whatsapp:{msg.chat_type}:{msg.chat_jid}"
         prompt_text = msg.text
         
-        if not msg.is_self:
+        if msg.is_self:
+            prompt_text = f"[MESSAGE FROM MASTER RUSHI (via WhatsApp)]: {msg.text}\n(SYSTEM: This is Master Rushi commanding you directly in this chat. Acknowledge him and execute his request. Do not speak about him in the 3rd person.)"
+        else:
             prompt_text = f"[WHATSAPP MESSAGE FROM {msg.sender_name}]: {msg.text}\n(SYSTEM: Reply directly in plain text to this WhatsApp message.)"
             
         async def background_process():
@@ -512,19 +547,26 @@ class MizuneWhatsAppCore:
                 if response:
                     await self.send_message(msg.chat_jid, response)
             except Exception as e:
-                logger.error(f"[Core] Error in LLM process: {e}")
+                log_info(f"[Core] Error in LLM process: {e}")
                 
         asyncio.create_task(background_process())
 
     def _should_reply(self, msg: WhatsAppMessage, contact: ContactProfile) -> bool:
         text_lower = msg.text.lower().strip()
-        wake_words = ["mizune"]
+        wake_words = ["mizune", "mizu"]
         has_wake_word = any(text_lower.startswith(w) for w in wake_words)
         
         # Always enforce wake word or explicit @mention for AI responses
         if self.require_mention and not (msg.is_mentioned or has_wake_word):
             return False
             
+        # MIO RULE: If anyone other than Matt/Master uses the name "Mio", ignore the message completely!
+        if not msg.is_self and "mio" in text_lower:
+            sender = (msg.sender_name or "").lower()
+            allowed_mio = ["rushi", "rushikesh", "matt", "mathew", "mat"]
+            if sender not in allowed_mio:
+                return False  # Silently drop
+                
         # If it's the user's own message and it HAS a wake word, reply
         if msg.is_self:
             return True
@@ -539,7 +581,7 @@ class MizuneWhatsAppCore:
             payload = {
                 "type": "send_message",
                 "to_jid": to_jid,
-                "text": text
+                "text": f"✨ Mizune\n{text}"
             }
             await self.bridge_ws.send(json.dumps(payload))
 
@@ -551,7 +593,7 @@ def start_whatsapp_core(config):
     global _core_instance
     try:
         import subprocess
-        logger.info("[WHATSAPP] Clearing orphaned bridge processes on port 9876...")
+        log_info("[WHATSAPP] Clearing orphaned bridge processes on port 9876...")
         try:
             res = subprocess.run('netstat -ano | findstr :9876', shell=True, capture_output=True, text=True)
             for line in res.stdout.strip().split('\n'):
@@ -561,22 +603,22 @@ def start_whatsapp_core(config):
         except Exception:
             pass
 
-        logger.info("[WHATSAPP] Launching Node.js Baileys Bridge in background...")
+        log_info("[WHATSAPP] Launching Node.js Baileys Bridge in background...")
         script_path = os.path.join(os.path.dirname(__file__), "baileys_bridge.cjs")
-        log_file = open(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "baileys_bridge.log"), "w")
+        root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+        log_file = open(os.path.join(root_dir, "baileys_bridge.log"), "w")
         CREATE_NO_WINDOW = 0x08000000
         _bridge_process = subprocess.Popen(
             ["node", script_path], 
             stdout=log_file,
             stderr=subprocess.STDOUT,
-            cwd=os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+            cwd=root_dir,
             creationflags=CREATE_NO_WINDOW
         )
     except Exception as e:
-        logger.error(f"[WHATSAPP] Failed to auto-launch bridge: {e}")
+        log_info(f"[WHATSAPP] Failed to auto-launch bridge: {e}")
 
     core = MizuneWhatsAppCore(config)
-    global _core_instance
     _core_instance = core
     
     def run_loop():
@@ -600,11 +642,10 @@ def stop_whatsapp_core():
             pass
 
 def send_whatsapp_message(text: str, to: str = None) -> bool:
-    global _core_instance
     if _core_instance and _core_instance.bridge_ws:
         payload = {
             "type": "send_message",
-            "text": text
+            "text": f"✨ Mizune\n{text}"
         }
         # Baileys expects a JID. For now, if no 'to' is provided, we send to self.
         # This mirrors the old logic where `to` could be a name, but baileys needs a JID.

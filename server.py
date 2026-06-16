@@ -7,8 +7,9 @@ import threading
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 import uvicorn
 
 # Import Refactored Modules
@@ -26,6 +27,7 @@ from server.emotion import detect_emotion
 
 # Globals
 CFG = load_config()
+whatsapp_core_instance = None
 
 # Startup and Teardown
 @asynccontextmanager
@@ -33,6 +35,15 @@ async def lifespan(app: FastAPI):
     log_info("[SERVER] Starting background tasks...")
     
     ws_manager.set_main_loop(asyncio.get_running_loop())
+    
+    # Init Mizune v7.0 Kernel
+    try:
+        from server.mizune.kernel import MizuneKernel
+        kernel = MizuneKernel()
+        kernel.start()
+        log_info("[SERVER] MizuneKernel active.")
+    except Exception as e:
+        log_info(f"[SERVER] Failed to init MizuneKernel: {e}")
     
     # Start agents
     mizune_manager.initialize(CFG)
@@ -83,7 +94,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from fastapi.staticfiles import StaticFiles
+# Serve React Dashboard (if built)
+dist_path = os.path.join(os.path.dirname(__file__), "dist")
+if os.path.exists(dist_path):
+    app.mount("/assets", StaticFiles(directory=os.path.join(dist_path, "assets")), name="assets")
+    @app.get("/")
+    async def serve_index():
+        return FileResponse(os.path.join(dist_path, "index.html"))
+
 # Serve the root directory as static files so index.html is accessible
 app.mount("/ui", StaticFiles(directory=".", html=True), name="static")
 
@@ -244,6 +262,16 @@ async def websocket_endpoint(websocket: WebSocket):
                             ws_manager.broadcast_sync({"type": "status", "text": "Idle"})
 
                         asyncio.create_task(handle_chat())
+                elif msg.get("type") == "get_knowledge_graph":
+                    try:
+                        from server.knowledge_graph import get_graph_data
+                        graph_data = await asyncio.to_thread(get_graph_data)
+                        await websocket.send_text(json.dumps({
+                            "type": "knowledge_graph_data",
+                            "payload": graph_data
+                        }))
+                    except Exception as e:
+                        log_info(f"[WS] Error fetching knowledge graph: {e}")
             except Exception as e:
                 log_info(f"[WS] Error processing message: {e}")
     except WebSocketDisconnect:

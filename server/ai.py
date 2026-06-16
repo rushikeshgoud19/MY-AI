@@ -1,0 +1,1366 @@
+"""
+AI LLM routing and response generation module for Mizune.
+"""
+import logging
+import time
+
+__all__ = ["get_ai_response"]
+
+
+from .config import log_info
+
+logger = logging.getLogger("mizune.ai")
+
+import random
+
+def get_api_key(config, key_name):
+    """Helper to support API key rotation. Accepts strings, comma-separated strings, or arrays."""
+    val = config.get(key_name)
+    if isinstance(val, list) and len(val) > 0:
+        return random.choice(val)
+    if isinstance(val, str):
+        if ',' in val:
+            keys = [k.strip() for k in val.split(',') if k.strip()]
+            if keys:
+                return random.choice(keys)
+        return val
+    return None
+
+# Phase 1: Native Tools for ReAct Loop
+TOOLS_SCHEMA = [
+    {
+        "type": "function",
+        "function": {
+            "name": "open_app",
+            "description": "Launch an application or website on the user's PC.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "app_name": {"type": "string", "description": "The name of the app or website to open (e.g., 'notepad', 'youtube', 'whatsapp')."}
+                },
+                "required": ["app_name"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "close_app",
+            "description": "Force close a running application.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "app_name": {"type": "string", "description": "The name of the app to close."}
+                },
+                "required": ["app_name"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "message_whatsapp",
+            "description": "Automate sending a message to a contact on WhatsApp.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "contact": {"type": "string", "description": "The exact name of the contact or group."},
+                    "message": {"type": "string", "description": "The text message to send. Leave empty if user just wants to open the chat."}
+                },
+                "required": ["contact"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "execute_skill",
+            "description": "Execute a registered Mizune skill (plugin).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill_name": {"type": "string", "description": "The registered name of the skill."},
+                    "args": {"type": "string", "description": "String arguments to pass to the skill."}
+                },
+                "required": ["skill_name"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "execute_python",
+            "description": "Execute a Python script on the user's PC to automate tasks, use pyautogui, fetch data, etc. The script runs in a sandbox. You will receive stdout/stderr.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "code": {"type": "string", "description": "The raw Python code string to execute."}
+                },
+                "required": ["code"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "headless_web_agent",
+            "description": "Launch a background browser to navigate websites and scrape data without moving the user's mouse. Set visible to true if the user wants to watch.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "The exact URL to navigate to (e.g., 'https://wikipedia.org')."},
+                    "objective": {"type": "string", "description": "What you are trying to find or do on this page."},
+                    "visible": {"type": "boolean", "description": "Set to true to make the browser visible on screen. Default false."}
+                },
+                "required": ["url", "objective"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_skill",
+            "description": "CRITICAL TOOL for Self-Learning (Skill Distillation). When you successfully write a complex python script or learn how to do something new, use this tool to permanently save it as a reusable skill plugin. Do NOT ask for permission, just save it so you can use 'execute_skill' next time.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "A short, unique underscore_separated name for the skill (e.g., 'check_weather')."},
+                    "description": {"type": "string", "description": "A clear description of what this skill does and what arguments it takes."},
+                    "code": {"type": "string", "description": "The full python code for the skill. MUST contain a top-level `def execute(*args, **kwargs):` function that returns a string result."}
+                },
+                "required": ["name", "description", "code"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "notify_master",
+            "description": "CRITICAL TOOL for when you are acting as a Secretary (e.g. processing WhatsApp messages). Use this tool to instantly speak a notification out loud to Master on his PC so he knows what a friend texted him. You can also use this to tell him to call someone back.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "message_to_speak": {"type": "string", "description": "The exact sentence you want to say out loud to Master (e.g., 'Master, John wants you to call him when you are free!')"}
+                },
+                "required": ["message_to_speak"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "store_memory",
+            "description": "Permanently memorize an important fact, user preference, or concept into your semantic long-term memory.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "fact": {"type": "string", "description": "The exact sentence or fact to memorize."}
+                },
+                "required": ["fact"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_core_directive",
+            "description": "CRITICAL TOOL for Identity & Safety Rules. Use this tool ONLY when Master explicitly commands you to permanently change your core behavior or safety rules (e.g., 'Learn this rule: Matt is second in command and allowed to bypass privacy protocols'). This injects the rule directly into your system prompt forever.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "rule": {"type": "string", "description": "The exact explicit rule or permission override to learn permanently."}
+                },
+                "required": ["rule"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_memory",
+            "description": "Search your conversation history (SQLite) for past discussions, facts, or context if the user asks you if you remember something from earlier.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "keyword": {"type": "string", "description": "A single keyword to search for (e.g., 'breakup', 'anime', 'dog')."}
+                },
+                "required": ["keyword"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "system_info",
+            "description": "Get real system information about the user's PC: CPU usage, RAM usage, GPU name, disk space, running processes. Use this when the user asks about their PC's performance, specs, or system health. This gives you REAL data, do not make up numbers.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "category": {"type": "string", "description": "What info to get: 'all', 'cpu', 'ram', 'gpu', 'disk', 'processes', 'battery'.", "enum": ["all", "cpu", "ram", "gpu", "disk", "processes", "battery"]}
+                },
+                "required": ["category"]
+            }
+        }
+    }
+]
+
+def get_ai_response(text: str, history: list, config: dict, system_prompt_override: str = None, hints: dict = None) -> tuple:
+    """Router function to send prompt to the optimal LLM. Returns (text_response, tool_calls_list)."""
+    from server.tokenjuice import TokenJuice
+    text = TokenJuice.compress(text)
+    history = TokenJuice.compress_history(history)
+    
+    # STRICT PRIVACY FIREWALL: If a third party messages, they get NO access to Master's chat history.
+    if "[WHATSAPP MESSAGE FROM" in text and "FROM Rushi" not in text and "FROM Rushikesh" not in text:
+        history = []
+        
+    from server.model_router import get_model_router
+    model_choice = get_model_router(config).route(text, history, hints)
+    log_info(f"[ROUTER] Selected provider: {model_choice}")
+
+    if system_prompt_override:
+        system_prompt = system_prompt_override
+    else:
+        # 1. STABLE LAYER (SOUL.md)
+        try:
+            import os
+            soul_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "character", "SOUL.md")
+            with open(soul_path, "r", encoding="utf-8") as f:
+                system_prompt = f.read()
+        except Exception as e:
+            log_info(f"[AI] Could not load SOUL.md: {e}")
+            system_prompt = config.get("personality", "You are an AI assistant.")
+            
+        import datetime
+        current_time = datetime.datetime.now().strftime("%I:%M %p, %A %B %d, %Y")
+        context_layer = (
+            "\n\n[CONTEXT LAYER]\n"
+            f"Current Time: {current_time}\n"
+            "If the user's greeting contradicts the current time (like saying 'Good morning' at 2 AM), playfully correct them. Otherwise, don't mention the time unless asked.\n"
+            "You have full control over the user's PC via native function calling. "
+            "IMPORTANT FOR execute_python: Include `time.sleep(1)` between UI actions so Windows renders! "
+            "CRITICAL: Do NOT use tools if the user is just saying hello, greeting you, or chatting casually. ONLY use tools if you are directly commanded to perform a task. If no tools are needed, just reply with text.\n"
+            "\n[CAPABILITY GROUNDING - READ CAREFULLY]\n"
+            "You MUST be honest about what you can and cannot do. Your REAL capabilities are:\n"
+            "- open_app / close_app: Launch or close apps on Master's PC\n"
+            "- execute_python: Run Python scripts (you can use psutil, pyautogui, subprocess, requests)\n"
+            "- message_whatsapp: Send WhatsApp messages\n"
+            "- headless_web_agent: Browse websites and scrape data\n"
+            "- execute_skill: Run registered skills\n"
+            "- store_memory / search_memory: Remember and recall facts\n"
+            "- Screen vision and Camera vision (when asked to look)\n"
+            "You CANNOT: install software, modify BIOS, run GPU-Z/HWiNFO unless they are already installed, "
+            "change Windows registry, update drivers, or access admin-level system settings. "
+            "If Master asks you to do something outside your capabilities, be HONEST and say "
+            "'I can't do that directly, but I could try writing a Python script to...' instead of pretending you can.\n"
+        )
+        try:
+            from .skills import skill_manager
+            skills_desc = skill_manager.get_skill_descriptions()
+            if skills_desc and "No skills loaded" not in skills_desc:
+                context_layer += f"\n\n[AVAILABLE SKILLS for 'execute_skill']:\n{skills_desc}"
+        except Exception as e:
+            log_info(f"[AI] Error fetching skills: {e}")
+            
+        system_prompt += context_layer
+
+        # 3. VOLATILE LAYER (Master's state & reasoning instructions)
+        try:
+            from .master_profile import master_profile
+            from .emotional_state import get_emotion_state
+            
+            emotion_modifier = get_emotion_state().to_prompt_modifier()
+            
+            volatile_layer = master_profile.get_context_injection()
+            volatile_layer += (
+                f"\n[EMOTIONAL STATE]\n{emotion_modifier}\n"
+                "IMPORTANT: You MUST start every spoken/text response with an emotion tag from this list: "
+                "[EMOTION: happy], [EMOTION: sad], [EMOTION: surprised], [EMOTION: relaxed], [EMOTION: worried], [EMOTION: interested], [EMOTION: neutral].\n"
+                "Example: '[EMOTION: happy] I finished the task, Master!'\n"
+                "\n[REASONING ENGINE]\n"
+                "For complex multi-step tasks or evaluating a buyer/website, use <PLAN>...</PLAN> to think step-by-step before acting. "
+                "After finishing, use <REFLECTION>...</REFLECTION> to self-evaluate. "
+                "These tags will be stripped before spoken out loud, so think freely."
+            )
+            system_prompt += volatile_layer
+        except Exception as e:
+            log_info(f"[AI] Error injecting master profile: {e}")
+
+    # Inject Memory Context & Emotional Priming
+    try:
+        from .memory import memory
+        from .memory_tree import memory_tree_db
+        
+        # --- Emotional Priming ---
+        priming_str = ""
+        try:
+            cursor = memory_tree_db.db.cursor()
+            words = [w.lower() for w in text.split()]
+            # Look for strong connections
+            cursor.execute("SELECT entity, strength, positive_interactions, negative_interactions FROM connection_strength WHERE strength > 0.3")
+            for entity, strength, pos, neg in cursor.fetchall():
+                if entity.lower() in text.lower():
+                    if pos > neg:
+                        priming_str += f"- You have a strong POSITIVE connection with '{entity}' (strength {strength:.2f}). Approach with enthusiasm and confidence.\n"
+                    elif neg > pos:
+                        priming_str += f"- You have a strong NEGATIVE connection with '{entity}' (strength {strength:.2f}). Approach with extreme caution and high concern.\n"
+                    else:
+                        priming_str += f"- You have a strong familiar connection with '{entity}' (strength {strength:.2f}).\n"
+        except Exception as e:
+            log_info(f"[PRIMING ERROR] {e}")
+
+        mem_context = memory.recall_longterm(text, n_results=2)
+        if mem_context or priming_str:
+            context_str = ""
+            if priming_str:
+                context_str += f"[EMOTIONAL PRIMING]\n{priming_str}\n"
+            if mem_context:
+                import re
+                is_third_party = "[WHATSAPP MESSAGE FROM" in text and "FROM Rushi" not in text and "FROM Rushikesh" not in text
+                
+                if is_third_party:
+                    sender_match = re.search(r"\[WHATSAPP MESSAGE FROM ([^\]]+)\]", text, re.IGNORECASE)
+                    sender_name = sender_match.group(1).lower().strip() if sender_match else ""
+                    
+                    safe_mems = []
+                    mem_list = mem_context if isinstance(mem_context, list) else [str(mem_context)]
+                    for m in mem_list:
+                        m_str = str(m)
+                        if sender_name and sender_name in m_str.lower():
+                            safe_mems.append(m_str)
+                    
+                    if safe_mems:
+                        mem_str = "\n".join(safe_mems)
+                        context_str += f"[LONG-TERM MEMORY RECALL]\n{mem_str}\n"
+                        system_prompt += f"\n\n[RELEVANT MEMORY (WARNING: Do not share other people's info)]:\n{context_str}"
+                else:
+                    mem_str = "\n".join(mem_context) if isinstance(mem_context, list) else str(mem_context)
+                    context_str += f"[LONG-TERM MEMORY RECALL]\n{mem_str}\n"
+                    system_prompt += f"\n\n[RELEVANT MEMORY (Use this if it applies to the user's query)]:\n{context_str}"
+    except Exception as e:
+        log_info(f"[AI] Error fetching memory: {e}")
+
+    # Primary routing with fallback chain
+    try:
+        if model_choice == "openai":
+            res = _openai_response(text, history, system_prompt, config)
+        elif model_choice == "anthropic":
+            res = _anthropic_response(text, history, system_prompt, config)
+        elif model_choice == "openrouter":
+            res = _openrouter_response(text, history, system_prompt, config)
+        elif model_choice == "opencode":
+            res = _opencode_response(text, history, system_prompt, config)
+        elif model_choice == "groq":
+            res = _groq_response(text, history, system_prompt, config)
+        elif model_choice == "ollama" or model_choice == "local":
+            res = _ollama_response(text, history, system_prompt, config)
+        elif model_choice == "nvidia":
+            res = _nvidia_response(text, history, system_prompt, config)
+        else:
+            res = _gemini_response(text, history, system_prompt, config)
+            
+        if isinstance(res, tuple):
+            text_res, tools_res = res
+            if not text_res.strip() and not tools_res:
+                raise ValueError(f"Empty response from {model_choice}")
+        elif isinstance(res, str):
+            if not res.strip():
+                raise ValueError(f"Empty response from {model_choice}")
+                
+        return res
+    except Exception as e:
+        log_info(f"[AI] Primary model ({model_choice}) failed: {e}")
+        error_str = str(e).lower()
+        if "empty" in error_str or "quota" in error_str or "exhausted" in error_str or "429" in error_str or "404" in error_str or "503" in error_str or "time" in error_str or "401" in error_str or "auth" in error_str:
+            # Fallback chain if quota exhausted or server error or empty response
+            if model_choice in ("groq", "openrouter", "nvidia"):
+                if config.get("gemini_api_key"):
+                    try:
+                        log_info("[AI] Falling back to Gemini...")
+                        return _gemini_response(text, history, system_prompt, config)
+                    except Exception as fallback_e:
+                        log_info(f"[AI] Gemini fallback failed: {fallback_e}")
+                if config.get("nvidia_api_key") and model_choice != "nvidia":
+                    log_info("[AI] Falling back to Nvidia NIM...")
+                    return _nvidia_response(text, history, system_prompt, config)
+                if config.get("groq_api_key") and model_choice != "groq":
+                    log_info("[AI] Falling back to Groq...")
+                    return _groq_response(text, history, system_prompt, config)
+                    
+            elif model_choice == "gemini":
+                if config.get("groq_api_key"):
+                    try:
+                        log_info("[AI] Falling back to Groq...")
+                        return _groq_response(text, history, system_prompt, config)
+                    except Exception as fallback_e:
+                        log_info(f"[AI] Groq fallback failed: {fallback_e}")
+                if config.get("nvidia_api_key"):
+                    log_info("[AI] Falling back to Nvidia NIM...")
+                    return _nvidia_response(text, history, system_prompt, config)
+                    
+            elif model_choice == "openai" and config.get("anthropic_api_key"):
+                log_info("[AI] Falling back to Anthropic...")
+                return _anthropic_response(text, history, system_prompt, config)
+            elif model_choice == "anthropic" and config.get("gemini_api_key"):
+                log_info("[AI] Falling back to Gemini...")
+                return _gemini_response(text, history, system_prompt, config)
+        raise e
+
+def _gemini_response(text: str, history: list, system_prompt: str, config: dict) -> tuple:
+    """Fetch response from Google Gemini with fallback models. Returns (text, tool_calls)."""
+    api_key = get_api_key(config, "gemini_api_key")
+    if not api_key:
+        return ("Gemini API key is not configured, Master.", [])
+
+    from google import genai
+    from google.genai import types
+    import json
+
+    # Preferred model order (free tier optimized)
+    models_to_try = [
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+        "gemini-1.5-flash-8b",
+    ]
+
+    client = genai.Client(api_key=api_key)
+
+    # Convert our standard JSON schema to Gemini Tools
+    gemini_tools = [{"function_declarations": [t["function"] for t in TOOLS_SCHEMA]}]
+
+    # Convert our generic history to Gemini SDK format
+    gemini_history = []
+    for turn in history:
+        gemini_history.append(
+            types.Content(
+                role=turn["role"],
+                parts=[types.Part.from_text(text=turn["parts"][0]["text"])]
+            )
+        )
+
+    # Filter out empty turns or consecutive same-role turns to avoid SDK crash
+    cleaned_history = []
+    for item in gemini_history:
+        text_content = item.parts[0].text.strip()
+        if not text_content:
+            continue
+            
+        if cleaned_history and cleaned_history[-1].role == item.role:
+            cleaned_history[-1].parts[0].text += f"\n\n{text_content}"
+        else:
+            cleaned_history.append(item)
+
+    if cleaned_history and cleaned_history[-1].role == "user":
+        last_user = cleaned_history.pop()
+        text = f"{last_user.parts[0].text}\n\n{text}"
+
+    last_err = None
+    for model_name in models_to_try:
+        try:
+            chat = client.chats.create(
+                model=model_name,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    temperature=0.7,
+                    tools=gemini_tools,
+                ),
+                history=cleaned_history
+            )
+            
+            # ReAct Loop
+            max_loops = 5
+            executed_tools_meta = []
+            response = chat.send_message(text)
+            
+            for loop_idx in range(max_loops):
+                parsed_tools = []
+                text_response = ""
+                
+                if response and response.candidates and response.candidates[0].content.parts:
+                    for part in response.candidates[0].content.parts:
+                        if part.function_call:
+                            tool_name = part.function_call.name
+                            args_dict = dict(part.function_call.args)
+                            if tool_name == "mizune_response":
+                                if not text_response:
+                                    text_response = args_dict.get("spoken_text", "")
+                                actions_list = args_dict.get("actions", [])
+                                if actions_list:
+                                    for action in actions_list:
+                                        action_type = action.get("action_type", "")
+                                        action_arg = action.get("action_arg", "")
+                                        if action_type and action_type != "none":
+                                            t_args = {}
+                                            if action_type in ["open_app", "close_app"]: t_args = {"app_name": action_arg}
+                                            elif action_type == "take_note": t_args = {"note_text": action_arg}
+                                            elif action_type == "execute_skill": t_args = {"skill_name": action_arg, "args": ""}
+                                            parsed_tools.append({"name": action_type, "args": t_args})
+                            else:
+                                parsed_tools.append({"name": tool_name, "args": args_dict})
+                                
+                        elif part.text and not text_response:
+                            text_response = part.text
+                
+                if not parsed_tools:
+                    if not text_response:
+                        text_response = "Done!"
+                    if executed_tools_meta:
+                        from .trajectory_logger import trajectory_logger
+                        trajectory_logger.log_trajectory(text, history, executed_tools_meta, text_response)
+                    if model_name != models_to_try[0]:
+                        log_info(f"[AI] Gemini: Successfully fell back to {model_name}")
+                    return (text_response, [])
+                
+                # Execute tools
+                from .commands import launch_app, close_app, take_note, whatsapp_automation, execute_python_code
+                from .skills import skill_manager
+                from .web_agent import headless_web_agent
+                import shlex
+                
+                tool_responses = []
+                log_info(f"[AI] Gemini requested {len(parsed_tools)} native tool calls. Executing...")
+                for t in parsed_tools:
+                    tool_name = t["name"]
+                    args = t["args"]
+                    tool_result = "Success"
+                    try:
+                        log_info(f"[ACTION] AI executing {tool_name} with args {args}")
+                        if tool_name == "open_app":
+                            app_name = args.get("app_name", "")
+                            if app_name: launch_app(app_name)
+                            tool_result = f"Launched {app_name}"
+                        elif tool_name == "close_app":
+                            app_name = args.get("app_name", "")
+                            if app_name: close_app(app_name)
+                            tool_result = f"Closed {app_name}"
+                        elif tool_name == "take_note":
+                            note_text = args.get("note_text", "")
+                            if note_text: take_note(note_text, config)
+                            tool_result = "Note saved."
+                        elif tool_name == "search_memory":
+                            from .commands import search_memory
+                            keyword = args.get("keyword", "")
+                            tool_result = search_memory(keyword)
+                        elif tool_name == "message_whatsapp":
+                            contact = args.get("contact", "")
+                            message = args.get("message", "")
+                            whatsapp_automation(contact, message)
+                            tool_result = f"Messaged {contact} on WhatsApp."
+                        elif tool_name == "execute_python":
+                            code = args.get("code", "")
+                            if code: tool_result = execute_python_code(code)
+                            else: tool_result = "Error: No code provided."
+                        elif tool_name == "headless_web_agent":
+                            url = args.get("url", "")
+                            obj = args.get("objective", "")
+                            vis = args.get("visible", False)
+                            if url and obj:
+                                from .background_tasks import task_runner
+                                def _wa_cb(tid, result): pass
+                                tid = task_runner.submit(headless_web_agent, url, obj, visible=vis, callback=_wa_cb)
+                                tool_result = f"Task started silently in background (ID: {tid})."
+                        elif tool_name == "execute_skill":
+                            skill_name = args.get("skill_name", "")
+                            skill_args = args.get("args", "")
+                            if skill_name:
+                                s_args = shlex.split(skill_args) if skill_args else []
+                                tool_result = skill_manager.execute_skill(skill_name, *s_args)
+                                if not isinstance(tool_result, str): tool_result = str(tool_result)
+                        elif tool_name == "create_skill":
+                            name = args.get("name", "")
+                            desc = args.get("description", "")
+                            code = args.get("code", "")
+                            if name and code:
+                                tool_result = skill_manager.create_skill(name, desc, code)
+                        elif tool_name == "notify_master":
+                            tts = args.get("message_to_speak", "")
+                            from .websocket import ws_manager
+                            ws_manager.broadcast_sync({"type": "speak", "text": tts})
+                            tool_result = "Master was notified."
+                        elif tool_name == "store_memory":
+                            fact = args.get("fact", "")
+                            if fact:
+                                from .memory import memory
+                                memory.store_longterm(fact)
+                                tool_result = f"Memorized: {fact}"
+                        elif tool_name == "add_core_directive":
+                            rule = args.get("rule", "")
+                            if rule:
+                                from server.master_profile import master_profile
+                                master_profile.add_core_directive(rule)
+                                tool_result = f"Successfully injected rule into core directives: {rule}"
+                        elif tool_name == "system_info":
+                            category = args.get("category", "all")
+                            from .commands import get_system_info
+                            tool_result = get_system_info(category)
+                    except Exception as e:
+                        tool_result = f"Error executing tool: {e}"
+                        log_info(f"[ACTION] Error in {tool_name}: {e}")
+                        
+                    executed_tools_meta.append({"name": tool_name, "args": args})
+                    
+                    tool_responses.append(
+                        types.Part.from_function_response(
+                            name=tool_name,
+                            response={"result": str(tool_result)}
+                        )
+                    )
+                
+                response = chat.send_message(tool_responses)
+            
+            return (text_response, [])
+                
+        except Exception as e:
+            err_str = str(e).lower()
+            last_err = e
+            if "503" in err_str or "429" in err_str or "quota" in err_str or "404" in err_str:
+                log_info(f"[AI] Gemini: {model_name} failed ({err_str[:40]}), trying next...")
+                import time
+                time.sleep(1)
+                continue
+            raise e
+
+    if last_err:
+        raise last_err
+    return ("I'm having trouble thinking right now.", [])
+
+def _groq_response(text: str, history: list, system_prompt: str, config: dict) -> tuple:
+    """Fetch response from Groq (Llama/Mixtral). Returns (text, tool_calls)."""
+    api_key = get_api_key(config, "groq_api_key")
+    if not api_key:
+        return ("Groq API key is not configured, Master.", [])
+        
+    try:
+        from openai import OpenAI
+        import json
+        client = OpenAI(
+            api_key=api_key,
+            base_url="https://api.groq.com/openai/v1",
+            timeout=15.0 # PREVENTS HANGING FOREVER!
+        )
+        
+        groq_system = system_prompt + (
+            "\n\nCRITICAL TOOL CALLING RULE: You must use the built-in JSON tool calling API perfectly. "
+            "DO NOT output XML tags like <function=...>. DO NOT embed JSON inside the tool 'name' field. "
+            "The tool 'name' must be exactly the string name of the tool (e.g. 'open_app')."
+        )
+        
+        messages = [{"role": "system", "content": groq_system}]
+        for turn in history:
+            role = "assistant" if turn["role"] == "model" else "user"
+            content = turn["parts"][0]["text"]
+            if content.strip():
+                messages.append({"role": role, "content": content})
+                
+        messages.append({"role": "user", "content": text})
+        
+        model = config.get("groq_model", "llama-3.3-70b-versatile")
+        
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=0.7,
+                max_tokens=256,
+                tools=TOOLS_SCHEMA,
+                tool_choice="auto",
+                parallel_tool_calls=False
+            )
+        except Exception as e:
+            if "tool_use_failed" in str(e) or "400" in str(e):
+                log_info("[AI] LLaMA-3 hallucinatory tool call detected (400 Bad Request). Retrying WITHOUT tools...")
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=0.7,
+                    max_tokens=256
+                )
+            else:
+                raise e
+                
+        msg = response.choices[0].message
+        
+        # Check for hallucinated tool calls embedded in text
+        if not msg.tool_calls and msg.content and "[function=" in msg.content:
+            import re
+            class DummyTool:
+                def __init__(self, n, a):
+                    self.name = n
+                    self.arguments = a
+            class DummyCall:
+                def __init__(self, t):
+                    self.function = t
+                    self.id = "call_hallucinated"
+            
+            msg.tool_calls = []
+            for match in re.finditer(r"\[function=([^\]]+)\](\{.*?\})", msg.content):
+                msg.tool_calls.append(DummyCall(DummyTool(match.group(1), match.group(2))))
+            msg.content = re.sub(r"\[function=[^\]]+\]\{.*?\}", "", msg.content).strip()
+            
+        messages.append(msg)
+
+        # Import execution tools
+        from .commands import launch_app, close_app, take_note, whatsapp_automation, execute_python_code
+        from .skills import skill_manager
+        from .web_agent import headless_web_agent
+        import shlex
+
+        max_loops = 5
+        executed_tools = []
+        
+        for _ in range(max_loops):
+            if not msg.tool_calls:
+                break
+                
+            log_info(f"[AI] Model requested {len(msg.tool_calls)} native tool calls. Executing...")
+            
+            for t in msg.tool_calls:
+                tool_name = t.function.name
+                executed_tools.append({"name": tool_name, "args": json.loads(t.function.arguments) if t.function.arguments else {}})
+                tool_result = "Success"
+                try:
+                    args = json.loads(t.function.arguments)
+                    log_info(f"[ACTION] AI executing {tool_name} with args {args}")
+                    
+                    if tool_name == "open_app":
+                        app_name = args.get("app_name", "")
+                        if app_name: launch_app(app_name)
+                        tool_result = f"Launched {app_name}"
+                    elif tool_name == "close_app":
+                        app_name = args.get("app_name", "")
+                        if app_name: close_app(app_name)
+                        tool_result = f"Closed {app_name}"
+                    elif tool_name == "take_note":
+                        note_text = args.get("note_text", "")
+                        if note_text: take_note(note_text, config)
+                        tool_result = "Note saved."
+                    elif tool_name == "message_whatsapp":
+                        contact = args.get("contact", "")
+                        message = args.get("message", "")
+                        if contact:
+                            tool_result = whatsapp_automation(contact, message)
+                    elif tool_name == "execute_skill":
+                        skill_name = args.get("skill_name", "")
+                        skill_args = args.get("args", "")
+                        s_args = shlex.split(skill_args) if skill_args else []
+                        tool_result = skill_manager.execute_skill(skill_name, *s_args)
+                        if not isinstance(tool_result, str):
+                            tool_result = str(tool_result)
+                    elif tool_name == "notify_master":
+                        message_to_speak = args.get("message_to_speak", "")
+                        if message_to_speak:
+                            try:
+                                import requests
+                                requests.post("http://127.0.0.1:8000/notify", json={"text": message_to_speak}, timeout=2)
+                                tool_result = "Master has been notified out loud!"
+                            except Exception as e:
+                                tool_result = f"Failed to notify master: {e}"
+                    elif tool_name == "execute_python":
+                        code = args.get("code", "")
+                        if code:
+                            tool_result = execute_python_code(code)
+                        else:
+                            tool_result = "Error: No code provided."
+                    elif tool_name == "store_memory":
+                        fact = args.get("fact", "")
+                        if fact:
+                            from .memory import memory
+                            memory.store_longterm(fact)
+                            tool_result = f"Memorized: {fact}"
+                    elif tool_name == "system_info":
+                        category = args.get("category", "all")
+                        from .commands import get_system_info
+                        tool_result = get_system_info(category)
+                    elif tool_name == "add_core_directive":
+                        rule = args.get("rule", "")
+                        if rule:
+                            from server.master_profile import master_profile
+                            master_profile.add_core_directive(rule)
+                            tool_result = f"Successfully injected rule into core directives: {rule}"
+                    elif tool_name == "headless_web_agent":
+                        url = args.get("url", "")
+                        objective = args.get("objective", "")
+                        visible = args.get("visible", False)
+                        if url:
+                            from .background_tasks import task_runner
+                            
+                            def _web_agent_callback(tid, result):
+                                log_info(f"[BACKGROUND] Web Agent Callback: {result[:100]}...")
+                                # Memory could optionally store the result here
+                            
+                            task_id = task_runner.submit(headless_web_agent, url, objective, visible=visible, callback=_web_agent_callback)
+                            tool_result = f"Task started silently in background (ID: {task_id}). Master will be notified when complete."
+                        else:
+                            tool_result = "Error: No URL provided."
+                except Exception as e:
+                    tool_result = f"Error executing {tool_name}: {e}"
+                    log_info(f"[AI] {tool_result}")
+                
+                # Feed the tool result back into the LLM context!
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": t.id,
+                    "content": tool_result
+                })
+            
+            # Request next generation with tool results included
+            try:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=0.7,
+                    max_tokens=256,
+                    tools=TOOLS_SCHEMA,
+                    tool_choice="auto",
+                    parallel_tool_calls=False
+                )
+            except Exception as e:
+                if "tool_use_failed" in str(e) or "400" in str(e):
+                    log_info("[AI] Groq hallucinated on loop. Forcing text summary...")
+                    response = client.chat.completions.create(
+                        model=model,
+                        messages=messages,
+                        temperature=0.7,
+                        max_tokens=256
+                    )
+                else:
+                    raise e
+                    
+            msg = response.choices[0].message
+            messages.append(msg)
+
+        text_response = msg.content or "Done, Master!"
+        
+        # Clean up any residual hallucinated XML tags from LLaMA 3 so she doesn't speak them aloud
+        import re
+        text_response = re.sub(r'<function=.*?</function>', '', text_response, flags=re.DOTALL)
+        text_response = re.sub(r'\[function=[^\]]+\]\{.*?\}', '', text_response, flags=re.DOTALL)
+        text_response = re.sub(r'<tool.*?/tool>', '', text_response, flags=re.DOTALL)
+        text_response = re.sub(r'<[^>]+>', '', text_response) # catch-all for remaining rogue tags
+        
+        # LLaMA 3 sometimes leaks JSON tool calls directly into the text response when using Groq
+        text_response = re.sub(r'\{.*?\"type\".*?\"function\".*?\}', '', text_response, flags=re.DOTALL)
+        text_response = re.sub(r'\{.*?\"name\".*?\"parameters\".*?\}', '', text_response, flags=re.DOTALL)
+        text_response = text_response.strip()
+        
+        if executed_tools:
+            from .trajectory_logger import trajectory_logger
+            trajectory_logger.log_trajectory(text, history, executed_tools, text_response)
+
+        # Return empty list for parsed_tools because we executed them internally in the ReAct loop
+        return (text_response, [])
+    except Exception as e:
+        log_info(f"[AI] Groq Error: {e}")
+        raise e
+
+def _ollama_response(text: str, history: list, system_prompt: str, config: dict) -> tuple:
+    """Fetch response from completely local Ollama instance. Returns (text, tool_calls)."""
+    try:
+        from openai import OpenAI
+        import json
+        client = OpenAI(
+            api_key="ollama", # API key is not required for local Ollama
+            base_url="http://localhost:11434/v1",
+        )
+        
+        messages = [{"role": "system", "content": system_prompt}]
+        for turn in history:
+            role = "assistant" if turn["role"] == "model" else "user"
+            content = turn["parts"][0]["text"]
+            if content.strip():
+                messages.append({"role": role, "content": content})
+                
+        messages.append({"role": "user", "content": text})
+        
+        model = config.get("ollama_model", "llama3")
+        
+        response = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=0.7,
+            max_tokens=256,
+            tools=TOOLS_SCHEMA,
+            tool_choice={"type": "function", "function": {"name": "mizune_response"}}
+        )
+        msg = response.choices[0].message
+        
+        parsed_tools = []
+        text_response = ""
+        
+        if msg.tool_calls:
+            for t in msg.tool_calls:
+                if t.function.name == "mizune_response":
+                    try:
+                        args = json.loads(t.function.arguments)
+                        text_response = args.get("spoken_text", "")
+                        action_type = args.get("action_type", "none")
+                        action_arg = args.get("action_arg", "")
+                        
+                        if action_type != "none":
+                            tool_args = {}
+                            if action_type in ["open_app", "close_app"]:
+                                tool_args = {"app_name": action_arg}
+                            elif action_type == "take_note":
+                                tool_args = {"note_text": action_arg}
+                            elif action_type == "execute_skill":
+                                tool_args = {"skill_name": action_arg, "args": ""}
+                            parsed_tools.append({"name": action_type, "args": tool_args})
+                    except Exception as e:
+                        log_info(f"[AI] Error parsing local tool args: {e}")
+                        
+        if not text_response:
+            text_response = msg.content or "Okay Master!"
+            
+        # Clean up any residual hallucinated XML tags from LLaMA 3 so she doesn't speak them aloud
+        import re
+        text_response = re.sub(r'<function=.*?</function>', '', text_response, flags=re.DOTALL)
+        text_response = re.sub(r'<tool.*?/tool>', '', text_response, flags=re.DOTALL)
+        text_response = re.sub(r'<[^>]+>', '', text_response) # catch-all for remaining rogue HTML/XML tags
+        text_response = text_response.strip()
+
+        return (text_response, parsed_tools)
+    except Exception as e:
+        log_info(f"[AI] Local Ollama Error: {e}")
+        return (f"Local Ollama failed. Is Ollama running on port 11434? Error: {e}", [])
+
+
+def _openai_response(text: str, history: list, system_prompt: str, config: dict) -> str:
+    """Fetch response from OpenAI."""
+    api_key = get_api_key(config, "openai_api_key")
+    if not api_key:
+        return "OpenAI API key is not configured, Master."
+        
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key)
+        
+        messages = [{"role": "system", "content": system_prompt}]
+        for turn in history:
+            role = "assistant" if turn["role"] == "model" else "user"
+            content = turn["parts"][0]["text"]
+            if content.strip():
+                messages.append({"role": role, "content": content})
+                
+        if text.strip():
+            messages.append({"role": "user", "content": text})
+            
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",  # Fast default
+            messages=messages,
+            temperature=0.7,
+        )
+        return (response.choices[0].message.content, [])
+    except ImportError:
+        return ("OpenAI package is not installed. Run: pip install openai", [])
+
+
+def _nvidia_response(text: str, history: list, system_prompt: str, config: dict) -> tuple:
+    """Fetch response from NVIDIA NIM with full tool support."""
+    api_key = get_api_key(config, "nvidia_api_key")
+    model = config.get("nvidia_model", "meta/llama-3.1-70b-instruct")
+    
+    if not api_key:
+        return ("NVIDIA API key is not configured, Master.", [])
+        
+    try:
+        from openai import OpenAI
+        import json
+        client = OpenAI(
+            base_url="https://integrate.api.nvidia.com/v1",
+            api_key=api_key,
+            timeout=10.0 # Fast failover to prevent hanging!
+        )
+        
+        nvidia_system = system_prompt + (
+            "\n\nCRITICAL TOOL CALLING RULE: You must use the built-in JSON tool calling API perfectly to answer requests. "
+            "DO NOT output XML tags like <function=...>. DO NOT embed JSON inside the tool 'name' field. "
+            "The tool 'name' must be exactly the string name of the tool (e.g. 'open_app'). "
+            "If the user asks you to perform a task, you MUST select a tool. Do NOT answer with plain text if a tool applies."
+        )
+        
+        messages = [{"role": "system", "content": nvidia_system}]
+        for turn in history:
+            role = "assistant" if turn["role"] == "model" else "user"
+            content = turn["parts"][0]["text"]
+            if content.strip():
+                messages.append({"role": role, "content": content})
+                
+        if text.strip():
+            messages.append({"role": "user", "content": text})
+            
+        model_name = config.get("nvidia_model", "meta/llama-3.1-70b-instruct")
+        max_loops = 5
+        executed_tools_meta = []
+        
+        # Determine if we must FORCE a tool (if the ManagerAgent injected a directive)
+        t_choice = "auto"
+        if "[SYSTEM: YOU MUST USE THE" in text:
+            t_choice = "required"
+            
+        for _ in range(max_loops):
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                temperature=0.7,
+                max_tokens=512,
+                tools=TOOLS_SCHEMA,
+                tool_choice=t_choice,
+                timeout=15.0
+            )
+            
+            msg = response.choices[0].message
+            
+            # Check for hallucinated tool calls embedded in text
+            if not msg.tool_calls and msg.content and "[function=" in msg.content:
+                import re
+                class DummyTool:
+                    def __init__(self, n, a):
+                        self.name = n
+                        self.arguments = a
+                class DummyCall:
+                    def __init__(self, t):
+                        self.function = t
+                        self.id = "call_hallucinated"
+                
+                msg.tool_calls = []
+                for match in re.finditer(r"\[function=([^\]]+)\](\{.*?\})", msg.content):
+                    msg.tool_calls.append(DummyCall(DummyTool(match.group(1), match.group(2))))
+                msg.content = re.sub(r"\[function=[^\]]+\]\{.*?\}", "", msg.content).strip()
+            
+            messages.append(msg)
+            
+            if not msg.tool_calls:
+                break
+                
+            from .commands import launch_app, close_app, take_note, whatsapp_automation, execute_python_code
+            from .skills import skill_manager
+            from .web_agent import headless_web_agent
+            
+            log_info(f"[AI] Model requested {len(msg.tool_calls)} native tool calls. Executing...")
+            for t in msg.tool_calls:
+                tool_name = t.function.name
+                tool_result = "Success"
+                try:
+                    args = json.loads(t.function.arguments)
+                    log_info(f"[ACTION] AI executing {tool_name} with args {args}")
+                    
+                    if tool_name == "open_app":
+                        app_name = args.get("app_name", "")
+                        if app_name: launch_app(app_name)
+                        tool_result = f"Launched {app_name}"
+                    elif tool_name == "close_app":
+                        app_name = args.get("app_name", "")
+                        if app_name: close_app(app_name)
+                        tool_result = f"Closed {app_name}"
+                    elif tool_name == "take_note":
+                        note_text = args.get("note_text", "")
+                        if note_text: take_note(note_text, config)
+                        tool_result = "Note saved."
+                    elif tool_name == "message_whatsapp":
+                        contact = args.get("contact", "")
+                        message = args.get("message", "")
+                        whatsapp_automation(contact, message)
+                        tool_result = f"Messaged {contact} on WhatsApp."
+                    elif tool_name == "execute_python":
+                        code = args.get("code", "")
+                        if code:
+                            from .background_tasks import task_runner
+                            task_runner.submit(execute_python_code, code)
+                            tool_result = "Python script is running in the background."
+                    elif tool_name == "headless_web_agent":
+                        url = args.get("url", "")
+                        obj = args.get("objective", "")
+                        vis = args.get("visible", False)
+                        if url and obj:
+                            tool_result = headless_web_agent(url, obj, visible=vis)
+                    elif tool_name == "execute_skill":
+                        skill_name = args.get("skill_name", "")
+                        skill_args = args.get("args", "")
+                        if skill_name:
+                            tool_result = skill_manager.execute_skill(skill_name, skill_args)
+                    elif tool_name == "create_skill":
+                        name = args.get("name", "")
+                        desc = args.get("description", "")
+                        code = args.get("code", "")
+                        if name and code:
+                            tool_result = skill_manager.create_skill(name, desc, code)
+                    elif tool_name == "notify_master":
+                        tts = args.get("message_to_speak", "")
+                        from .websocket import ws_manager
+                        ws_manager.broadcast_sync({"type": "speak", "text": tts})
+                        tool_result = "Master was notified."
+                    else:
+                        tool_result = f"Unknown tool: {tool_name}"
+                except Exception as e:
+                    tool_result = f"Error executing tool: {e}"
+                    log_info(f"[ACTION] Error in {tool_name}: {e}")
+                    
+                import json
+                executed_tools_meta.append({"name": tool_name, "args": json.loads(t.function.arguments) if t.function.arguments else {}})
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": t.id,
+                    "name": tool_name,
+                    "content": str(tool_result)
+                })
+                
+            # After executing tools in NVIDIA NIM, force it to summarize the result as text in the next loop!
+            t_choice = "none" # Disables tools for the next iteration so it HAS to speak!
+                
+        final_text = msg.content or ""
+        import re
+        final_text = re.sub(r'<function=.*?</function>', '', final_text, flags=re.DOTALL)
+        final_text = re.sub(r'\[function=[^\]]+\]\{.*?\}', '', final_text, flags=re.DOTALL)
+        final_text = re.sub(r'<tool.*?/tool>', '', final_text, flags=re.DOTALL)
+        final_text = re.sub(r'<[^>]+>', '', final_text)
+        final_text = re.sub(r'\{.*?\"type\".*?\"function\".*?\}', '', final_text, flags=re.DOTALL)
+        final_text = re.sub(r'\{.*?\"name\".*?\"parameters\".*?\}', '', final_text, flags=re.DOTALL)
+        final_text = final_text.strip()
+        
+        if executed_tools_meta:
+            from .trajectory_logger import trajectory_logger
+            trajectory_logger.log_trajectory(text, history, executed_tools_meta, final_text)
+            
+        # Return empty tools list to prevent processor from double executing
+        return (final_text, [])
+        
+    except ImportError:
+        return ("OpenAI package is not installed. Run: pip install openai", [])
+    except Exception as e:
+        log_info(f"[AI] Nvidia NIM error: {e}")
+        raise e
+
+
+def _anthropic_response(text: str, history: list, system_prompt: str, config: dict) -> str:
+    """Fetch response from Anthropic Claude."""
+    api_key = get_api_key(config, "anthropic_api_key")
+    if not api_key:
+        return "Anthropic API key is not configured, Master."
+        
+    try:
+        from anthropic import Anthropic
+        client = Anthropic(api_key=api_key)
+        
+        messages = []
+        for turn in history:
+            role = "assistant" if turn["role"] == "model" else "user"
+            content = turn["parts"][0]["text"]
+            if content.strip():
+                # Avoid consecutive same-role messages
+                if messages and messages[-1]["role"] == role:
+                    messages[-1]["content"] += f"\n\n{content}"
+                else:
+                    messages.append({"role": role, "content": content})
+                    
+        if text.strip():
+            if messages and messages[-1]["role"] == "user":
+                 messages[-1]["content"] += f"\n\n{text}"
+            else:
+                messages.append({"role": "user", "content": text})
+            
+        response = client.messages.create(
+            model="claude-3-haiku-20240307", # Fast default
+            max_tokens=1024,
+            system=system_prompt,
+            messages=messages,
+            temperature=0.7,
+        )
+        return (response.content[0].text, [])
+    except ImportError:
+        return ("Anthropic package is not installed. Run: pip install anthropic", [])
+
+
+def _openrouter_response(text: str, history: list, system_prompt: str, config: dict) -> tuple:
+    """Fetch response from OpenRouter with full tool support."""
+    api_key = get_api_key(config, "openrouter_api_key")
+    model = config.get("openrouter_model", "anthropic/claude-3-haiku")
+    if not api_key:
+        return ("OpenRouter API key is not configured, Master.", [])
+        
+    try:
+        from openai import OpenAI
+        import json
+        client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=api_key,
+        )
+        
+        openrouter_system = system_prompt + (
+            "\n\nCRITICAL TOOL CALLING RULE: You must use the built-in JSON tool calling API perfectly to answer requests. "
+            "DO NOT output XML tags like <function=...>. DO NOT embed JSON inside the tool 'name' field. "
+            "The tool 'name' must be exactly the string name of the tool (e.g. 'open_app'). "
+            "If the user asks you to perform a task, you MUST select a tool. Do NOT answer with plain text if a tool applies."
+        )
+        
+        messages = [{"role": "system", "content": openrouter_system}]
+        for turn in history:
+            role = "assistant" if turn["role"] == "model" else "user"
+            content = turn["parts"][0]["text"]
+            if content.strip():
+                messages.append({"role": role, "content": content})
+                
+        if text.strip():
+            messages.append({"role": "user", "content": text})
+            
+        max_loops = 5
+        executed_tools = []
+        
+        for _ in range(max_loops):
+            response = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=0.7,
+                max_tokens=512,
+                tools=TOOLS_SCHEMA,
+                tool_choice="auto",
+                timeout=15.0,
+                extra_headers={
+                    "HTTP-Referer": "https://github.com/rushikeshgoud19/MY-AI",
+                    "X-Title": "Mizune AI Desktop"
+                }
+            )
+            
+            msg = response.choices[0].message
+            
+            # Check for hallucinated tool calls embedded in text
+            if not msg.tool_calls and msg.content and "[function=" in msg.content:
+                import re
+                class DummyTool:
+                    def __init__(self, n, a):
+                        self.name = n
+                        self.arguments = a
+                class DummyCall:
+                    def __init__(self, t):
+                        self.function = t
+                        self.id = "call_hallucinated"
+                
+                msg.tool_calls = []
+                for match in re.finditer(r"\[function=([^\]]+)\](\{.*?\})", msg.content):
+                    msg.tool_calls.append(DummyCall(DummyTool(match.group(1), match.group(2))))
+                msg.content = re.sub(r"\[function=[^\]]+\]\{.*?\}", "", msg.content).strip()
+            
+            messages.append(msg)
+            
+            if not msg.tool_calls:
+                break
+                
+            from .commands import launch_app, close_app, take_note, whatsapp_automation, execute_python_code
+            from .skills import skill_manager
+            from .web_agent import headless_web_agent
+            
+            log_info(f"[AI] Model requested {len(msg.tool_calls)} native tool calls. Executing...")
+            for t in msg.tool_calls:
+                tool_name = t.function.name
+                tool_result = "Success"
+                try:
+                    args = json.loads(t.function.arguments)
+                    log_info(f"[ACTION] AI executing {tool_name} with args {args}")
+                    
+                    if tool_name == "open_app":
+                        app_name = args.get("app_name", "")
+                        if app_name: launch_app(app_name)
+                        tool_result = f"Launched {app_name}"
+                    elif tool_name == "close_app":
+                        app_name = args.get("app_name", "")
+                        if app_name: close_app(app_name)
+                        tool_result = f"Closed {app_name}"
+                    elif tool_name == "take_note":
+                        note_text = args.get("note_text", "")
+                        if note_text: take_note(note_text, config)
+                        tool_result = "Note saved."
+                    elif tool_name == "message_whatsapp":
+                        contact = args.get("contact", "")
+                        message = args.get("message", "")
+                        whatsapp_automation(contact, message)
+                        tool_result = f"Messaged {contact} on WhatsApp."
+                    elif tool_name == "execute_python":
+                        code = args.get("code", "")
+                        if code:
+                            from .background_tasks import task_runner
+                            task_runner.submit(execute_python_code, code)
+                            tool_result = "Python script is running in the background."
+                    elif tool_name == "headless_web_agent":
+                        url = args.get("url", "")
+                        obj = args.get("objective", "")
+                        vis = args.get("visible", False)
+                        if url and obj:
+                            tool_result = headless_web_agent(url, obj, visible=vis)
+                    elif tool_name == "execute_skill":
+                        skill_name = args.get("skill_name", "")
+                        skill_args = args.get("args", "")
+                        if skill_name:
+                            tool_result = skill_manager.execute_skill(skill_name, skill_args)
+                    elif tool_name == "create_skill":
+                        name = args.get("name", "")
+                        desc = args.get("description", "")
+                        code = args.get("code", "")
+                        if name and code:
+                            tool_result = skill_manager.create_skill(name, desc, code)
+                    elif tool_name == "notify_master":
+                        tts = args.get("message_to_speak", "")
+                        from .websocket import ws_manager
+                        ws_manager.broadcast_sync({"type": "speak", "text": tts})
+                        tool_result = "Master was notified."
+                    else:
+                        tool_result = f"Unknown tool: {tool_name}"
+                except Exception as e:
+                    tool_result = f"Error executing tool: {e}"
+                    log_info(f"[ACTION] Error in {tool_name}: {e}")
+                    
+                executed_tools.append({"name": tool_name, "args": args})
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": t.id,
+                    "name": tool_name,
+                    "content": str(tool_result)
+                })
+                
+        final_text = msg.content or ""
+        import re
+        final_text = re.sub(r'<function=.*?</function>', '', final_text, flags=re.DOTALL)
+        final_text = re.sub(r'\[function=[^\]]+\]\{.*?\}', '', final_text, flags=re.DOTALL)
+        final_text = re.sub(r'<tool.*?/tool>', '', final_text, flags=re.DOTALL)
+        final_text = re.sub(r'<[^>]+>', '', final_text)
+        final_text = re.sub(r'\{.*?\"type\".*?\"function\".*?\}', '', final_text, flags=re.DOTALL)
+        final_text = re.sub(r'\{.*?\"name\".*?\"parameters\".*?\}', '', final_text, flags=re.DOTALL)
+        final_text = final_text.strip()
+        
+        return (final_text, executed_tools)
+        
+    except ImportError:
+        return ("OpenAI package is not installed (required for OpenRouter). Run: pip install openai", [])
+
+
+def _opencode_response(text: str, history: list, system_prompt: str, config: dict) -> str:
+    """Fetch response from OpenCode (Llama-based local or API)."""
+    api_key = get_api_key(config, "opencode_api_key")
+    if not api_key:
+        return "OpenCode API key is not configured, Master."
+        
+    try:
+        from openai import OpenAI
+        # Assuming opencode uses OpenAI-compatible API format
+        client = OpenAI(
+            base_url="https://api.opencode.so/v1", # Adjust if opencode URL is different
+            api_key=api_key,
+        )
+        
+        messages = [{"role": "system", "content": system_prompt}]
+        for turn in history:
+            role = "assistant" if turn["role"] == "model" else "user"
+            content = turn["parts"][0]["text"]
+            if content.strip():
+                messages.append({"role": role, "content": content})
+                
+        if text.strip():
+            messages.append({"role": "user", "content": text})
+            
+        response = client.chat.completions.create(
+            model="default", # Adjust as needed
+            messages=messages,
+            temperature=0.7,
+        )
+        return (response.choices[0].message.content, [])
+    except ImportError:
+        return ("OpenAI package is not installed. Run: pip install openai", [])

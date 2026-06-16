@@ -299,8 +299,8 @@ class MemoryTreeDB:
             ''', (chunk_id, source_id, content, content_hash, json.dumps(metadata) if metadata else '{}'))
             
             episodic_id = cursor.lastrowid
-            cursor.execute('INSERT INTO episodic_fts (rowid, content, metadata) VALUES (?, ?, ?)',
-                          (episodic_id, content, json.dumps(metadata) if metadata else '{}'))
+            cursor.execute('INSERT INTO episodic_fts (rowid, content) VALUES (?, ?)',
+                          (episodic_id, content))
                           
             self.db.commit()
         except Exception as e:

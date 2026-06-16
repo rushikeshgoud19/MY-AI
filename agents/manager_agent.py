@@ -167,7 +167,13 @@ class ManagerAgent(BaseAgent):
           Tier 2: Keyword scoring weights
           Tier 3: LLM classification for low-confidence fallbacks
         """
-        intent, confidence = IntentClassifier.classify_with_confidence(text)
+        # Strip WhatsApp prefix to prevent it from confusing the intent classifier (e.g. matching "message from" to system intent)
+        clean_text = re.sub(r"\[WHATSAPP MESSAGE FROM [^\]]+\]:\s*", "", text, flags=re.IGNORECASE)
+        clean_text = re.sub(r"\[MESSAGE FROM MASTER RUSHI[^\]]*\]:\s*", "", clean_text, flags=re.IGNORECASE)
+        # Strip the trailing system instruction
+        clean_text = re.sub(r"\n*\(SYSTEM:[^\)]+\)\s*$", "", clean_text, flags=re.IGNORECASE)
+        
+        intent, confidence = IntentClassifier.classify_with_confidence(clean_text)
         
         # Tier 3: If confidence is low (ambiguous) and we have API credentials, use LLM
         if confidence < 0.65 and (self.config.get("gemini_api_key") or self.config.get("openai_api_key")):
@@ -185,7 +191,7 @@ class ManagerAgent(BaseAgent):
                     "- vision: What is on screen, describe screen, see screen\n"
                     "- writing: Take note, write this down, dictate\n"
                     "- focus: Start pomodoro, timer, help focus\n\n"
-                    f"User message: '{text}'\n"
+                    f"User message: '{clean_text}'\n"
                     "Respond with ONLY the category name in lowercase (e.g. coding, conversation, system)."
                 )
                 from server.ai import get_ai_response

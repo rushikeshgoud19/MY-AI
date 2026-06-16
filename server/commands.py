@@ -9,7 +9,7 @@ import time
 import logging
 import pyautogui
 
-__all__ = ["launch_app", "close_app", "whatsapp_automation", "take_note", "search_memory", "COMMON_APPS"]
+__all__ = ["launch_app", "close_app", "whatsapp_automation", "take_note", "search_memory", "get_system_info", "COMMON_APPS"]
 
 
 from .config import log_info
@@ -288,3 +288,76 @@ def execute_python_code(code: str) -> str:
             os.remove(path)
         except Exception:
             pass
+
+def get_system_info(category: str = "all") -> str:
+    """Get real system information. Returns formatted string."""
+    import psutil
+    
+    info_parts = []
+    
+    try:
+        if category in ("all", "cpu"):
+            cpu_percent = psutil.cpu_percent(interval=1)
+            cpu_count = psutil.cpu_count(logical=True)
+            cpu_freq = psutil.cpu_freq()
+            freq_str = f"{cpu_freq.current:.0f}MHz" if cpu_freq else "N/A"
+            info_parts.append(f"CPU: {cpu_percent}% usage | {cpu_count} cores | {freq_str}")
+        
+        if category in ("all", "ram"):
+            mem = psutil.virtual_memory()
+            info_parts.append(f"RAM: {mem.percent}% used | {mem.used // (1024**3)}GB / {mem.total // (1024**3)}GB")
+        
+        if category in ("all", "gpu"):
+            # Try nvidia-smi for GPU info
+            try:
+                result = subprocess.run(
+                    ["nvidia-smi", "--query-gpu=name,temperature.gpu,utilization.gpu,memory.used,memory.total", "--format=csv,noheader,nounits"],
+                    capture_output=True, text=True, timeout=5
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    parts = result.stdout.strip().split(", ")
+                    if len(parts) >= 5:
+                        info_parts.append(f"GPU: {parts[0]} | {parts[2]}% load | {parts[1]}°C | VRAM: {parts[3]}MB / {parts[4]}MB")
+                    else:
+                        info_parts.append(f"GPU: {result.stdout.strip()}")
+                else:
+                    info_parts.append("GPU: nvidia-smi not available or no NVIDIA GPU detected")
+            except FileNotFoundError:
+                info_parts.append("GPU: nvidia-smi not found (no NVIDIA GPU or drivers not installed)")
+            except Exception as e:
+                info_parts.append(f"GPU: Error reading GPU info: {e}")
+        
+        if category in ("all", "disk"):
+            for partition in psutil.disk_partitions():
+                try:
+                    usage = psutil.disk_usage(partition.mountpoint)
+                    info_parts.append(f"Disk {partition.device}: {usage.percent}% used | {usage.free // (1024**3)}GB free / {usage.total // (1024**3)}GB total")
+                except PermissionError:
+                    pass
+        
+        if category in ("all", "battery"):
+            battery = psutil.sensors_battery()
+            if battery:
+                plug_status = "Plugged In" if battery.power_plugged else "On Battery"
+                info_parts.append(f"Battery: {battery.percent}% | {plug_status}")
+            else:
+                info_parts.append("Battery: No battery detected (desktop PC)")
+        
+        if category in ("all", "processes"):
+            # Top 5 by CPU usage
+            procs = []
+            for proc in psutil.process_iter(['name', 'cpu_percent', 'memory_percent']):
+                try:
+                    procs.append(proc.info)
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+            procs.sort(key=lambda x: x.get('cpu_percent', 0), reverse=True)
+            top5 = procs[:5]
+            proc_str = ", ".join([f"{p['name']}({p.get('cpu_percent', 0):.1f}%)" for p in top5])
+            info_parts.append(f"Top Processes by CPU: {proc_str}")
+    
+    except Exception as e:
+        info_parts.append(f"Error reading system info: {e}")
+    
+    return "\n".join(info_parts) if info_parts else "Could not retrieve system information."
+

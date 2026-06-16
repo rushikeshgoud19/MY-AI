@@ -63,6 +63,23 @@ fn main() {
         .setup(|app| {
             log::info!("Setting up Tauri app...");
 
+            // Automatically boot the Python Backend Server
+            log::info!("Booting Python backend server silently...");
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                let _ = std::process::Command::new(".venv\\Scripts\\python.exe")
+                    .arg("mizune.py")
+                    .creation_flags(0x08000000)
+                    .spawn();
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                let _ = std::process::Command::new(".venv/bin/python")
+                    .arg("mizune.py")
+                    .spawn();
+            }
+
             // Build tray menu
             let show_item = MenuItem::with_id(app, "show", "Show/Hide", true, None::<&str>)?;
             let settings_item = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
