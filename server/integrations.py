@@ -145,6 +145,39 @@ class IntegrationsManager:
         )
         return client
 
+    def auto_refresh_google_token(self) -> Optional[dict]:
+        token = self.load_token("google")
+        if not token or "refresh_token" not in token:
+            return None
+            
+        config = self.oauth_configs.get("google")
+        if not config: return None
+        
+        try:
+            import urllib.request
+            import urllib.parse
+            
+            data = urllib.parse.urlencode({
+                'client_id': config['client_id'] or "",
+                'client_secret': config['client_secret'] or "",
+                'refresh_token': token['refresh_token'],
+                'grant_type': 'refresh_token'
+            }).encode('utf-8')
+            
+            req = urllib.request.Request(config['token_url'], data=data)
+            with urllib.request.urlopen(req) as response:
+                new_token_data = json.loads(response.read().decode())
+                # Google doesn't return a new refresh_token on refresh, so keep the old one!
+                if "refresh_token" not in new_token_data:
+                    new_token_data["refresh_token"] = token["refresh_token"]
+                    
+                self.save_token("google", new_token_data)
+                log_info("[OAUTH] Successfully auto-refreshed Google access token!")
+                return new_token_data
+        except Exception as e:
+            log_info(f"[OAUTH] Failed to auto-refresh Google token: {e}")
+            return None
+
     def fetch_recent(self, provider: str) -> str:
         """
         Fetches recent notifications/emails/events for the given provider.

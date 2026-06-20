@@ -302,6 +302,13 @@ class MemoryTreeDB:
             cursor.execute('INSERT INTO episodic_fts (rowid, content) VALUES (?, ?)',
                           (episodic_id, content))
                           
+            # Queue the extraction job for the background worker
+            import time
+            cursor.execute('''
+                INSERT INTO jobs (job_type, payload, created_at)
+                VALUES (?, ?, ?)
+            ''', ("extract_chunk", json.dumps({"chunk_id": episodic_id}), time.time()))
+                          
             self.db.commit()
         except Exception as e:
             log_info(f"[MEMORY CORE] Error inserting chunk: {e}")
@@ -377,6 +384,61 @@ class MemoryTreeDB:
             """, (intent,)).fetchall()
         except sqlite3.OperationalError:
             return []
+
+    def get_chunk(self, chunk_id: str) -> Optional[dict]:
+        if not self.db: return None
+        try:
+            row = self.db.execute(
+                "SELECT id, session_id, source, content, metadata, status FROM episodic WHERE id = ? OR session_id = ?", 
+                (chunk_id, chunk_id)
+            ).fetchone()
+            if not row: return None
+            import json
+            return {
+                "id": row[0],
+                "session_id": row[1],
+                "source": row[2],
+                "content": row[3],
+                "metadata": json.loads(row[4]) if row[4] else {},
+                "status": row[5]
+            }
+        except Exception as e:
+            logger.error(f"[MEMORY CORE] Error getting chunk: {e}")
+            return None
+
+    def update_chunk_state(self, chunk_id: str, new_state: str):
+        if not self.db: return
+        try:
+            self.db.execute("UPDATE episodic SET status = ? WHERE id = ? OR session_id = ?", (new_state, chunk_id, chunk_id))
+            self.db.commit()
+        except Exception as e:
+            logger.error(f"[MEMORY CORE] Error updating chunk state: {e}")
+
+    def insert_summary(self, session_id: str, content: str):
+        if not self.db: return
+        try:
+            import hashlib
+            import json
+            content_hash = hashlib.sha256(content.encode()).hexdigest()
+            cursor = self.db.cursor()
+            cursor.execute('''
+                INSERT INTO episodic (session_id, source, content, content_hash, status)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (session_id, "summary", content, content_hash, "sealed"))
+            episodic_id = cursor.lastrowid
+            cursor.execute('INSERT INTO episodic_fts (rowid, content) VALUES (?, ?)', (episodic_id, content))
+            self.db.commit()
+        except Exception as e:
+            logger.error(f"[MEMORY CORE] Error inserting summary: {e}")
+
+    def get_queue_depth(self) -> int:
+        if not self.db: return 0
+        try:
+            row = self.db.execute("SELECT COUNT(*) FROM episodic WHERE status = 'pending'").fetchone()
+            return row[0] if row else 0
+        except Exception as e:
+            logger.error(f"[MEMORY CORE] Error getting queue depth: {e}")
+            return 0
 
     def claim_next_job(self) -> Optional[dict]:
         if not self.db: return None

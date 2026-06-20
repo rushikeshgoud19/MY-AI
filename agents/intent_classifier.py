@@ -158,8 +158,16 @@ class IntentClassifier:
 
     _WRITING_PATTERNS = re.compile(
         r"\b(write\s+this\s+down|take\s+a\s+note|"
-        r"note\s+this|remember\s+this|save\s+this|"
+        r"note\s+this|remember\s+this|"
         r"type\s+(this|for\s+me)|start\s+dictating)\b"
+    )
+
+    _OBSIDIAN_PATTERNS = re.compile(
+        r"\b(save\s+(this\s+)?to\s+(my\s+|your\s+)?(brain|vault|obsidian)|"
+        r"add\s+(this\s+)?to\s+(my\s+|your\s+)?(brain|vault|obsidian)|"
+        r"create\s+a\s+note\s+about|"
+        r"update\s+(my\s+|the\s+)?daily\s+log|"
+        r"what\s+do\s+you\s+know\s+about)\b"
     )
 
     _FOCUS_PATTERNS = re.compile(
@@ -282,6 +290,10 @@ class IntentClassifier:
         if cls._WRITING_PATTERNS.search(clean):
             return "writing", 0.95
 
+        # OBSIDIAN: Brain / Vault interactions
+        if cls._OBSIDIAN_PATTERNS.search(clean):
+            return "obsidian", 0.95
+
         # FOCUS: Productivity
         if cls._FOCUS_PATTERNS.search(clean):
             return "focus", 0.95
@@ -295,6 +307,7 @@ class IntentClassifier:
             "research": {"search": 1, "lookup": 2, "google": 2, "info": 2, "what is": 2, "who is": 2},
             "entertainment": {"play": 1, "music": 3, "song": 3, "anime": 3, "movie": 3, "sing": 3, "spotify": 2},
             "writing": {"write": 3, "note": 3, "dictate": 3, "type": 2},
+            "obsidian": {"brain": 3, "vault": 3, "obsidian": 3, "note": 2},
             "focus": {"focus": 3, "pomodoro": 3, "timer": 2}
         }
         
@@ -332,6 +345,7 @@ class IntentClassifier:
             "research": "Information lookup and research",
             "entertainment": "Music, anime, and media",
             "writing": "Note-taking and dictation",
+            "obsidian": "Interacting with the second brain / knowledge vault",
             "focus": "Productivity and focus mode",
         }
         return descriptions.get(intent, "Unknown intent")

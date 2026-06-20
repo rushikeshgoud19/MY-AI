@@ -12,6 +12,8 @@ from server.memory_tree import memory_tree_db
 from server.afk_detector import afk_detector
 from server.evolution_budget import evolution_budget
 from server.emotion_engine import global_emotion_state
+from server.ai import get_ai_response
+from server.skills import skill_manager
 
 def generate_id():
     return uuid.uuid4().hex[:8]
@@ -35,17 +37,60 @@ class SkillEvolver:
     def __init__(self, memory, evolution):
         self.memory = memory
         self.evolution = evolution
+        
     async def evolve(self):
-        log_info("[SKILL EVOLVER] Checking skills for optimization...")
-        # Placeholder logic for the DB calls
-        pass
+        log_info("[SKILL EVOLVER] Deep Research: Analyzing recent memory to find skill gaps...")
+        try:
+            cursor = self.memory.db.cursor()
+            # Fetch last 50 conversational exchanges
+            logs = cursor.execute("SELECT content FROM episodic ORDER BY timestamp DESC LIMIT 50").fetchall()
+            if not logs: return
+            
+            chat_history = "\n".join([r[0] for r in logs])
+            
+            prompt = f"""
+            Analyze this recent chat history between the Master and Mizune. 
+            Identify if there are any specific tasks the Master asked Mizune to do that she failed at, struggled with, or couldn't do because she lacked a skill/tool.
+            If you find a missing skill, write the Python code for a new Mizune Skill to solve it.
+            
+            A Mizune skill must be a single function named 'execute(*args, **kwargs)' that returns a string.
+            Only return the raw python code. Do not include markdown blocks. Do not explain.
+            If no new skill is needed, return 'NO_SKILL_NEEDED'.
+            
+            History:
+            {chat_history}
+            """
+            
+            resp = get_ai_response(prompt, provider="local").strip()
+            
+            if resp and "NO_SKILL_NEEDED" not in resp and "def execute" in resp:
+                # We generated a new skill! Let's save it.
+                skill_name = f"auto_skill_{int(time.time())}"
+                code = resp.replace('```python', '').replace('```', '').strip()
+                desc = f"Autonomously generated skill to address a gap found during deep evolution research."
+                
+                log_info(f"[SKILL EVOLVER] 🧬 EVOLUTION: Generated new skill '{skill_name}'!")
+                # Distill the skill into the system (this creates the .py file in staging/active)
+                skill_manager.create_skill(skill_name, desc, code, requires_approval=True)
+                
+        except Exception as e:
+            log_info(f"[SKILL EVOLVER] Failed: {e}")
 
 class BehaviorEvolver:
     def __init__(self, memory, emotion):
         self.memory = memory
         self.emotion = emotion
     async def evolve_greeting(self):
-        log_info("[BEHAVIOR EVOLVER] Analyzing greetings...")
+        log_info("[BEHAVIOR EVOLVER] Running LLM emotional synthesis...")
+        try:
+            cursor = self.memory.db.cursor()
+            frustrations = cursor.execute("SELECT content FROM episodic WHERE content LIKE '%annoyed%' OR content LIKE '%frustrated%' LIMIT 10").fetchall()
+            if frustrations:
+                log_info("[BEHAVIOR EVOLVER] Found user frustration, adapting response templates...")
+                # Insert a rule into memory to be more concise
+                self.memory.insert_chunk(f"behavior_patch_{int(time.time())}", "rules", "The user was recently frustrated. Be extremely concise and apologetic.", 10, {})
+        except Exception as e:
+            pass
 
 class ArchitectureEvolver:
     def __init__(self, memory):

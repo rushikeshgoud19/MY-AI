@@ -36,6 +36,10 @@ async def lifespan(app: FastAPI):
     
     ws_manager.set_main_loop(asyncio.get_running_loop())
     
+    # Hook backend logs to stream to the Dashboard Kernel Stream
+    from server.config import set_log_callback
+    set_log_callback(lambda msg: ws_manager.broadcast_sync({"type": "kernel_log", "payload": msg}))
+    
     # Init Mizune v7.0 Kernel
     try:
         from server.mizune.kernel import MizuneKernel
@@ -72,6 +76,10 @@ async def lifespan(app: FastAPI):
     from server.platforms.whatsapp.core import start_whatsapp_core
     global whatsapp_core_instance
     whatsapp_core_instance = start_whatsapp_core(CFG)
+    
+    # Start Headless Gmail Poller
+    from server.platforms.gmail.core import start_gmail_core
+    start_gmail_core(CFG, ws_manager.broadcast_sync)
     
     yield
     

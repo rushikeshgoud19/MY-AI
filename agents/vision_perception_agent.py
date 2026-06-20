@@ -186,7 +186,7 @@ Return ONLY valid JSON:
         w, h = image.size
         if max(w, h) > max_size:
             scale = max_size / max(w, h)
-            image = image.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+            image = image.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
 
         buffer = io.BytesIO()
         image.save(buffer, format="JPEG", quality=85)

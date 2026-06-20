@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { SlimeAvatar } from './components/SlimeAvatar';
-import { MemoryGraph } from './components/MemoryGraph';
+import { getCurrentWindow } from '@tauri-apps/api/window';
+
 import { SkillsPanel } from './components/SkillsPanel';
 import { WhatsAppPanel } from './components/WhatsAppPanel';
 import { SystemMonitor } from './components/SystemMonitor';
@@ -35,10 +35,20 @@ interface WhatsAppMessage {
   timestamp: number;
 }
 
+interface EmailMessage {
+  id: string;
+  sender: string;
+  subject: string;
+  snippet: string;
+  importance: number;
+}
+
 export const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'chat' | 'memory' | 'skills' | 'whatsapp' | 'system'>('chat');
+  const [activeTab, setActiveTab] = useState<'chat' | 'skills' | 'whatsapp' | 'emails' | 'system' | 'kernel' | 'settings'>('chat');
   const [messages, setMessages] = useState<Message[]>([]);
   const [whatsappMessages, setWhatsappMessages] = useState<WhatsAppMessage[]>([]);
+  const [emails, setEmails] = useState<EmailMessage[]>([]);
+  const [kernelLogs, setKernelLogs] = useState<string[]>([]);
   const [input, setInput] = useState('');
   const [mizuneState, setMizuneState] = useState<MizuneState>({
     valence: 0,
@@ -95,8 +105,59 @@ export const App: React.FC = () => {
       case 'message':
         setMessages(prev => [...prev, data.payload]);
         break;
+      case 'speak':
+        const assistantTokens = Math.floor(data.text.length / 3); // rough estimate
+        setMessages(prev => [...prev, {
+          id: Date.now().toString(),
+          role: 'assistant',
+          content: data.text,
+          timestamp: Date.now(),
+          platform: 'dashboard'
+        }]);
+        setMizuneState(prev => ({ ...prev, isThinking: false, tokensToday: prev.tokensToday + assistantTokens }));
+        break;
+      case 'status':
+        if (data.text === 'Thinking...') {
+          setMizuneState(prev => ({ ...prev, isThinking: true }));
+        } else {
+          setMizuneState(prev => ({ ...prev, isThinking: false }));
+        }
+        break;
+      case 'gmail_alert':
+        setEmails(prev => [{
+          id: Date.now().toString(),
+          sender: data.sender,
+          subject: data.subject,
+          snippet: data.snippet,
+          importance: data.importance
+        }, ...prev]);
+        break;
       case 'thinking':
         setMizuneState(prev => ({ ...prev, isThinking: data.payload }));
+        break;
+      case 'kernel_log':
+        setKernelLogs(prev => {
+          const updated = [...prev, data.payload];
+          // Keep RAM low by capping at 100 lines
+          if (updated.length > 100) return updated.slice(updated.length - 100);
+          return updated;
+        });
+        break;
+      case 'task_update':
+        setMizuneState(prev => ({ ...prev, isThinking: true }));
+        setKernelLogs(prev => [...prev, `[TASK] ${data.data}`]);
+        break;
+      case 'task_complete':
+        setMizuneState(prev => ({ ...prev, isThinking: false }));
+        setKernelLogs(prev => [...prev, `[TASK] ${data.data}`]);
+        // Also send a chat notification
+        setMessages(prev => [...prev, {
+          id: Date.now().toString(),
+          role: 'assistant',
+          content: `*Background task finished:* ${data.data}`,
+          timestamp: Date.now(),
+          platform: 'dashboard'
+        }]);
         break;
       case 'provider_switch':
         setMizuneState(prev => ({ ...prev, provider: data.payload }));
@@ -115,13 +176,14 @@ export const App: React.FC = () => {
     }
   }, []);
 
-  const sendMessage = useCallback(() => {
-    if (!input.trim() || !wsRef.current) return;
+  const sendMessage = useCallback((text?: string) => {
+    const content = text || input;
+    if (!content.trim() || !wsRef.current) return;
     
     const msg: Message = {
       id: Date.now().toString(),
       role: 'user',
-      content: input,
+      content: content,
       timestamp: Date.now(),
       platform: 'dashboard'
     };
@@ -129,12 +191,15 @@ export const App: React.FC = () => {
     setMessages(prev => [...prev, msg]);
     setInput('');
     
+    const userTokens = Math.floor(content.length / 3);
+    
     wsRef.current.send(JSON.stringify({
       type: 'chat',
-      payload: { message: input, device: 'dashboard' }
+      text: content,
+      payload: { message: content, device: 'dashboard' }
     }));
     
-    setMizuneState(prev => ({ ...prev, isThinking: true }));
+    setMizuneState(prev => ({ ...prev, isThinking: true, tokensToday: prev.tokensToday + userTokens }));
   }, [input]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -167,7 +232,13 @@ export const App: React.FC = () => {
           
           <div className="token-pill">
             <span className="token-icon">⚡</span>
-            {(mizuneState.tokensToday / 1000).toFixed(1)}k tokens
+            {mizuneState.tokensToday < 1000 ? mizuneState.tokensToday : (mizuneState.tokensToday / 1000).toFixed(1) + 'k'} tokens
+          </div>
+          
+          <div className="window-controls">
+            <button onClick={() => getCurrentWindow().minimize()}>─</button>
+            <button onClick={() => getCurrentWindow().toggleMaximize()}>□</button>
+            <button onClick={() => getCurrentWindow().close()} className="close-btn">✕</button>
           </div>
         </div>
       </header>
@@ -177,17 +248,13 @@ export const App: React.FC = () => {
         <aside className="sidebar">
           {/* Slime Avatar */}
           <div className="avatar-container">
-            <SlimeAvatar 
-              state={{
-                valence: mizuneState.valence,
-                arousal: mizuneState.arousal,
-                trust: mizuneState.trust,
-                isThinking: mizuneState.isThinking,
-                isListening: mizuneState.isListening,
-                isTalking: mizuneState.isTalking
-              }}
-              size={180}
-            />
+            <div className={`classic-blob-container ${mizuneState.isTalking || mizuneState.isThinking ? 'speaking' : ''}`}>
+              <div id="mizune-blob" className={mizuneState.isTalking || mizuneState.isThinking ? 'speaking' : ''}>
+                <div className="blob-eye left" />
+                <div className="blob-eye right" />
+              </div>
+              <div className="blob-glow" />
+            </div>
             
             <div className="emotion-badge" style={{
               background: getEmotionColor(mizuneState.valence, mizuneState.arousal)
@@ -217,14 +284,6 @@ export const App: React.FC = () => {
             </button>
             
             <button 
-              className={`nav-tab ${activeTab === 'memory' ? 'active' : ''}`}
-              onClick={() => setActiveTab('memory')}
-            >
-              <span className="tab-icon">🧠</span>
-              Memory Graph
-            </button>
-            
-            <button 
               className={`nav-tab ${activeTab === 'skills' ? 'active' : ''}`}
               onClick={() => setActiveTab('skills')}
             >
@@ -244,11 +303,30 @@ export const App: React.FC = () => {
             </button>
             
             <button 
-              className={`nav-tab ${activeTab === 'system' ? 'active' : ''}`}
-              onClick={() => setActiveTab('system')}
+              className={`nav-tab ${activeTab === 'emails' ? 'active' : ''}`}
+              onClick={() => setActiveTab('emails')}
             >
-              <span className="tab-icon">🔧</span>
-              System
+              <span className="tab-icon">📧</span>
+              Emails
+              {emails.length > 0 && (
+                <span className="badge new">{emails.length}</span>
+              )}
+            </button>
+            
+            <button 
+              className={`nav-tab ${activeTab === 'kernel' ? 'active' : ''}`}
+              onClick={() => setActiveTab('kernel')}
+            >
+              <span className="tab-icon">🖥️</span>
+              Kernel Stream
+            </button>
+
+            <button 
+              className={`nav-tab ${activeTab === 'settings' ? 'active' : ''}`}
+              onClick={() => setActiveTab('settings')}
+            >
+              <span className="tab-icon">⚙️</span>
+              Settings
             </button>
           </nav>
 
@@ -309,7 +387,7 @@ export const App: React.FC = () => {
                 />
                 <button 
                   className="send-btn"
-                  onClick={sendMessage}
+                  onClick={() => sendMessage()}
                   disabled={!input.trim() || mizuneState.isThinking}
                 >
                   ➤
@@ -318,10 +396,87 @@ export const App: React.FC = () => {
             </div>
           )}
 
-          {activeTab === 'memory' && <MemoryGraph />}
           {activeTab === 'skills' && <SkillsPanel />}
           {activeTab === 'whatsapp' && <WhatsAppPanel messages={whatsappMessages} />}
-          {activeTab === 'system' && <SystemMonitor />}
+          {activeTab === 'emails' && (
+            <div className="emails-panel" style={{padding: '24px', height: '100%', overflowY: 'auto'}}>
+              <div className="settings-card" style={{minHeight: '100%', display: 'flex', flexDirection: 'column'}}>
+                <h3>Important Emails</h3>
+                <div style={{flex: 1, display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '16px'}}>
+                  {emails.length === 0 ? (
+                    <div style={{color: '#888', fontStyle: 'italic', textAlign: 'center', marginTop: '40px'}}>
+                      No new important emails. (Make sure you connect Gmail in Settings)
+                    </div>
+                  ) : (
+                    emails.map(email => (
+                      <div key={email.id} className="email-card" style={{
+                        background: 'var(--bg-secondary)', 
+                        padding: '16px', 
+                        borderRadius: '8px',
+                        borderLeft: email.importance >= 8 ? '4px solid #ef4444' : '4px solid #3b82f6'
+                      }}>
+                        <div style={{display: 'flex', justifyContent: 'space-between', marginBottom: '8px'}}>
+                          <span style={{fontWeight: 'bold', fontSize: '14px', color: 'var(--text-primary)'}}>{email.sender}</span>
+                          <span style={{
+                            background: email.importance >= 8 ? 'rgba(239, 68, 68, 0.2)' : 'rgba(59, 130, 246, 0.2)',
+                            color: email.importance >= 8 ? '#fca5a5' : '#93c5fd',
+                            padding: '2px 8px', borderRadius: '12px', fontSize: '12px'
+                          }}>
+                            Importance: {email.importance}/10
+                          </span>
+                        </div>
+                        <div style={{fontWeight: 'bold', marginBottom: '6px', color: 'var(--text-primary)'}}>{email.subject}</div>
+                        <div style={{color: 'var(--text-muted)', fontSize: '13px', lineHeight: '1.4'}}>{email.snippet}</div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+          {activeTab === 'system' && (
+            <SystemMonitor />
+          )}
+
+          {activeTab === 'kernel' && (
+            <div className="kernel-terminal">
+              {kernelLogs.map((log, i) => {
+                let statusClass = '';
+                if (log.toLowerCase().includes('error') || log.toLowerCase().includes('fail')) statusClass = 'error';
+                else if (log.toLowerCase().includes('success') || log.toLowerCase().includes('done')) statusClass = 'success';
+                
+                return (
+                  <div key={i} className={`kernel-log ${statusClass}`}>
+                    <span style={{color: '#888', marginRight: '8px'}}>[{new Date().toLocaleTimeString()}]</span>
+                    {log}
+                  </div>
+                );
+              })}
+              {kernelLogs.length === 0 && (
+                <div style={{ color: '#888', fontStyle: 'italic' }}>Waiting for kernel logs...</div>
+              )}
+            </div>
+          )}
+
+          {activeTab === 'settings' && (
+            <div className="settings-panel">
+              <div className="settings-card">
+                <h3>Integrations</h3>
+                <p style={{color: '#888', marginBottom: '16px', fontSize: '13px'}}>
+                  Connect external services to give Mizune access to your data.
+                </p>
+                <div className="form-group">
+                  <label>Google OAuth Token</label>
+                  <button className="btn-primary" onClick={() => {
+                    sendMessage('/nuke_cache');
+                  }}>Check Token Status</button>
+                  <p style={{marginTop: '8px', fontSize: '11px', color: '#666'}}>
+                    Note: To connect Google, please run the <code>connect_gmail.py</code> script in your terminal!
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
         </main>
       </div>
     </div>

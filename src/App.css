@@ -48,9 +48,11 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 24px;
+  padding: 0 0 0 24px;
+  height: 50px;
   background: var(--bg-secondary);
   border-bottom: 1px solid rgba(255,255,255,0.05);
+  -webkit-app-region: drag;
 }
 
 .brand {
@@ -91,6 +93,7 @@ body {
   display: flex;
   gap: 12px;
   align-items: center;
+  height: 100%;
 }
 
 .connection-pill,
@@ -122,6 +125,37 @@ body {
   animation: pulse 1.5s infinite;
 }
 
+.window-controls {
+  display: flex;
+  height: 100%;
+  -webkit-app-region: no-drag;
+  margin-left: 12px;
+}
+
+.window-controls button {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  width: 46px;
+  height: 100%;
+  cursor: pointer;
+  font-size: 16px;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.window-controls button:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.window-controls button.close-btn:hover {
+  background: #e81123;
+  color: #fff;
+}
+
 /* ─── BODY ─── */
 .dashboard-body {
   display: flex;
@@ -149,6 +183,78 @@ body {
   background: var(--bg-tertiary);
   border-radius: var(--radius);
   border: 1px solid rgba(168, 85, 247, 0.1);
+  min-height: 250px;
+}
+
+.classic-blob-container {
+    position: relative;
+    width: 120px;
+    height: 120px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+    z-index: 5;
+    transition: opacity 0.5s ease, transform 0.5s ease;
+}
+
+#mizune-blob {
+    width: 80px;
+    height: 80px;
+    background: radial-gradient(circle at 30% 30%, #60a5fa, #2563eb, #1e3a8a);
+    border-radius: 50%;
+    position: relative;
+    box-shadow: 0 0 30px rgba(59, 130, 246, 0.4), inset -10px -10px 20px rgba(0,0,0,0.3);
+    animation: float 6s ease-in-out infinite, pulseBlob 4s ease-in-out infinite;
+    z-index: 2;
+    transition: transform 0.1s ease-out;
+}
+
+/* Eyes */
+.blob-eye {
+    position: absolute;
+    width: 12px;
+    height: 12px;
+    background: #fff;
+    border-radius: 50%;
+    top: 25px;
+    box-shadow: 0 0 8px rgba(255,255,255,0.8);
+    transition: transform 0.05s linear;
+}
+.blob-eye.left { left: 20px; }
+.blob-eye.right { left: 48px; }
+
+/* The glow behind the blob */
+.blob-glow {
+    position: absolute;
+    width: 140px;
+    height: 140px;
+    background: rgba(59, 130, 246, 0.15);
+    border-radius: 50%;
+    filter: blur(20px);
+    z-index: 1;
+    animation: pulseBlob 4s ease-in-out infinite reverse;
+}
+
+@keyframes float {
+    0% { transform: translateY(0px); }
+    50% { transform: translateY(-15px); }
+    100% { transform: translateY(0px); }
+}
+@keyframes pulseBlob {
+    0% { transform: scale(1); opacity: 0.8; }
+    50% { transform: scale(1.05); opacity: 1; }
+    100% { transform: scale(1); opacity: 0.8; }
+}
+
+/* Speaking Animation */
+#mizune-blob.speaking {
+    animation: float 3s ease-in-out infinite, speak-pulse 0.3s alternate infinite;
+    box-shadow: 0 0 50px rgba(59, 130, 246, 0.7), inset -10px -10px 20px rgba(0,0,0,0.3);
+}
+@keyframes speak-pulse {
+    0% { transform: scale(1) scaleY(1); }
+    100% { transform: scale(1.03) scaleY(0.95); }
 }
 
 .emotion-badge {

@@ -13,11 +13,17 @@ class ObsidianClient:
         self._ensure_folders()
 
     def _ensure_folders(self) -> None:
-        """Ensure required folders exist."""
-        folders = ["Daily", "Projects", "Inbox", "Archive"]
+        """Ensure required folders exist and create master index."""
+        folders = ["Daily", "Projects", "Inbox", "Archive", "Knowledge", "Memories", "Templates"]
         for folder in folders:
             path = os.path.join(self.vault_path, folder)
             os.makedirs(path, exist_ok=True)
+            
+        index_path = os.path.join(self.vault_path, "_Index.md")
+        if not os.path.exists(index_path):
+            content = "# Mizune Brain Index\n\nWelcome to your second brain!\n\n## Quick Links\n- [[Inbox/Inbox|Inbox]]\n- [[Daily/Daily Log|Daily Log]]\n- [[Knowledge/Knowledge Base|Knowledge Base]]\n- [[Memories/Memory Summaries|Memory Summaries]]\n"
+            with open(index_path, "w", encoding="utf-8") as f:
+                f.write(content)
 
     def _slugify(self, text: str) -> str:
         """Convert text to filename slug."""

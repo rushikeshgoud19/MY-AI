@@ -13,7 +13,8 @@ class SecurityScanner:
     DANGEROUS_PATTERNS = [
         r"os\.remove", r"shutil\.rmtree", r"os\.system\(['\"]rm\s+-rf", 
         r"format\s+[A-Za-z]:", r"subprocess\.run\(['\"]del",
-        r"urllib\.request", r"requests\.post", r"socket\."
+        r"urllib\.request", r"requests\.post", r"socket\.",
+        r"shutdown", r"restart", r"reboot", r"taskkill"
     ]
 
     @classmethod

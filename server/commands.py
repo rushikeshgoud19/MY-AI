@@ -213,20 +213,38 @@ def whatsapp_automation(contact: str, message: str = None) -> str:
         target = None # Default to self
         contact = "yourself"
     else:
-        # We pass the raw contact string directly to the headless bridge.
-        # If it's pure digits, the bridge will use it as a number.
-        # If it's letters (a name), the bridge will search the address book for that name.
         target = contact
+        
+    # Attempt to resolve name from contacts.json
+    try:
+        import json, os
+        contacts_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "contacts.json")
+        if os.path.exists(contacts_file):
+            with open(contacts_file, "r") as f:
+                contacts_db = json.load(f)
+                # lowercase match
+                for name, number in contacts_db.items():
+                    if name.lower() in contact.lower() or contact.lower() in name.lower():
+                        target = number
+                        log_info(f"[ACTION] Resolved contact '{contact}' to number {target}")
+                        break
+    except Exception as e:
+        log_info(f"[ACTION] Contact resolution error: {e}")
 
-    if message:
+    # If it's a phone number, use headless Baileys!
+    if target is None or any(char.isdigit() for char in target):
         log_info(f"[ACTION] Sending headless WhatsApp message to '{contact}'")
+        from server.platforms.whatsapp.core import send_whatsapp_message
         success = send_whatsapp_message(message, target)
         if success:
-            return f"Headless message successfully sent to {contact} on WhatsApp!"
+            return f"Done! Headless message successfully sent to {contact}!"
         else:
-            return "Failed to send message! The WhatsApp bridge is not connected."
-    return f"Ready to message {contact}, Master! What should I say?"
+            return f"Failed to send message! The WhatsApp bridge is not connected."
 
+    # If target is still just a name, it means it wasn't found in contacts.json
+    error_msg = f"I cannot send the message because '{contact}' is not in your contacts dot JSON file. Please add their phone number so I can send it instantly in the background!"
+    log_info(f"[ACTION] Failed to resolve contact: {error_msg}")
+    return error_msg
 def close_app(target: str):
     exe = COMMON_APPS.get(target, target)
     if exe.startswith("http") or exe.startswith("ms-"):
@@ -248,11 +266,10 @@ def execute_python_code(code: str) -> str:
     import os
     import sys
     
-    # Security Filter
-    dangerous_keywords = ["os.remove", "shutil.rmtree", "os.rmdir", "format", "del tree"]
-    for keyword in dangerous_keywords:
-        if keyword in code:
-            return f"Error: Code blocked due to security filter. Contains dangerous keyword: {keyword}"
+    from server.security import SecurityScanner
+    is_safe, reason = SecurityScanner.scan_code(code)
+    if not is_safe:
+        return f"Error: Code blocked due to security filter. {reason}"
             
     # Write code to a temp file
     fd, path = tempfile.mkstemp(suffix=".py")

@@ -381,15 +381,16 @@ class ActionExecutorAgent(BaseAgent):
             return {"success": False, "error": "No command provided"}
 
         # Security validation
-        is_safe, reason = self._validate_command(command)
-        if not is_safe:
-            self.log(f"COMMAND BLOCKED: {reason}")
-            return {
-                "success": False,
-                "error": f"Command blocked for safety: {reason}",
-                "needs_confirmation": True,
-                "raw_command": command
-            }
+        if not (context and context.get("user_confirmed")):
+            is_safe, reason = self._validate_command(command)
+            if not is_safe:
+                self.log(f"COMMAND BLOCKED: {reason}")
+                return {
+                    "success": False,
+                    "error": f"Command blocked for safety: {reason}",
+                    "needs_confirmation": True,
+                    "raw_command": command
+                }
 
         self.log(f"Running command: {command}")
         try:
@@ -449,7 +450,7 @@ class ActionExecutorAgent(BaseAgent):
                     is_allowed = True
                     break
 
-            if not is_allowed:
+            if not is_allowed and not (context and context.get("user_confirmed")):
                 self.log(f"PATH BLOCKED: {resolved_path} not in allowed directories")
                 return {
                     "success": False,

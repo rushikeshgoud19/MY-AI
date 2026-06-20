@@ -13,6 +13,10 @@ struct WindowState {
     is_click_through: Mutex<bool>,
 }
 
+struct AppState {
+    server_process: Mutex<Option<std::process::Child>>,
+}
+
 fn toggle_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         if window.is_visible().unwrap_or(false) {
@@ -66,19 +70,25 @@ fn main() {
             // Automatically boot the Python Backend Server
             log::info!("Booting Python backend server silently...");
             #[cfg(target_os = "windows")]
-            {
+            let child_process = {
                 use std::os::windows::process::CommandExt;
-                let _ = std::process::Command::new(".venv\\Scripts\\python.exe")
-                    .arg("mizune.py")
+                std::process::Command::new(".venv\\Scripts\\python.exe")
+                    .arg("server.py")
                     .creation_flags(0x08000000)
-                    .spawn();
-            }
+                    .spawn()
+                    .ok()
+            };
             #[cfg(not(target_os = "windows"))]
-            {
-                let _ = std::process::Command::new(".venv/bin/python")
-                    .arg("mizune.py")
-                    .spawn();
-            }
+            let child_process = {
+                std::process::Command::new(".venv/bin/python")
+                    .arg("server.py")
+                    .spawn()
+                    .ok()
+            };
+            
+            app.manage(AppState {
+                server_process: Mutex::new(child_process),
+            });
 
             // Build tray menu
             let show_item = MenuItem::with_id(app, "show", "Show/Hide", true, None::<&str>)?;
@@ -107,6 +117,11 @@ fn main() {
                         }
                         "quit" => {
                             log::info!("Quitting Mizune AI...");
+                            let state = app.state::<AppState>();
+                            let mut child_lock = state.server_process.lock().unwrap();
+                            if let Some(mut child) = child_lock.take() {
+                                let _ = child.kill();
+                            }
                             app.exit(0);
                         }
                         _ => {}
@@ -137,6 +152,16 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                log::info!("Tauri Exit event fired. Killing python server...");
+                let state = app_handle.state::<AppState>();
+                let mut child_lock = state.server_process.lock().unwrap();
+                if let Some(mut child) = child_lock.take() {
+                    let _ = child.kill();
+                }
+            }
+        });
 }

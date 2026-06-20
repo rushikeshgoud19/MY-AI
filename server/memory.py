@@ -1,19 +1,16 @@
 import os
 import sqlite3
 import json
-import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict
 
 try:
     import chromadb
-    from chromadb.config import Settings
     CHROMA_AVAILABLE = True
 except ImportError:
     CHROMA_AVAILABLE = False
 
 from .config import log_info
 import uuid
-import time
 from .memory_tree import memory_tree_db
 
 __all__ = ["MemorySystem"]
@@ -129,14 +126,7 @@ class MemorySystem:
             metadata={"role": role, "emotion": emotion, "mode": mode, "priority": priority}
         )
         
-        # Real-time UI refresh for the Memory Graph
-        try:
-            from server.knowledge_graph import generate_graph_html
-            generate_graph_html()
-            from server.websocket import ws_manager
-            ws_manager.broadcast_sync({"type": "refresh_graph"})
-        except Exception as e:
-            pass
+
         
     def get_recent_history(self, limit: int = 10) -> List[Dict[str, str]]:
         if not self.db: return []
@@ -172,14 +162,7 @@ class MemorySystem:
             metadata=metadata
         )
         
-        # 3. Regenerate HTML and Notify Frontend to Refresh Memory Graph
-        try:
-            from server.knowledge_graph import generate_graph_html
-            generate_graph_html()
-            from server.websocket import ws_manager
-            ws_manager.broadcast_sync({"type": "refresh_graph"})
-        except Exception as e:
-            log_info(f"[MEMORY] Error broadcasting graph refresh: {e}")
+
             
     def recall_longterm(self, query: str, n_results: int = 3) -> List[str]:
         if not self.collection: return []

@@ -75,3 +75,9 @@ kernel_events.db
 # MizuneVault (personal notes)
 MizuneVault/
 
+# Vault Sync Exports (SENSITIVE)
+Sources/
+Knowledge/
+Daily/
+contacts.json
+.env

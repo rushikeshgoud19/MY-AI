@@ -209,53 +209,8 @@ function drawEyes(ctx: CanvasRenderingContext2D, cx: number, cy: number, size: n
 }
 
 function drawMouth(ctx: CanvasRenderingContext2D, cx: number, cy: number, size: number, state: SlimeState) {
-  const mouthY = cy + size * 0.12;
-  const mouthWidth = size * 0.2;
-  
-  ctx.beginPath();
-  
-  if (state.valence > 0.5) {
-    // Happy smile
-    ctx.arc(cx, mouthY - size * 0.03, mouthWidth * 0.5, 0.2, Math.PI - 0.2);
-    ctx.lineWidth = size * 0.025;
-    ctx.strokeStyle = '#1a1a2e';
-    ctx.lineCap = 'round';
-    ctx.stroke();
-    
-    // Blush
-    ctx.beginPath();
-    ctx.ellipse(cx - size * 0.22, mouthY - size * 0.05, size * 0.06, size * 0.04, 0, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(255, 100, 150, 0.2)';
-    ctx.fill();
-    
-    ctx.beginPath();
-    ctx.ellipse(cx + size * 0.22, mouthY - size * 0.05, size * 0.06, size * 0.04, 0, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(255, 100, 150, 0.2)';
-    ctx.fill();
-    
-  } else if (state.valence < -0.5) {
-    // Sad frown
-    ctx.arc(cx, mouthY + size * 0.08, mouthWidth * 0.5, Math.PI + 0.2, -0.2);
-    ctx.lineWidth = size * 0.025;
-    ctx.strokeStyle = '#1a1a2e';
-    ctx.lineCap = 'round';
-    ctx.stroke();
-    
-  } else if (state.arousal > 0.7) {
-    // Surprised O
-    ctx.beginPath();
-    ctx.ellipse(cx, mouthY, size * 0.05, size * 0.07, 0, 0, Math.PI * 2);
-    ctx.fillStyle = '#1a1a2e';
-    ctx.fill();
-    
-  } else {
-    // Neutral small smile
-    ctx.arc(cx, mouthY, mouthWidth * 0.4, 0.1, Math.PI - 0.1);
-    ctx.lineWidth = size * 0.02;
-    ctx.strokeStyle = '#1a1a2e';
-    ctx.lineCap = 'round';
-    ctx.stroke();
-  }
+  // User requested no mouth, just the classic eyes!
+  return;
 }
 
 function drawThinkingBubbles(ctx: CanvasRenderingContext2D, cx: number, cy: number, size: number, time: number) {

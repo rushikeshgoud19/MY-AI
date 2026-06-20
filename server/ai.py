@@ -31,6 +31,23 @@ TOOLS_SCHEMA = [
     {
         "type": "function",
         "function": {
+            "name": "phone_control",
+            "description": "Control the user's Android phone via ADB to fetch messages, location, battery, or take photos.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string", 
+                        "description": "The action to perform. Can be: 'get_messages', 'take_photo', 'get_location', 'get_battery'"
+                    }
+                },
+                "required": ["action"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "open_app",
             "description": "Launch an application or website on the user's PC.",
             "parameters": {
@@ -201,8 +218,39 @@ TOOLS_SCHEMA = [
                 "required": ["category"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "schedule_one_time_task",
+            "description": "Schedule a task to be executed once at a specific future time. The time MUST be in ISO 8601 format (e.g., '2026-06-17T08:00:00'). Use this for alarms, reminders, or delayed actions.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "description": {"type": "string", "description": "A natural language description of what to do (e.g., 'remind me to drink water', 'message john hello')."},
+                    "trigger_time_iso": {"type": "string", "description": "The exact time to trigger the task in ISO 8601 format."}
+                },
+                "required": ["description", "trigger_time_iso"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "schedule_recurring_task",
+            "description": "Schedule a task to be executed repeatedly based on a cron expression (e.g., '0 8 * * *' for every day at 8 AM). Use this for daily routines.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "description": {"type": "string", "description": "A natural language description of what to do."},
+                    "cron_expression": {"type": "string", "description": "A standard 5-part cron expression representing the schedule."}
+                },
+                "required": ["description", "cron_expression"]
+            }
+        }
     }
 ]
+
 
 def get_ai_response(text: str, history: list, config: dict, system_prompt_override: str = None, hints: dict = None) -> tuple:
     """Router function to send prompt to the optimal LLM. Returns (text_response, tool_calls_list)."""
@@ -594,6 +642,15 @@ def _gemini_response(text: str, history: list, system_prompt: str, config: dict)
                             category = args.get("category", "all")
                             from .commands import get_system_info
                             tool_result = get_system_info(category)
+                        elif tool_name == "phone_control":
+                            action = args.get("action", "")
+                            from server.platforms.android.phone_bridge import AndroidPhoneBridge
+                            pb = AndroidPhoneBridge()
+                            if action == "get_messages": tool_result = str(pb.get_messages())
+                            elif action == "take_photo": tool_result = pb.take_photo()
+                            elif action == "get_location": tool_result = pb.get_location()
+                            elif action == "get_battery": tool_result = pb.get_battery()
+                            else: tool_result = "Unknown phone action"
                     except Exception as e:
                         tool_result = f"Error executing tool: {e}"
                         log_info(f"[ACTION] Error in {tool_name}: {e}")
@@ -772,6 +829,15 @@ def _groq_response(text: str, history: list, system_prompt: str, config: dict) -
                         category = args.get("category", "all")
                         from .commands import get_system_info
                         tool_result = get_system_info(category)
+                    elif tool_name == "phone_control":
+                        action = args.get("action", "")
+                        from server.platforms.android.phone_bridge import AndroidPhoneBridge
+                        pb = AndroidPhoneBridge()
+                        if action == "get_messages": tool_result = str(pb.get_messages())
+                        elif action == "take_photo": tool_result = pb.take_photo()
+                        elif action == "get_location": tool_result = pb.get_location()
+                        elif action == "get_battery": tool_result = pb.get_battery()
+                        else: tool_result = "Unknown phone action"
                     elif tool_name == "add_core_directive":
                         rule = args.get("rule", "")
                         if rule:
@@ -787,7 +853,11 @@ def _groq_response(text: str, history: list, system_prompt: str, config: dict) -
                             
                             def _web_agent_callback(tid, result):
                                 log_info(f"[BACKGROUND] Web Agent Callback: {result[:100]}...")
-                                # Memory could optionally store the result here
+                                from server.websocket import ws_manager
+                                ws_manager.broadcast_sync({
+                                    "type": "task_complete", 
+                                    "data": f"Research on {url} complete!\n\n{result[:1500]}..."
+                                })
                             
                             task_id = task_runner.submit(headless_web_agent, url, objective, visible=visible, callback=_web_agent_callback)
                             tool_result = f"Task started silently in background (ID: {task_id}). Master will be notified when complete."
@@ -1062,6 +1132,15 @@ def _nvidia_response(text: str, history: list, system_prompt: str, config: dict)
                         message = args.get("message", "")
                         whatsapp_automation(contact, message)
                         tool_result = f"Messaged {contact} on WhatsApp."
+                    elif tool_name == "phone_control":
+                        action = args.get("action", "")
+                        from server.platforms.android.phone_bridge import AndroidPhoneBridge
+                        pb = AndroidPhoneBridge()
+                        if action == "get_messages": tool_result = str(pb.get_messages())
+                        elif action == "take_photo": tool_result = pb.take_photo()
+                        elif action == "get_location": tool_result = pb.get_location()
+                        elif action == "get_battery": tool_result = pb.get_battery()
+                        else: tool_result = "Unknown phone action"
                     elif tool_name == "execute_python":
                         code = args.get("code", "")
                         if code:
@@ -1221,6 +1300,9 @@ def _openrouter_response(text: str, history: list, system_prompt: str, config: d
                 }
             )
             
+            if not getattr(response, 'choices', None) or len(response.choices) == 0:
+                raise ValueError("OpenRouter returned an empty or invalid response.")
+                
             msg = response.choices[0].message
             
             # Check for hallucinated tool calls embedded in text
@@ -1274,6 +1356,15 @@ def _openrouter_response(text: str, history: list, system_prompt: str, config: d
                         message = args.get("message", "")
                         whatsapp_automation(contact, message)
                         tool_result = f"Messaged {contact} on WhatsApp."
+                    elif tool_name == "phone_control":
+                        action = args.get("action", "")
+                        from server.platforms.android.phone_bridge import AndroidPhoneBridge
+                        pb = AndroidPhoneBridge()
+                        if action == "get_messages": tool_result = str(pb.get_messages())
+                        elif action == "take_photo": tool_result = pb.take_photo()
+                        elif action == "get_location": tool_result = pb.get_location()
+                        elif action == "get_battery": tool_result = pb.get_battery()
+                        else: tool_result = "Unknown phone action"
                     elif tool_name == "execute_python":
                         code = args.get("code", "")
                         if code:
@@ -1282,10 +1373,25 @@ def _openrouter_response(text: str, history: list, system_prompt: str, config: d
                             tool_result = "Python script is running in the background."
                     elif tool_name == "headless_web_agent":
                         url = args.get("url", "")
-                        obj = args.get("objective", "")
-                        vis = args.get("visible", False)
-                        if url and obj:
-                            tool_result = headless_web_agent(url, obj, visible=vis)
+                        objective = args.get("objective", "")
+                        visible = args.get("visible", False)
+                        if url:
+                            from .background_tasks import task_runner
+                            
+                            def _web_agent_callback(tid, result):
+                                log_info(f"[BACKGROUND] Web Agent Callback: {result[:100]}...")
+                                from server.websocket import ws_manager
+                                
+                                # Send a massive chat message to the dashboard
+                                ws_manager.broadcast_sync({
+                                    "type": "task_complete", 
+                                    "data": f"Research on {url} complete!\n\n{result[:1500]}..."
+                                })
+                                
+                            task_id = task_runner.submit(headless_web_agent, url, objective, visible=visible, callback=_web_agent_callback)
+                            tool_result = f"Task started silently in background (ID: {task_id}). Master will be notified when complete."
+                        else:
+                            tool_result = "Error: No URL provided."
                     elif tool_name == "execute_skill":
                         skill_name = args.get("skill_name", "")
                         skill_args = args.get("args", "")

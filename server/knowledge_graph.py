@@ -51,17 +51,19 @@ def get_graph_data():
             
     # 4. Extract ChromaDB Semantic Memories
     try:
-        from server.memory import memory
-        if memory and memory.collection:
-            # Get all documents but slice to limit the graph size
-            results = memory.collection.get()
-            docs = results.get('documents', [])
-            # Limit to 50 nodes to avoid massive UI lag on the frontend
-            docs = docs[-50:] if len(docs) > 50 else docs
-            for i, doc in enumerate(docs):
-                node_id = f"Semantic_{i}"
-                nodes.append({"id": node_id, "name": doc[:40] + "...", "group": 3, "val": 8})
-                links.append({"source": "Mizune Core", "target": node_id})
+        import chromadb
+        data_dir = ".data"
+        chroma_dir = os.path.join(data_dir, "chroma_db")
+        client = chromadb.PersistentClient(path=chroma_dir)
+        collection = client.get_or_create_collection(name="mizune_longterm")
+        results = collection.get()
+        docs = results.get('documents', [])
+        # Limit to 50 nodes to avoid massive UI lag on the frontend
+        docs = docs[-50:] if len(docs) > 50 else docs
+        for i, doc in enumerate(docs):
+            node_id = f"Semantic_{i}"
+            nodes.append({"id": node_id, "name": doc[:40] + "...", "group": 3, "val": 8})
+            links.append({"source": "Mizune Core", "target": node_id})
     except Exception as e:
         log_info(f"[KNOWLEDGE GRAPH] Error reading ChromaDB: {e}")
             

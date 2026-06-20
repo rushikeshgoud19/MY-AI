@@ -45,6 +45,7 @@ class ManagerAgent(BaseAgent):
         "coding",          # Code review, debugging, watching screen for code
         "vision",          # What's on screen, describe what you see
         "writing",         # Dictation, note-taking, type for me
+        "obsidian",        # Interacting with the second brain / vault
         "focus",           # Pomodoro, concentration, distraction blocking
     ]
 
@@ -253,6 +254,10 @@ class ManagerAgent(BaseAgent):
             self.current_mode = "writing"
             return await self._handle_writing(text, context)
 
+        elif intent == "obsidian":
+            self.current_mode = "conversation" # One-shot action
+            return await self._handle_obsidian(text, context)
+
         elif intent == "focus":
             self.current_mode = "focus"
             return f"🎯 Got it! {self._focus_minutes}-minute focus session started. Stay strong, Master~!"
@@ -298,6 +303,26 @@ class ManagerAgent(BaseAgent):
             return "[WRITING_NEWLINE]"
         if re.search(r"\b(read back|read it back|what did i say)\b", lower):
             return None
+        return None
+
+    async def _handle_obsidian(self, text: str, context: Optional[Dict]) -> Optional[str]:
+        """Obsidian: save to brain or create notes."""
+        if "obsidian" not in self.workers:
+            return "I don't have my brain connected right now, Master! (ObsidianVault not configured)"
+            
+        agent = self.workers["obsidian"]
+        lower = text.lower()
+        
+        if "daily log" in lower or "update daily" in lower:
+            # We don't have the full text here to summarize yet, so we return a prompt to the LLM
+            return "[OBSIDIAN_DAILY_LOG] Update Master's daily log in my brain."
+            
+        if "save" in lower or "note about" in lower or "add" in lower:
+            return f"[OBSIDIAN_SAVE] Save this to my brain: {text}"
+            
+        if "what do you know" in lower or "search" in lower:
+            return f"[OBSIDIAN_SEARCH] Search my brain for this query: {text}"
+            
         return None
 
     async def _handle_focus(self, text: str, context: Optional[Dict]) -> Optional[str]:
@@ -365,7 +390,7 @@ class ManagerAgent(BaseAgent):
                 if self._pending_plan:
                     plan = self._pending_plan
                     self._pending_plan = None
-                    return await self._execute_autonomous_plan(plan)
+                    return await self._execute_autonomous_plan(plan, user_confirmed=True)
                 return "I lost track of the plan, Master... Can you tell me again?"
             elif re.search(r"\b(cancel|no|stop|abort|don't|nah|nope|nevermind)\b", lower):
                 self._autonomous_pending_confirm = False
@@ -373,7 +398,14 @@ class ManagerAgent(BaseAgent):
                 self.current_mode = "conversation"
                 return "Got it! Cancelled. What else can I do, Master?"
             else:
-                return "I'm waiting for your confirmation, Master~ Say 'go ahead' or 'cancel'!"
+                # If the user says something completely different (like "Mizune Introduce yourself"),
+                # implicitly cancel the pending plan and drop out of confirmation mode!
+                self.log("[Brain] User ignored confirmation. Implicitly cancelling pending plan and processing new intent.")
+                self._autonomous_pending_confirm = False
+                self._pending_plan = None
+                self.current_mode = "conversation"
+                # Return None so it falls through to normal intent classification!
+                return None
                 
         # Freeform User Input Flow (Checkpoint System)
         if getattr(self, "_autonomous_waiting_user_input", False):
@@ -450,7 +482,7 @@ class ManagerAgent(BaseAgent):
         # Step 3: EXECUTE
         return await self._execute_autonomous_plan(plan)
 
-    async def _execute_autonomous_plan(self, plan: Dict) -> str:
+    async def _execute_autonomous_plan(self, plan: Dict, user_confirmed: bool = False) -> str:
         """Execute a full autonomous plan step by step."""
         planner = self.workers.get("planner")
         executor = self.workers.get("executor")
@@ -477,9 +509,13 @@ class ManagerAgent(BaseAgent):
 
             # Execute
             import json as _json
+            ctx = {"vision_elements": vision_elements}
+            if i == 0 and user_confirmed:
+                ctx["user_confirmed"] = True
+
             result = await executor.execute(
                 _json.dumps(step),
-                context={"vision_elements": vision_elements}
+                context=ctx
             )
 
             if result.get("abort"):

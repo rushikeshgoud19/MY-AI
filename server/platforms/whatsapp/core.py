@@ -1,17 +1,20 @@
 import asyncio
 import json
 import sqlite3
-import hashlib
 import re
-from dataclasses import dataclass, asdict
-from datetime import datetime, timedelta
-from typing import Optional, List, Dict, Tuple
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Optional, List, Dict
 from enum import Enum
 import websockets
 import os
 import logging
+
 from server.processor import process_command
 from server.config import log_info
+from server.afk_detector import afk_detector
+
+logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────
 # DATA MODELS
@@ -413,14 +416,16 @@ class DashboardBroadcaster:
         pass
     async def send_alert(self, alert):
         try:
-            from server.websocket import ws_manager
-            ws_manager.broadcast_sync(alert)
+            from server.mizune.dashboard.ws_server import global_ws_server
+            if global_ws_server:
+                global_ws_server._broadcast(alert)
         except Exception as e:
             logger.error(f"[Dashboard] Failed to broadcast: {e}")
     async def trigger_vtuber_reaction(self, reaction, intensity):
         try:
-            from server.websocket import ws_manager
-            ws_manager.broadcast_sync({"type": "vtuber_reaction", "reaction": reaction, "intensity": intensity})
+            from server.mizune.dashboard.ws_server import global_ws_server
+            if global_ws_server:
+                global_ws_server._broadcast({"type": "vtuber_reaction", "reaction": reaction, "intensity": intensity})
         except:
             pass
 
@@ -463,6 +468,7 @@ class MizuneWhatsAppCore:
         self.config = config
         self.db_path = config.get('db_path', os.path.join(os.getcwd(), 'cortex.db'))
         self.bridge_ws = None
+        self.loop = None
         self.bridge_uri = config.get('bridge_uri', 'ws://localhost:9876')
         
         self.importance = ImportanceEngine(self.db_path)
@@ -476,6 +482,7 @@ class MizuneWhatsAppCore:
         self.require_mention = config.get('whatsapp', {}).get('require_mention', True)
     
     async def start(self):
+        self.loop = asyncio.get_running_loop()
         await self.dashboard.start()
         
         while True:
@@ -651,9 +658,10 @@ def send_whatsapp_message(text: str, to: str = None) -> bool:
         # This mirrors the old logic where `to` could be a name, but baileys needs a JID.
         # In a future update, we will resolve names to JIDs via the ContactTierGuard DB.
         if to:
-            # Quick format check for basic numbers
-            if to.isdigit():
-                payload["to_jid"] = f"{to}@s.whatsapp.net"
+            import re
+            digits_only = re.sub(r'\D', '', to)
+            if digits_only:
+                payload["to_jid"] = f"{digits_only}@s.whatsapp.net"
             else:
                 payload["to_jid"] = to
         else:
@@ -661,10 +669,17 @@ def send_whatsapp_message(text: str, to: str = None) -> bool:
             payload["to_jid"] = "me" # Baileys handles 'me' differently or fails, but we'll try
 
         import asyncio
-        try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(_core_instance.bridge_ws.send(json.dumps(payload)))
-        except RuntimeError:
-            asyncio.run(_core_instance.bridge_ws.send(json.dumps(payload)))
-        return True
+        if hasattr(_core_instance, 'loop') and _core_instance.loop:
+            asyncio.run_coroutine_threadsafe(
+                _core_instance.bridge_ws.send(json.dumps(payload)), 
+                _core_instance.loop
+            )
+            return True
+        else:
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(_core_instance.bridge_ws.send(json.dumps(payload)))
+                return True
+            except RuntimeError:
+                return False
     return False

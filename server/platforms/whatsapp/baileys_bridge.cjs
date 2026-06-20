@@ -204,6 +204,7 @@ class MizuneWhatsAppBridge {
   }
 
   async handlePythonCommand(cmd) {
+    console.log(`[Bridge] Received IPC command: ${JSON.stringify(cmd)}`);
     try {
         if (cmd.type === 'send_message') {
           await this.sock.sendMessage(cmd.to_jid, {

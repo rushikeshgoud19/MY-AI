@@ -16,12 +16,24 @@ file_handler = RotatingFileHandler(_LOG_FILE, maxBytes=5*1024*1024, backupCount=
 file_handler.setFormatter(log_formatter)
 logger.addHandler(file_handler)
 
+_ws_callback = None
+
+def set_log_callback(cb):
+    global _ws_callback
+    _ws_callback = cb
+
 def log_info(msg: str):
     try:
         print(msg)
     except UnicodeEncodeError:
         print(str(msg).encode('ascii', 'replace').decode('ascii'))
     logger.info(msg)
+    if _ws_callback:
+        # Prevent recursive logging loops if websocket fails
+        try:
+            _ws_callback(msg)
+        except Exception:
+            pass
 
 # ─── Configuration & Defaults ────────────────────────────────────────────────
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.json")

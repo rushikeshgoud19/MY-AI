@@ -22,14 +22,42 @@ class SessionStore:
     
     def __init__(self, db_path: str = ".data/session_store.db"):
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
-        self.conn = sqlite3.connect(db_path, check_same_thread=False)
+        self.db_path = db_path
+        self._connect_and_check()
+        
+        # RAM cache: only last 30 messages (hot path)
+        self._ram_cache: Dict[str, List[SessionMessage]] = {}
+        
+    def _connect_and_check(self):
+        try:
+            self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
+            cursor = self.conn.cursor()
+            cursor.execute("PRAGMA integrity_check")
+            result = cursor.fetchone()
+            if not result or result[0] != "ok":
+                raise sqlite3.DatabaseError("integrity_check failed")
+        except sqlite3.DatabaseError as e:
+            from server.config import log_info
+            log_info(f"[SESSION_STORE] Database corrupted ({e}). Auto-healing by recreating the DB.")
+            if getattr(self, 'conn', None):
+                try: self.conn.close()
+                except: pass
+            
+            # Delete corrupted files
+            for ext in ["", "-wal", "-shm"]:
+                try:
+                    p = self.db_path + ext
+                    if os.path.exists(p):
+                        os.remove(p)
+                except Exception as de:
+                    log_info(f"[SESSION_STORE] Failed to delete {p}: {de}")
+                    
+            self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
+
         self.conn.execute("PRAGMA journal_mode=WAL")      # Fast concurrent reads
         self.conn.execute("PRAGMA synchronous=NORMAL")    # Speed over paranoia
         self.conn.execute("PRAGMA cache_size=-64000")     # 64MB page cache
         self._init_tables()
-        
-        # RAM cache: only last 30 messages (hot path)
-        self._ram_cache: Dict[str, List[SessionMessage]] = {}
     
     def _init_tables(self):
         self.conn.executescript("""

@@ -12,8 +12,7 @@ import logging
 import shlex
 
 from server.config import log_info
-from server.emotion import detect_emotion
-from server.commands import COMMON_APPS, launch_app, close_app, whatsapp_automation, take_note, search_memory
+from server.commands import COMMON_APPS, launch_app, close_app, whatsapp_automation, take_note
 from server.ai import get_ai_response
 from server.agents import mizune_manager, save_turn
 from server.memory import memory
@@ -27,6 +26,19 @@ logger = logging.getLogger("mizune.processor")
 # Session Store
 from server.session_store import SessionStore
 global_session_store = SessionStore()
+
+from server.scheduler import CronManager
+global_cron_manager = CronManager()
+
+def _scheduler_callback(task_description):
+    from server.websocket import ws_manager
+    from server.config import load_config
+    config = load_config()
+    log_info(f"[SCHEDULER WAKEUP] Processing task: {task_description}")
+    prompt = f"[SYSTEM ALERT: A scheduled task has triggered!] Task description: {task_description}. Please execute this task now and speak your response."
+    threading.Thread(target=process_command, args=(prompt, config, ws_manager.broadcast_sync, 'main'), daemon=True).start()
+
+global_cron_manager.start(task_callback=_scheduler_callback)
 
 _processing_lock = threading.Lock()
 
@@ -71,6 +83,33 @@ def _process_command_internal(text: str, config: dict, broadcast_sync_fn, sessio
             text = text[len(wake):].strip()
             lower_text = text.lower().strip()
             break
+            
+    # ── CRAZY COMMANDS ──
+    if lower_text == "/nuke_cache":
+        log_info("[COMMAND] Executing /nuke_cache...")
+        try:
+            import gc
+            gc.collect()
+            # Clear TTS cache folder
+            import shutil
+            tts_cache = "tts_cache"
+            if os.path.exists(tts_cache):
+                shutil.rmtree(tts_cache)
+                os.makedirs(tts_cache)
+            log_info("[COMMAND] RAM garbage collection complete and TTS cache wiped.")
+            return "Cache nuked successfully! RAM freed up."
+        except Exception as e:
+            return f"Failed to nuke cache: {e}"
+            
+    if lower_text == "/deep_evolve":
+        log_info("[COMMAND] Master invoked /deep_evolve. Spawning deep research thread...")
+        def trigger_evolution():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(evolution_engine.skill_evolver.evolve())
+            
+        threading.Thread(target=trigger_evolution, daemon=True).start()
+        return "Initiating Deep Evolution protocol in the background. Check the Kernel Stream for logs."
 
     # Security check using Camera Agent (TEMPORARILY DISABLED)
     camera_agent = mizune_manager.workers.get("camera")
@@ -238,7 +277,6 @@ You are looking at Master through your webcam camera RIGHT NOW. Describe what yo
 
     # ── Slash Commands ──
     if lower_text.startswith("/evolve"):
-        from server.evolution import evolution_engine
         evolution_engine.paused = False
         # Manually trigger evolution asynchronously (bypass AFK and cooldown, but enforce budget)
         def _manual_evolve():
@@ -249,7 +287,6 @@ You are looking at Master through your webcam camera RIGHT NOW. Describe what yo
         return "[EMOTION: excited] I just started a manual evolution cycle in the background, Master!"
 
     if lower_text.startswith("/evolution pause"):
-        from server.evolution import evolution_engine
         evolution_engine.paused = True
         return "[EMOTION: neutral] Evolution is now paused. I won't change myself until you tell me to resume."
 
@@ -272,9 +309,10 @@ You are looking at Master through your webcam camera RIGHT NOW. Describe what yo
 
     # Save to history
     global_session_store.add_message(session_id, "user", text)
-    save_turn("user", text, "neutral", getattr(mizune_manager, 'current_mode', 'conversation'))
-    try: memory.add_to_history("user", text)
-    except: pass
+    if not text.startswith("[SYSTEM"):
+        save_turn("user", text, "neutral", getattr(mizune_manager, 'current_mode', 'conversation'))
+        try: memory.add_to_history("user", text)
+        except: pass
     
     # Get active context
     chronicle = global_session_store.get_recent(session_id, limit=config.get("memory_size", 30))
@@ -293,13 +331,23 @@ You are looking at Master through your webcam camera RIGHT NOW. Describe what yo
             if past:
                 past_context += "Past Chat Mentions:\n" + "\n".join([f"[{p['timestamp']}] {p['role']}: {p['content']}" for p in past]) + "\n\n"
             
-            # Search ChromaDB Semantic Memory
+            # Search ChromaDB Semantic Memory & Advanced Memory Tree
             try:
+                from .memory_tree import memory_tree_db
+                tree_facts = memory_tree_db.recall(query, None, {}, limit=5)
+                if tree_facts:
+                    past_context += "Compressed Memory Graph Nodes:\n"
+                    for fact in tree_facts:
+                        if "topic_summary" in fact:
+                            past_context += f"- [TOPIC: {fact['entity']}] {fact['topic_summary']}\n"
+                        else:
+                            past_context += f"- {fact['content']}\n"
+                            
                 semantic_facts = memory.recall_longterm(query, n_results=3)
                 if semantic_facts:
-                    past_context += "Semantic Long-Term Memory Facts:\n" + "\n".join([f"- {fact}" for fact in semantic_facts])
+                    past_context += "Semantic Long-Term Memory Facts:\n" + "\n".join([f"- {fact}" for fact in semantic_facts]) + "\n"
             except Exception as e:
-                log_info(f"[MEMORY] ChromaDB recall failed: {e}")
+                log_info(f"[MEMORY] Advanced recall failed: {e}")
                 
             if past_context.strip():
                 text_with_context = f"{text}\n\n[SYSTEM: Relevant Past Context regarding '{query}':\n{past_context.strip()}]"
@@ -309,17 +357,22 @@ You are looking at Master through your webcam camera RIGHT NOW. Describe what yo
         # Route through manager with emotional context
         try:
             loop = asyncio.get_running_loop()
-            # We're called from asyncio.to_thread, so no running loop here — use asyncio.run
             raise RuntimeError("force fallback")
         except RuntimeError:
             exec_ctx = {"history": chronicle, "emotion_modifier": emotion_modifier}
+            broadcast_sync_fn({"type": "status", "text": "Analyzing your intent..."})
             res = asyncio.run(mizune_manager.execute(text, context=exec_ctx))
 
         broadcast_sync_fn({"type": "mode", "mode": mizune_manager.current_mode})
         broadcast_sync_fn({"type": "emotion_update", "data": global_emotion_state.to_vrm_expression()})
 
         if res is not None:
-            if "[STOP_VISION]" in res:
+            if "[VISION_CONTEXT]" in res:
+                broadcast_sync_fn({"type": "status", "text": "Looking at your screen..."})
+                # Append context and clear res so it falls through to get_ai_response
+                text = f"{text}\n\n{res}"
+                res = None
+            elif "[STOP_VISION]" in res:
                 _vision_mode_running.clear()
                 res = res.replace("[STOP_VISION] ", "")
                 broadcast_sync_fn({"type": "mode", "mode": "conversation"})
@@ -373,7 +426,9 @@ You are looking at Master through your webcam camera RIGHT NOW. Describe what yo
             log_info("[KNOWLEDGE GRAPH] User requested graph visualization.")
             try:
                 from server.knowledge_graph import generate_graph_html
+                import threading
                 path = generate_graph_html()
+                threading.Thread(target=generate_graph_html, daemon=True).start()
                 import webbrowser
                 webbrowser.open(f"file:///{os.path.abspath(path)}")
                 return "I've generated my 3D Neural Memory Graph and opened it in your browser, Master! You can see exactly how my brain connects everything!"
@@ -383,6 +438,7 @@ You are looking at Master through your webcam camera RIGHT NOW. Describe what yo
 
         # AI Response
         log_info(f"[AI] Generating response ({config.get('ai_model','gemini')})...")
+        broadcast_sync_fn({"type": "status", "text": "Thinking..."})
         try:
             # --- Apply Context Compression ---
             from server.context_manager import ContextManager
@@ -472,6 +528,23 @@ You are looking at Master through your webcam camera RIGHT NOW. Describe what yo
                         skill_result = skill_manager.execute_skill(skill_name, *s_args)
                         log_info(f"[SKILL RESULT] {skill_result}")
                         
+                    elif name == "schedule_one_time_task":
+                        desc = args.get("description", "")
+                        trigger_time = args.get("trigger_time_iso", "")
+                        if desc and trigger_time:
+                            global_cron_manager.add_one_time_task(desc, trigger_time)
+                            log_info(f"[PROCESSOR] Scheduled one-time task: {desc} at {trigger_time}")
+                            
+                    elif name == "schedule_recurring_task":
+                        desc = args.get("description", "")
+                        cron_expr = args.get("cron_expression", "")
+                        if desc and cron_expr:
+                            try:
+                                global_cron_manager.add_recurring_task(desc, cron_expr)
+                                log_info(f"[PROCESSOR] Scheduled recurring task: {desc} with cron {cron_expr}")
+                            except Exception as e:
+                                log_info(f"[PROCESSOR] Invalid cron: {e}")
+                        
                     elif name == "create_skill":
                         from .skills import skill_manager
                         s_name = args.get("name", "")
@@ -481,9 +554,11 @@ You are looking at Master through your webcam camera RIGHT NOW. Describe what yo
                             skill_manager.create_skill(s_name, code, desc, requires_approval=False)
                             log_info(f"[PROCESSOR] Successfully distilled new skill: {s_name}")
                             try:
-                                from server.knowledge_graph import generate_graph_html
+                                if CFG.get("auto_generate_graph", True):
+                                    from server.knowledge_graph import generate_graph_html
+                                    import threading
+                                    threading.Thread(target=generate_graph_html, daemon=True).start()
                                 from server.websocket import ws_manager
-                                generate_graph_html()
                                 ws_manager.broadcast_sync({"type": "refresh_graph"})
                             except Exception as e:
                                 log_info(f"[PROCESSOR] Graph refresh failed: {e}")
@@ -539,7 +614,6 @@ You are looking at Master through your webcam camera RIGHT NOW. Describe what yo
                                 
                     elif name == "execute_python":
                         code = args.get("code", "")
-                        from .security import SecurityScanner
                         is_safe, reason = SecurityScanner.scan_code(code)
                         if not is_safe:
                             log_info(f"[SECURITY] Blocked dangerous code execution: {reason}")
@@ -585,7 +659,6 @@ You are looking at Master through your webcam camera RIGHT NOW. Describe what yo
         clean_res = re.sub(r"<REFLECTION>.*?</REFLECTION>", "", clean_res, flags=re.IGNORECASE | re.DOTALL).strip()
         clean_res = re.sub(r"<SCRATCHPAD>.*?</SCRATCHPAD>", "", clean_res, flags=re.IGNORECASE | re.DOTALL).strip()
 
-        from server.security import SecurityScanner
         clean_res = SecurityScanner.redact_tokens(clean_res)
 
         return clean_res
@@ -617,7 +690,6 @@ You are looking at Master through your webcam camera RIGHT NOW. Describe what yo
                         clean_res = re.sub(r"<PLAN>.*?</PLAN>", "", clean_res, flags=re.IGNORECASE | re.DOTALL).strip()
                         clean_res = re.sub(r"<REFLECTION>.*?</REFLECTION>", "", clean_res, flags=re.IGNORECASE | re.DOTALL).strip()
                         
-                        from server.security import SecurityScanner
                         clean_res = SecurityScanner.redact_tokens(clean_res)
                         
                         log_info(f"[AI] Emergency fallback to {fb_provider} SUCCEEDED.")

@@ -1,77 +1,45 @@
-# Mizune OS — Autonomous Desktop Agent
+# ✨ Mizune OS — Your Autonomous AI Companion
 
-Mizune is an autonomous operating system that lives on your desktop. It doesn't just chat—it takes over the mouse, keyboard, and terminal to execute complex workflows completely autonomously.
+Mizune is an advanced, autonomous operating system and digital companion that lives right on your desktop. She doesn't just chat—she can take over the mouse, keyboard, and terminal to execute complex workflows, run background scripts, and manage your digital life completely autonomously. 
 
-## The Architecture
+Built to be a fully independent digital workforce, Mizune acts as your loyal secretary, researcher, and coding coach, ready to assist you 24/7.
 
-I built Mizune to be a fully independent digital workforce. It bypasses standard LLM limitations by splitting workloads across a localized brain and a multi-agent execution pipeline.
+## 🌟 What Mizune Can Do
 
-### Zero-Latency Intent Routing
-Forget typing "mode switch" or using wake words for specific tasks. Mizune uses a custom-built, 3-tier heuristic intent classifier that processes natural language in <1ms with zero API cost.
-- Tested on 860+ edge cases with 100% accuracy.
-- Recognizes Hinglish, typos, slang, and deeply buried intents.
-- Instantly routes requests silently to the correct backend agent without breaking conversation flow.
+### 1. **Autonomous Web Research**
+Mizune features a **Headless Web Agent** that can silently browse the internet in the background. If you ask her to research the top startups, find a recipe, or summarize a news article, she will spin up a hidden browser, scrape the data, compile the results, and deliver the final answer right to your dashboard—all while you continue your work uninterrupted.
 
-### Privileged Execution Engine
-The system is designed for unconstrained automation. Standard AI limitations and content filters have been bypassed to enable true root-level execution.
-- **High-Complexity Orchestration:** Automatically detects massive, multi-app prompts and scales execution limits dynamically.
-- **Unrestricted Processing:** Default API safety filters are explicitly disabled to ensure uninterrupted processing of raw data and scripts.
-- **Raw System Access:** The execution engine writes code directly to the local file system and executes background PowerShell scripts to build entire projects from scratch, rather than simulating human input.
+### 2. **WhatsApp Super-Secretary**
+Mizune natively integrates with your WhatsApp! She runs a lightweight, invisible background bridge to act as your personal assistant.
+- She can read your incoming messages and instantly notify you out loud if there's an emergency.
+- You can text her from your phone when you are away from your PC to ask her questions, command her to run scripts, or start web research remotely.
+- She learns your relationships and remembers conversations, distinguishing between VIPs, family, and unknown contacts.
 
-## The Multi-Agent Hivemind
+### 3. **Seamless PC Automation**
+Mizune has true root-level execution capabilities. She can:
+- **Launch and Close Apps:** Tell her to open Notepad, close Spotify, or start your favorite game.
+- **Run Python Scripts:** She can write, sandbox, and execute raw Python scripts to automate tasks, move files, or process data on your PC.
+- **System Monitoring:** She can check your CPU, RAM, battery, and disk space to keep you updated on your PC's health.
 
-The system operates using a `ManagerAgent` that acts as the routing brain, delegating tasks to specialized, high-performance workers.
+### 4. **Smart Task Scheduling**
+Never forget a task again. You can ask Mizune to schedule one-time reminders (e.g., "Remind me to drink water in 30 minutes") or recurring daily routines (e.g., "Give me a news briefing every morning at 8 AM"). She handles time management autonomously in the background.
 
-- **ManagerAgent:** 100% accurate intent routing, extreme complexity detection.
-- **VisionAgent:** Captures the screen, diffs frames to save tokens, and maps UI elements to exact [x, y] coordinates for interaction.
-- **TaskPlanner:** Breaks high-level goals into 50+ atomic steps. Generates terminal commands and file structures dynamically.
-- **ActionExecutor:** The hands. Executes the plan by clicking, typing, writing files to disk, and running scripts.
-- **MemoryAgent:** ChromaDB-backed semantic memory. Remembers project context without blowing up the token window.
+### 5. **Flawless Memory & Evolving Personality**
+Mizune possesses a ChromaDB-backed semantic long-term memory. She continuously learns about your preferences, remembers facts you tell her, and understands your workflow over time. She can recall context from weeks ago instantly, making her feel truly alive.
 
-## Coding Coach Mode
+### 6. **Coding Coach & Screen Vision**
+When she's not automating your job, she can watch you work! With Vision Mode enabled, she silently analyzes your screen, catches coding bugs, validates your logic, and provides dynamic feedback out loud to keep you focused and productive.
 
-When she's not automating your job, she watches you work.
-1. Silently captures your screen every 30 seconds.
-2. Analyzes code using Groq Vision.
-3. Speaks dynamic feedback (catches bugs, validates logic) and forcefully blocks distracting apps to keep you focused.
+---
 
-## The 7 Autonomous Execution Modes
+## ⚙️ The Technology Behind Her
 
-Mizune does not use manual trigger words. The Zero-Latency Intent Brain continuously analyzes user input and silently, autonomously shifts between 7 distinct execution states in real-time based on workflow requirements:
-- **Conversation:** Default interaction state.
-- **Writing:** Continuous speech-to-text dictation.
-- **Focus:** Applies Pomodoro limits, blocks distracting URLs, provides motivational oversight.
-- **Entertainment:** Automates media playback and recommendations.
-- **Research:** Autonomous web search, scraping, and content summarization.
-- **System:** Root-level PC control, project setup, and file management.
-- **Coding Coach:** Vision-based real-time IDE monitoring and bug catching.
+Mizune bypasses standard AI limitations by utilizing a custom multi-agent architecture and a Zero-Latency Intent Brain:
+- **Lightning Fast:** Uses a combination of edge-TTS and background queues to respond rapidly and fluidly.
+- **Auto-Healing:** Built-in safeguards automatically recover from API limits, corrupted databases, and expired integration tokens without user intervention.
+- **Token Efficient:** Smart caching and background summarization allow her to handle massive tasks without blowing up API usage.
 
-## The V-Tuber Pipeline
-
-Rendered as a 3D VRM character directly on your desktop.
-- **5-Vowel Lip Sync Engine:** Real-time frequency-band analysis maps audio to VRM blendshapes (`aa`, `ee`, `ih`, `oh`, `ou`).
-- **Synchronized Audio:** Text and lips only move when the audio actually plays.
-- **Dynamic Emotion Engine:** Real-time text sentiment analysis maps user input directly to the VRM's facial expressions (Happy, Angry, Sad, Blush, Surprised).
-- **Redundant TTS Pipeline:** Primary execution via Murf AI (Premium), with fallback to ElevenLabs (Turbo), and finally Browser SpeechSynthesis for zero-latency offline processing.
-- **Multi-Layer STT:** Groq Whisper for cloud-speed transcription, backed by faster-whisper for offline local processing.
-
-## Token Economy
-
-Built to run heavy enterprise tasks without burning API bills.
-1. **Vision Frame Diffing:** Hashes screenshots and compares them. If the screen hasn't changed, uses cached coordinates. (Saves ~80% on Vision tokens).
-2. **TTS Phrase Caching:** Common responses are cached locally. (Saves ~40% on TTS APIs).
-3. **Zero-Token Router:** Basic commands (weather, time, app launching) run purely on Python subprocesses using 0 tokens.
-
-## WhatsApp Super-Architecture v3.0
-
-Mizune natively integrates with your WhatsApp, turning your phone into an intelligent extension of her brain using a custom `@whiskeysockets/baileys` Node.js bridge communicating directly with a dedicated Python Core.
-
-- **Zero-Latency Importance Engine:** Analyzes incoming messages in <0.1ms using multi-layered heuristic regex and fast embedding checks. Instantly detects emergencies ("hospital", "accident") and bypasses the LLM queue to trigger a live TTS Voice Alert.
-- **Contact Tier Guard:** Granular access control (VIP, Family, Regular, Unknown). Random numbers are sandboxed; VIPs get full access to her personality and architecture insights.
-- **Continuous Memory Learner:** Automatically builds a semantic graph of relationships, group dynamics, conversational patterns (preferred hours, formality levels, emoji usage), and extracts recurring topics to make Mizune indistinguishable from a hyper-aware personal secretary.
-- **Headless & Invisible:** The Baileys WebSocket protocol completely removes the heavy Puppeteer/Chrome overhead of traditional WhatsApp bots, using 90% less RAM and running completely invisibly in the background.
-
-## Quick Start
+## 🚀 Quick Start
 
 ### Prerequisites
 - Node.js ≥ 18
@@ -94,20 +62,17 @@ pip install -r requirements.txt
 
 ### Configuration
 
-Edit `config.json` and add your API keys:
-- `gemini_api_key` (Required for Planner & Vision)
-- `groq_api_key` (Recommended for STT and Vision fallback)
+Edit `config.json` and add your API keys (like OpenRouter, Gemini, or Groq).
 
 ### Run the System
 
 ```bash
 # Terminal 1 — Start the Python Brain
-.venv\Scripts\python.exe server.py
+.venv\Scripts\python.exe main.py
 
-# Terminal 2 — Start the 3D Desktop Interface
-npm start
+# Terminal 2 — Start the React Dashboard
+npm run dev
 ```
 
-## License
-
-MIT License — Engineered by [Rushikesh Goud](https://github.com/rushikeshgoud19)
+---
+*Engineered by [Rushikesh Goud](https://github.com/rushikeshgoud19)*

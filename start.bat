@@ -4,15 +4,9 @@ echo ========================================
 echo   Starting Mizune AI Companion...
 echo ========================================
 
-:: Start Python backend in a new terminal
-start "Mizune Backend" cmd /k "cd /d %~dp0 && .venv\Scripts\python.exe server.py"
-
-:: Wait 3 seconds for backend to initialize before starting frontend
-timeout /t 3 /noq >nul
-
-:: Start Tauri frontend in a new terminal
-start "Mizune Frontend" cmd /k "cd /d %~dp0 && npx tauri dev"
+:: Start Tauri frontend compiled executable
+start "Mizune Frontend" "src-tauri\target\release\mizune-ai.exe"
 
 echo.
-echo  Both terminals launched! You can close this window.
+echo  Both systems launched! You can close this launcher window.
 timeout /t 2 /noq >nul

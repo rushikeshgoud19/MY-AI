@@ -211,7 +211,7 @@ class MemoryTreeWorker:
         # Check buffer size for this source
         try:
             cursor = memory_tree_db.db.cursor()
-            cursor.execute("SELECT id FROM chunks WHERE source_id = ? AND state = 'buffered'", (source_id,))
+            cursor.execute("SELECT id FROM episodic WHERE source = ? AND status = 'buffered'", (source_id,))
             buffered_chunks = cursor.fetchall()
             
             buffer_limit = 5 # Small limit for testing, normally ~10-20
@@ -261,11 +261,11 @@ class MemoryTreeWorker:
             content_to_summarize = []
             if level == 1:
                 placeholders = ','.join('?' * len(chunk_ids))
-                cursor.execute(f"SELECT content FROM chunks WHERE id IN ({placeholders})", chunk_ids)
+                cursor.execute(f"SELECT content FROM episodic WHERE id IN ({placeholders})", chunk_ids)
                 content_to_summarize = [row[0] for row in cursor.fetchall()]
             else:
                 placeholders = ','.join('?' * len(chunk_ids))
-                cursor.execute(f"SELECT content FROM summaries WHERE id IN ({placeholders})", chunk_ids)
+                cursor.execute(f"SELECT content FROM episodic WHERE source='summary' AND id IN ({placeholders})", chunk_ids)
                 content_to_summarize = [row[0] for row in cursor.fetchall()]
                 
             if not content_to_summarize: return False
@@ -300,10 +300,10 @@ class MemoryTreeWorker:
             # Update children state to sealed
             now = time.time()
             if level == 1:
-                cursor.execute(f"UPDATE chunks SET state = 'sealed' WHERE id IN ({placeholders})", chunk_ids)
+                cursor.execute(f"UPDATE episodic SET status = 'sealed' WHERE id IN ({placeholders})", chunk_ids)
             
             # Cascade check: are there enough L{level} summaries to make an L{level+1}?
-            cursor.execute("SELECT id FROM summaries WHERE tree_type = ? AND tree_id = ? AND level = ?", (tree_type, tree_id, level))
+            cursor.execute("SELECT id FROM episodic WHERE source = 'summary' AND session_id = ? AND status = 'sealed'", (tree_id,))
             peer_summaries = cursor.fetchall()
             
             cascade_limit = 5

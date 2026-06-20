@@ -70,8 +70,8 @@ class SubconsciousEngine:
             f"DECISION MATRIX:\\n"
             f"1. If nothing requires attention, reply exactly with [SKIP].\\n"
             f"2. If you need to perform a silent background task (like using a tool to check emails or weather), reply with [ACT] and use the tool.\\n"
-            f"3. If there is an urgent notification (meeting in 5 mins), reply with [ESCALATE] and use notify_master.\\n\\n"
-            f"If you ACT or ESCALATE, you MUST fulfill the action immediately. If unsure, [SKIP]."
+            f"3. If there is highly important information, a finished task, or an urgent notification (e.g. meeting in 5 mins), reply with [ESCALATE] and speak to Master directly! Only do this if it's actually important to their work or a very engaging conversation point.\\n\\n"
+            f"If you ACT or ESCALATE, you MUST fulfill the action immediately. If unsure or if it's low priority, [SKIP]."
         )
         
         try:

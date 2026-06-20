@@ -157,48 +157,16 @@ def _focus_whatsapp_window():
 
 
 def _execute_whatsapp_now(contact: str, message: Optional[str] = None):
-    """Execute WhatsApp automation directly (standalone, for scheduled tasks)."""
+    """Execute WhatsApp automation using the headless Node.js bridge."""
     log = logging.getLogger("SystemAgent")
-    import time as _time
-
     log.info(f"[SCHEDULER] Starting WhatsApp delivery to {contact}")
-
-    webbrowser.open("whatsapp://")
-    _time.sleep(7)
-
-    # Try to focus WhatsApp with multiple retries
-    focused = False
-    for attempt in range(3):
-        focused = _focus_whatsapp_window()
-        if focused:
-            break
-        log.info(f"[SCHEDULER] Focus attempt {attempt+1} failed, retrying...")
-        _time.sleep(2)
-
-    if not focused:
-        log.info("[SCHEDULER] Window focus failed, sending keystrokes blindly")
-        _time.sleep(2)
-
-    # Dismiss any dialog/popup (WhatsApp shows "Welcome" / "What's new" sometimes)
-    pyautogui.press("escape")
-    _time.sleep(0.5)
-
-    # Focus search bar
-    for _ in range(3):
-        pyautogui.hotkey("ctrl", "f")
-        _time.sleep(1.5)
-
-    pyautogui.write(contact, interval=0.1)
-    _time.sleep(1.5)
-    pyautogui.press("enter")
-    _time.sleep(1.5)
-
-    if message:
-        pyautogui.write(message, interval=0.05)
-        _time.sleep(0.3)
-        pyautogui.press("enter")
-
-    log.info(f"[SCHEDULER] Delivered WhatsApp message to {contact}")
+    
+    try:
+        from server.commands import whatsapp_automation
+        result = whatsapp_automation(contact, message)
+        log.info(f"[SCHEDULER] Delivered WhatsApp message to {contact}. Result: {result}")
+    except Exception as e:
+        log.info(f"[SCHEDULER] Failed to deliver WhatsApp message via Baileys: {e}")
 
 
 def _resume_missed_tasks():
@@ -387,7 +355,7 @@ class SystemAgent(BaseAgent):
                 subprocess.Popen(f"start {exe}", shell=True)
             return f"Opening {target} for you right away!"
 
-        return "I can help you with that, but I'm not sure exactly how. Could you guide me, Master?"
+        return None
 
     async def _try_schedule_whatsapp(self, text: str, delay: int) -> Optional[str]:
         """Try to match a WhatsApp pattern and schedule it instead of executing immediately."""
@@ -408,39 +376,5 @@ class SystemAgent(BaseAgent):
         return None
 
     async def _whatsapp_automation(self, contact: str, message: str = None) -> str:
-        """Open WhatsApp desktop and search a contact, optionally sending a message."""
-        self.log(f"WhatsApp automation: searching '{contact}'")
-
-        webbrowser.open("whatsapp://")
-
-        self.log("Waiting for WhatsApp to open...")
-        time.sleep(7)
-
-        # Focus WhatsApp window (reuse standalone function)
-        focused = _focus_whatsapp_window()
-        if not focused:
-            self.log("Focus failed, trying Alt+Tab")
-            pyautogui.hotkey("alt", "tab")
-            time.sleep(0.5)
-
-        # Dismiss any popup/dialog
-        pyautogui.press("escape")
-        time.sleep(0.5)
-
-        # Focus search bar
-        for _ in range(3):
-            pyautogui.hotkey("ctrl", "f")
-            time.sleep(1.5)
-
-        pyautogui.write(contact, interval=0.1)
-        time.sleep(1.5)
-        pyautogui.press("enter")
-        time.sleep(1.5)
-
-        if message:
-            pyautogui.write(message, interval=0.05)
-            time.sleep(0.3)
-            pyautogui.press("enter")
-            return f"Message sent to {contact} on WhatsApp, Master!"
-
-        return f"Opened WhatsApp chat with {contact}, Master!"
+        from server.commands import whatsapp_automation
+        return whatsapp_automation(contact, message)
