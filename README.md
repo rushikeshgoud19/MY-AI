@@ -42,9 +42,10 @@ Mizune bypasses standard AI limitations by utilizing a custom multi-agent archit
 ## 🚀 Quick Start
 
 ### Prerequisites
-- Node.js ≥ 18
-- Python ≥ 3.10
-- Git
+- **Node.js** (≥ 18)
+- **Python** (≥ 3.10)
+- **Rust / Cargo** (Required for Tauri desktop app)
+- **Git**
 
 ### Installation
 
@@ -52,26 +53,44 @@ Mizune bypasses standard AI limitations by utilizing a custom multi-agent archit
 git clone https://github.com/rushikeshgoud19/MY-AI.git
 cd MY-AI
 
+# Install Node dependencies
 npm install
 
+# Setup Python Backend Environment
 python -m venv .venv
 .venv\Scripts\activate  # Windows
 
+# Install Python dependencies
 pip install -r requirements.txt
 ```
 
 ### Configuration
 
-Edit `config.json` and add your API keys (like OpenRouter, Gemini, or Groq).
+You need to configure two files for the API keys:
 
-### Run the System
+1. **Config JSON:** Copy `config.example.json` to `config.json` and fill in your keys (Gemini, OpenRouter, Groq, etc.).
+   ```bash
+   cp config.example.json config.json
+   ```
+2. **Environment Variables:** Copy `.env.example` to `.env` and add your [TraceRoot API Key](https://app.traceroot.ai/) for full observability.
+   ```bash
+   cp .env.example .env
+   ```
+
+### Running the System
+
+If you are on Windows, you can simply double-click the **`start.bat`** or **`Launch Mizune.vbs`** script to automatically launch both the backend and frontend simultaneously.
+
+**For manual Developer Mode:**
+Open two terminals in the `MY-AI` directory:
 
 ```bash
-# Terminal 1 — Start the Python Brain
-.venv\Scripts\python.exe main.py
+# Terminal 1 — Start the Python Brain (Backend)
+.venv\Scripts\activate
+python server.py
 
-# Terminal 2 — Start the React Dashboard
-npm run dev
+# Terminal 2 — Start the Desktop App (Tauri Frontend)
+npm run tauri dev
 ```
 
 ---

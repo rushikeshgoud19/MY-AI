@@ -157,10 +157,7 @@ class MemoryTreeWorker:
         
         try:
             cursor = memory_tree_db.db.cursor()
-            cursor.execute(
-                "INSERT INTO scores (chunk_id, relevance_score, importance_score, calculated_at) VALUES (?, ?, ?, ?)",
-                (chunk_id, score, score, now)
-            )
+            # (Skipped storing the heuristic score in the DB for now)
             
             if score >= admit_threshold:
                 memory_tree_db.update_chunk_state(chunk_id, "admitted")

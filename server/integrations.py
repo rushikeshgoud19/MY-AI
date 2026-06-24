@@ -22,12 +22,20 @@ class IntegrationsManager:
         self.token_dir = token_dir
         if not os.path.exists(self.token_dir):
             os.makedirs(self.token_dir)
-            
+
+        import json
+        config_data = {}
+        try:
+            with open("config.json", "r") as f:
+                config_data = json.load(f)
+        except Exception:
+            pass
+
         # These should normally be loaded from env vars or config
         self.oauth_configs = {
             "google": {
-                "client_id": os.environ.get("GOOGLE_CLIENT_ID", ""),
-                "client_secret": os.environ.get("GOOGLE_CLIENT_SECRET", ""),
+                "client_id": os.environ.get("GOOGLE_CLIENT_ID", "") or config_data.get("google_client_id", ""),
+                "client_secret": os.environ.get("GOOGLE_CLIENT_SECRET", "") or config_data.get("google_client_secret", ""),
                 "auth_url": "https://accounts.google.com/o/oauth2/v2/auth",
                 "token_url": "https://oauth2.googleapis.com/token",
                 "scopes": [

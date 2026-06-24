@@ -75,6 +75,8 @@ class ManagerAgent(BaseAgent):
             if hasattr(w, 'stop'):
                 w.stop()
 
+    from traceroot import observe
+    @observe(name="ManagerAgent.execute", type="agent")
     async def execute(self, text: str, context: Optional[Dict] = None) -> Any:
         """
         The Brain. Takes ANY user input and routes it to the right handler.

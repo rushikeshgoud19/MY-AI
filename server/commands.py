@@ -4,9 +4,10 @@ System commands and app launching logic for Mizune AI.
 import os
 import subprocess
 import webbrowser
-import shlex
 import time
 import logging
+import re
+from urllib.parse import urlparse
 import pyautogui
 
 __all__ = ["launch_app", "close_app", "whatsapp_automation", "take_note", "search_memory", "get_system_info", "COMMON_APPS"]
@@ -15,6 +16,25 @@ __all__ = ["launch_app", "close_app", "whatsapp_automation", "take_note", "searc
 from .config import log_info
 
 logger = logging.getLogger("mizune.commands")
+_SAFE_APP_NAME = re.compile(r"^[\w .+\-]+$")
+
+
+def _is_url_or_protocol(value: str) -> bool:
+    parsed = urlparse(value)
+    return parsed.scheme in {"http", "https"} or value.startswith("ms-") or "://" in value or value.endswith(":")
+
+
+def _is_safe_app_name(value: str) -> bool:
+    return bool(value and _SAFE_APP_NAME.fullmatch(value))
+
+
+def _is_safe_url(value: str) -> bool:
+    parsed = urlparse(value)
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc) and not any(c.isspace() for c in value)
+
+
+def _start_app(exe: str):
+    subprocess.Popen(["cmd", "/c", "start", "", exe])
 
 # Expanded Dictionary of Common PC Apps
 COMMON_APPS = {
@@ -158,13 +178,18 @@ def launch_app(target: str):
     exe = COMMON_APPS.get(target, target)
 
     log_info(f"[ACTION] Launching: {exe}")
-    if exe.startswith("http") or exe.startswith("ms-") or "://" in exe:
+    if _is_url_or_protocol(exe):
+        if exe.startswith("http") and not _is_safe_url(exe):
+            log_info(f"[ACTION] Blocked unsafe URL target: {exe}")
+            return
         # Use built-in webbrowser to explicitly request a new tab instead of a new window
         webbrowser.open_new_tab(exe)
     else:
+        if not _is_safe_app_name(exe):
+            log_info(f"[ACTION] Blocked unsafe launch target: {exe}")
+            return
         try:
-            safe_exe = shlex.quote(exe)
-            subprocess.Popen(f"start {safe_exe}", shell=True)
+            _start_app(exe)
             
             # Windows 11 Notepad resumes previous tabs by default. 
             # Force a fresh tab so we don't overwrite user's work!
@@ -247,16 +272,19 @@ def whatsapp_automation(contact: str, message: str = None) -> str:
     return error_msg
 def close_app(target: str):
     exe = COMMON_APPS.get(target, target)
-    if exe.startswith("http") or exe.startswith("ms-"):
+    if _is_url_or_protocol(exe):
         return 
 
     if not exe.endswith(".exe"):
         exe += ".exe"
 
     log_info(f"[ACTION] Closing: {exe}")
+    if not _is_safe_app_name(exe):
+        log_info(f"[ACTION] Blocked unsafe close target: {exe}")
+        return
+
     try:
-        safe_exe = shlex.quote(exe)
-        subprocess.Popen(f"taskkill /IM {safe_exe} /F", shell=True)
+        subprocess.Popen(["taskkill", "/IM", exe, "/F"])
     except Exception as e:
         log_info(f"[ACTION] Failed to close '{exe}': {e}")
 

@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { register } from '@tauri-apps/plugin-global-shortcut';
 
-import { SkillsPanel } from './components/SkillsPanel';
-import { WhatsAppPanel } from './components/WhatsAppPanel';
+import { SlimeAvatar } from './components/SlimeAvatar';
 import { SystemMonitor } from './components/SystemMonitor';
 
 interface MizuneState {
@@ -27,28 +27,8 @@ interface Message {
   seen?: boolean;
 }
 
-interface WhatsAppMessage {
-  id: string;
-  sender: string;
-  text: string;
-  urgency: string;
-  timestamp: number;
-}
-
-interface EmailMessage {
-  id: string;
-  sender: string;
-  subject: string;
-  snippet: string;
-  importance: number;
-}
-
 export const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'chat' | 'skills' | 'whatsapp' | 'emails' | 'system' | 'kernel' | 'settings'>('chat');
   const [messages, setMessages] = useState<Message[]>([]);
-  const [whatsappMessages, setWhatsappMessages] = useState<WhatsAppMessage[]>([]);
-  const [emails, setEmails] = useState<EmailMessage[]>([]);
-  const [kernelLogs, setKernelLogs] = useState<string[]>([]);
   const [input, setInput] = useState('');
   const [mizuneState, setMizuneState] = useState<MizuneState>({
     valence: 0,
@@ -62,14 +42,28 @@ export const App: React.FC = () => {
     provider: 'local',
     tokensToday: 0
   });
+  const [approvalRequest, setApprovalRequest] = useState<string | null>(null);
   const [isConnected, setIsConnected] = useState(false);
+  const [showChatLog, setShowChatLog] = useState(false);
+  const [bubbleVisible, setBubbleVisible] = useState(false);
   const wsRef = React.useRef<WebSocket | null>(null);
+  const messagesEndRef = React.useRef<HTMLDivElement>(null);
 
-  // WebSocket connection
+      // WebSocket connection
   useEffect(() => {
     const connect = () => {
-      // Connect to the Python backend websocket port 8001
-      const ws = new WebSocket('ws://localhost:8001/ws');
+      // @ts-ignore
+      const isTauri = !!window.__TAURI__ || !!window.__TAURI_IPC__;
+      let wsHost = '127.0.0.1';
+      
+      if (!isTauri && window.location.hostname === 'localhost') {
+        // Fallback for Android testing on same network
+        wsHost = '192.168.0.2';
+      } else if (!isTauri && window.location.hostname !== 'localhost') {
+        wsHost = window.location.hostname;
+      }
+
+      const ws = new WebSocket(`ws://${wsHost}:8001/ws`);
       
       ws.onopen = () => {
         setIsConnected(true);
@@ -97,6 +91,39 @@ export const App: React.FC = () => {
     return () => wsRef.current?.close();
   }, []);
 
+  // F2 Global Hotkey for Voice
+  useEffect(() => {
+    const setupHotkey = async () => {
+      // @ts-ignore
+      if (window.__TAURI__) {
+        try {
+          await register('F2', () => {
+            console.log('F2 pressed - triggering voice listen');
+            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+              wsRef.current.send(JSON.stringify({ type: 'trigger_listen' }));
+            }
+          });
+        } catch (e) {
+          console.error("Failed to register F2 hotkey", e);
+        }
+      } else {
+        // Fallback for browser
+        const handleKeyDown = (e: KeyboardEvent) => {
+          if (e.key === 'F2') {
+            e.preventDefault();
+            console.log('F2 pressed - triggering voice listen');
+            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+              wsRef.current.send(JSON.stringify({ type: 'trigger_listen' }));
+            }
+          }
+        };
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+      }
+    };
+    setupHotkey();
+  }, []);
+
   const handleServerMessage = useCallback((data: any) => {
     switch (data.type) {
       case 'state_update':
@@ -106,7 +133,7 @@ export const App: React.FC = () => {
         setMessages(prev => [...prev, data.payload]);
         break;
       case 'speak':
-        const assistantTokens = Math.floor(data.text.length / 3); // rough estimate
+        const assistantTokens = Math.floor(data.text.length / 3);
         setMessages(prev => [...prev, {
           id: Date.now().toString(),
           role: 'assistant',
@@ -123,84 +150,38 @@ export const App: React.FC = () => {
           setMizuneState(prev => ({ ...prev, isThinking: false }));
         }
         break;
-      case 'gmail_alert':
-        setEmails(prev => [{
-          id: Date.now().toString(),
-          sender: data.sender,
-          subject: data.subject,
-          snippet: data.snippet,
-          importance: data.importance
-        }, ...prev]);
-        break;
       case 'thinking':
         setMizuneState(prev => ({ ...prev, isThinking: data.payload }));
         break;
-      case 'kernel_log':
-        setKernelLogs(prev => {
-          const updated = [...prev, data.payload];
-          // Keep RAM low by capping at 100 lines
-          if (updated.length > 100) return updated.slice(updated.length - 100);
-          return updated;
-        });
+      case 'approval_required':
+        setApprovalRequest(data.command);
         break;
-      case 'task_update':
-        setMizuneState(prev => ({ ...prev, isThinking: true }));
-        setKernelLogs(prev => [...prev, `[TASK] ${data.data}`]);
-        break;
-      case 'task_complete':
-        setMizuneState(prev => ({ ...prev, isThinking: false }));
-        setKernelLogs(prev => [...prev, `[TASK] ${data.data}`]);
-        // Also send a chat notification
-        setMessages(prev => [...prev, {
-          id: Date.now().toString(),
-          role: 'assistant',
-          content: `*Background task finished:* ${data.data}`,
-          timestamp: Date.now(),
-          platform: 'dashboard'
-        }]);
-        break;
-      case 'provider_switch':
-        setMizuneState(prev => ({ ...prev, provider: data.payload }));
-        break;
-      case 'whatsapp_alert':
-        setWhatsappMessages(prev => [{
-          id: Date.now().toString(),
-          sender: data.sender,
-          text: data.message,
-          urgency: data.urgency,
-          timestamp: Date.now()
-        }, ...prev]);
-        break;
-      default:
-        console.log('[Dashboard] Unhandled message type:', data.type);
     }
   }, []);
 
-  const sendMessage = useCallback((text?: string) => {
-    const content = text || input;
-    if (!content.trim() || !wsRef.current) return;
+  const sendMessage = useCallback((overrideText?: string) => {
+    const content = overrideText || input.trim();
+    if (!content || mizuneState.isThinking || !isConnected) return;
     
-    const msg: Message = {
-      id: Date.now().toString(),
-      role: 'user',
-      content: content,
-      timestamp: Date.now(),
-      platform: 'dashboard'
-    };
-    
-    setMessages(prev => [...prev, msg]);
-    setInput('');
-    
-    const userTokens = Math.floor(content.length / 3);
-    
-    wsRef.current.send(JSON.stringify({
+    wsRef.current?.send(JSON.stringify({
       type: 'chat',
       text: content,
       payload: { message: content, device: 'dashboard' }
     }));
     
+    const userTokens = Math.floor(content.length / 3);
+    
+    setMessages(prev => [...prev, {
+      id: Date.now().toString(),
+      role: 'user',
+      content: content,
+      timestamp: Date.now(),
+      platform: 'dashboard'
+    }]);
+    
+    if (!overrideText) setInput('');
     setMizuneState(prev => ({ ...prev, isThinking: true, tokensToday: prev.tokensToday + userTokens }));
-  }, [input]);
+  }, [input, mizuneState.isThinking, isConnected]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -209,276 +190,326 @@ export const App: React.FC = () => {
     }
   };
 
+  const handleQuickAction = (action: string) => {
+    switch (action) {
+      case 'briefing':
+        sendMessage("Run my Morning Briefing. Check my emails and calendar.");
+        break;
+      case 'deep_work':
+        sendMessage("Activate Deep Work Mode. Silence notifications and set a timer for 60 minutes.");
+        break;
+      case 'research':
+        sendMessage("I need to do some Quick Research. Ask me what to search for.");
+        break;
+      case 'whatsapp':
+        sendMessage("Who should we send a WhatsApp Blast to?");
+        break;
+      case 'sleep':
+        sendMessage("Go to Sleep mode. Do not process background tasks until I wake you up.");
+        break;
+    }
+  };
+
+  const handleApprovalResponse = (approved: boolean) => {
+    if (approved) {
+      sendMessage(`Yes, I approve the execution of: ${approvalRequest}`);
+    } else {
+      sendMessage(`No, cancel the execution of: ${approvalRequest}`);
+    }
+    setApprovalRequest(null);
+  };
+
+  const lastAssistantMessage = [...messages].reverse().find(m => m.role === 'assistant');
+
+  // Auto-hide the chat bubble after 8 seconds
+  useEffect(() => {
+    if (lastAssistantMessage) {
+      setBubbleVisible(true);
+      const timer = setTimeout(() => setBubbleVisible(false), 8000);
+      return () => clearTimeout(timer);
+    }
+  }, [lastAssistantMessage]);
+
+  // Auto-scroll chat log
+  useEffect(() => {
+    if (showChatLog) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages, showChatLog]);
+
   return (
     <div className="mizune-dashboard">
       {/* ─── HEADER ─── */}
-      <header className="dashboard-header">
+      <header className="dashboard-header glass-panel">
         <div className="brand" data-tauri-drag-region>
           <div className="brand-dot" data-tauri-drag-region />
-          <h1 data-tauri-drag-region>Mizune OS</h1>
-          <span className="version" data-tauri-drag-region>v6.0</span>
+          <h1 className="brand-text" data-tauri-drag-region>MIZUNE OS</h1>
         </div>
         
-        <div className="status-bar" data-tauri-drag-region>
-          <div className={`connection-pill ${isConnected ? 'online' : 'offline'}`}>
-            <span className="pulse" />
-            {isConnected ? 'Connected' : 'Reconnecting...'}
-          </div>
-          
+        <div className="status-bar" data-tauri-drag-region style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
           <div className="provider-pill">
-            <span className="provider-icon">🧠</span>
-            {mizuneState.provider}
+            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>CORE: </span>
+            <span style={{ fontWeight: 600 }}>{mizuneState.provider.toUpperCase()}</span>
           </div>
           
-          <div className="token-pill">
-            <span className="token-icon">⚡</span>
-            {mizuneState.tokensToday < 1000 ? mizuneState.tokensToday : (mizuneState.tokensToday / 1000).toFixed(1) + 'k'} tokens
+          <div style={{ color: 'var(--text-muted)' }}>|</div>
+          
+          <div className={`connection-pill ${isConnected ? 'online' : 'offline'}`} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: isConnected ? 'var(--accent-success, #10b981)' : 'var(--accent-danger, #ef4444)' }} />
+            {isConnected ? 'ONLINE' : 'OFFLINE'}
           </div>
           
-          <div className="window-controls">
-            <button onClick={() => getCurrentWindow().minimize()}>─</button>
-            <button onClick={() => getCurrentWindow().toggleMaximize()}>□</button>
-            <button onClick={() => getCurrentWindow().close()} className="close-btn">✕</button>
+          <div className="window-controls" style={{ marginLeft: '16px', display: 'flex', gap: '8px' }}>
+            <button onClick={() => getCurrentWindow().minimize()} style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer' }}>─</button>
+            <button onClick={() => getCurrentWindow().toggleMaximize()} style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer' }}>□</button>
+            <button onClick={() => getCurrentWindow().close()} style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer' }}>✕</button>
           </div>
         </div>
       </header>
 
-      <div className="dashboard-body">
-        {/* ─── LEFT SIDEBAR ─── */}
-        <aside className="sidebar">
-          {/* Slime Avatar */}
-          <div className="avatar-container">
-            <div className={`classic-blob-container ${mizuneState.isTalking || mizuneState.isThinking ? 'speaking' : ''}`}>
-              <div id="mizune-blob" className={mizuneState.isTalking || mizuneState.isThinking ? 'speaking' : ''}>
-                <div className="blob-eye left" />
-                <div className="blob-eye right" />
+      {/* ─── MAIN CONTENT: 3-COLUMN MISSION CONTROL ─── */}
+      <main className="main-content">
+        
+        {/* LEFT COLUMN: Metrics & State */}
+        <aside className="sidebar-left glass-panel" style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
+          <div>
+            <h2 className="panel-title" style={{ marginBottom: '16px', fontSize: '1rem', color: 'var(--text-muted)' }}>BIOMETRICS</h2>
+            
+            <div className="metric" style={{ marginBottom: '16px' }}>
+              <div className="metric-header" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '0.9rem' }}>
+                <span>Trust Level</span>
+                <span>{Math.round(mizuneState.trust * 100)}%</span>
               </div>
-              <div className="blob-glow" />
+              <div className="metric-bar-bg" style={{ height: '6px', background: 'rgba(255,255,255,0.1)', borderRadius: '10px' }}>
+                <div className="metric-bar-fill" style={{ width: `${mizuneState.trust * 100}%`, height: '100%', background: 'var(--accent-gradient)', borderRadius: '10px' }} />
+              </div>
             </div>
             
-            <div className="emotion-badge" style={{
-              background: getEmotionColor(mizuneState.valence, mizuneState.arousal)
-            }}>
-              {getEmotionLabel(mizuneState.valence, mizuneState.arousal)}
+            <div className="metric" style={{ marginBottom: '16px' }}>
+              <div className="metric-header" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '0.9rem' }}>
+                <span>Valence (Mood)</span>
+                <span>{mizuneState.valence > 0 ? 'Happy' : mizuneState.valence < 0 ? 'Sad' : 'Neutral'}</span>
+              </div>
+              <div className="metric-bar-bg" style={{ height: '6px', background: 'rgba(255,255,255,0.1)', borderRadius: '10px' }}>
+                <div className="metric-bar-fill" style={{ width: `${((mizuneState.valence + 1) / 2) * 100}%`, height: '100%', background: getEmotionColor(mizuneState.valence, mizuneState.arousal), borderRadius: '10px' }} />
+              </div>
             </div>
             
-            <div className="activity-indicator">
-              {mizuneState.isThinking ? '💭 Thinking...' :
-               mizuneState.isListening ? '👂 Listening...' :
-               mizuneState.isTalking ? '💬 Speaking...' :
-               `👀 Watching ${mizuneState.currentApp}`}
+            <div className="metric" style={{ marginBottom: '16px' }}>
+              <div className="metric-header" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '0.9rem' }}>
+                <span>Arousal (Energy)</span>
+                <span>{Math.round(mizuneState.arousal * 100)}%</span>
+              </div>
+              <div className="metric-bar-bg" style={{ height: '6px', background: 'rgba(255,255,255,0.1)', borderRadius: '10px' }}>
+                <div className="metric-bar-fill" style={{ width: `${mizuneState.arousal * 100}%`, height: '100%', background: '#f59e0b', borderRadius: '10px' }} />
+              </div>
             </div>
           </div>
+          
+          <div style={{ flex: 1 }}>
+            <h2 className="panel-title" style={{ marginBottom: '16px', fontSize: '1rem', color: 'var(--text-muted)' }}>SYSTEM</h2>
+            <SystemMonitor />
+          </div>
+        </aside>
 
-          {/* Navigation */}
-          <nav className="nav-tabs">
-            <button 
-              className={`nav-tab ${activeTab === 'chat' ? 'active' : ''}`}
-              onClick={() => setActiveTab('chat')}
-            >
-              <span className="tab-icon">💬</span>
-              Chat
-              {messages.filter(m => m.role === 'user' && !m.seen).length > 0 && (
-                <span className="badge">{messages.filter(m => m.role === 'user' && !m.seen).length}</span>
-              )}
-            </button>
+        {/* CENTER STAGE: Huge Avatar & Chat */}
+        <section className="center-stage" style={{ position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+          
+          <div className="avatar-container" style={{ transform: 'translateY(-40px)' }}>
+            <SlimeAvatar state={mizuneState} size={300} />
             
-            <button 
-              className={`nav-tab ${activeTab === 'skills' ? 'active' : ''}`}
-              onClick={() => setActiveTab('skills')}
-            >
-              <span className="tab-icon">⚡</span>
-              Skills & Tools
-            </button>
-            
-            <button 
-              className={`nav-tab ${activeTab === 'whatsapp' ? 'active' : ''}`}
-              onClick={() => setActiveTab('whatsapp')}
-            >
-              <span className="tab-icon">📱</span>
-              WhatsApp
-              {whatsappMessages.length > 0 && (
-                <span className="badge new">{whatsappMessages.length}</span>
-              )}
-            </button>
-            
-            <button 
-              className={`nav-tab ${activeTab === 'emails' ? 'active' : ''}`}
-              onClick={() => setActiveTab('emails')}
-            >
-              <span className="tab-icon">📧</span>
-              Emails
-              {emails.length > 0 && (
-                <span className="badge new">{emails.length}</span>
-              )}
-            </button>
-            
-            <button 
-              className={`nav-tab ${activeTab === 'kernel' ? 'active' : ''}`}
-              onClick={() => setActiveTab('kernel')}
-            >
-              <span className="tab-icon">🖥️</span>
-              Kernel Stream
-            </button>
-
-            <button 
-              className={`nav-tab ${activeTab === 'settings' ? 'active' : ''}`}
-              onClick={() => setActiveTab('settings')}
-            >
-              <span className="tab-icon">⚙️</span>
-              Settings
-            </button>
-          </nav>
-
-          {/* Quick Stats */}
-          <div className="quick-stats">
-            <div className="stat-row">
-              <span>Trust</span>
-              <div className="stat-bar">
-                <div className="stat-fill" style={{width: `${mizuneState.trust * 100}%`}} />
-              </div>
+            <div style={{ 
+              position: 'absolute', 
+              bottom: '-40px', 
+              background: 'rgba(15, 23, 42, 0.6)', 
+              backdropFilter: 'blur(10px)', 
+              padding: '8px 24px', 
+              borderRadius: '20px', 
+              border: '1px solid rgba(255,255,255,0.1)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '12px'
+            }}>
+              <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: mizuneState.isThinking ? '#f59e0b' : '#10b981', boxShadow: `0 0 10px ${mizuneState.isThinking ? '#f59e0b' : '#10b981'}` }} />
+              <span style={{ fontSize: '0.9rem', letterSpacing: '1px' }}>
+                {mizuneState.isThinking ? 'PROCESSING...' : mizuneState.isListening ? 'LISTENING...' : 'IDLE'}
+              </span>
             </div>
-            <div className="stat-row">
-              <span>Mood</span>
-              <div className="stat-bar">
-                <div className="stat-fill mood" style={{
-                  width: `${((mizuneState.valence + 1) / 2) * 100}%`,
-                  background: getEmotionColor(mizuneState.valence, 0)
-                }} />
+          </div>
+          
+          {/* Chat Overlay floating at the bottom */}
+          <div className="chat-overlay" style={{ position: 'absolute', bottom: '20px', width: '100%', maxWidth: '700px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            
+            {lastAssistantMessage && !mizuneState.isThinking && bubbleVisible && (
+              <div className="chat-bubble ai glass-panel" style={{ alignSelf: 'center', padding: '16px 24px', borderRadius: '24px', fontSize: '1.1rem', textAlign: 'center', background: 'rgba(30, 41, 59, 0.8)', border: '1px solid rgba(139, 92, 246, 0.3)', position: 'relative' }}>
+                <button 
+                  onClick={() => setBubbleVisible(false)} 
+                  style={{ position: 'absolute', top: '4px', right: '12px', background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '0.8rem' }}
+                >
+                  ✕
+                </button>
+                {lastAssistantMessage.content}
               </div>
+            )}
+            
+            {mizuneState.isThinking && (
+              <div className="chat-bubble ai glass-panel" style={{ alignSelf: 'center', padding: '16px 24px', borderRadius: '24px' }}>
+                <span style={{ opacity: 0.7 }}>Thinking...</span>
+              </div>
+            )}
+            
+            <div className="input-area glass-panel" style={{ display: 'flex', alignItems: 'center', padding: '8px 16px', borderRadius: '30px', background: 'rgba(15, 23, 42, 0.7)', width: '100%', gap: '8px' }}>
+              <button
+                style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '1.2rem', padding: '4px' }}
+                onClick={() => setShowChatLog(!showChatLog)}
+                title="Toggle Chat Log"
+              >
+                📜
+              </button>
+              <input
+                type="text"
+                className="chat-input"
+                style={{ flex: 1, background: 'transparent', border: 'none', color: 'white', fontSize: '1rem', outline: 'none', padding: '8px' }}
+                value={input}
+                onChange={e => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="Command Mizune... (or press F2 to speak)"
+              />
+              <button 
+                className="btn-send"
+                style={{ background: 'var(--accent-gradient)', border: 'none', width: '40px', height: '40px', borderRadius: '50%', color: 'white', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                onClick={() => sendMessage()}
+                disabled={!input.trim() || mizuneState.isThinking}
+              >
+                ➤
+              </button>
+            </div>
+          </div>
+          
+        </section>
+
+        {/* RIGHT COLUMN: Action Center */}
+        <aside className="sidebar-right glass-panel" style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
+          <div>
+            <h2 className="panel-title" style={{ marginBottom: '16px', fontSize: '1rem', color: 'var(--text-muted)' }}>QUICK ACTIONS</h2>
+            
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <button className="action-btn" onClick={() => handleQuickAction('briefing')}>
+                <span style={{ fontSize: '1.2rem' }}>🌅</span>
+                <div style={{ textAlign: 'left' }}>
+                  <div style={{ fontWeight: 600 }}>Morning Briefing</div>
+                  <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Read Emails & Calendar</div>
+                </div>
+              </button>
+              
+              <button className="action-btn" onClick={() => handleQuickAction('deep_work')}>
+                <span style={{ fontSize: '1.2rem' }}>🧠</span>
+                <div style={{ textAlign: 'left' }}>
+                  <div style={{ fontWeight: 600 }}>Deep Work Mode</div>
+                  <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Silence alerts, set timer</div>
+                </div>
+              </button>
+              
+              <button className="action-btn" onClick={() => handleQuickAction('research')}>
+                <span style={{ fontSize: '1.2rem' }}>🔍</span>
+                <div style={{ textAlign: 'left' }}>
+                  <div style={{ fontWeight: 600 }}>Quick Research</div>
+                  <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Agent-Reach deep search</div>
+                </div>
+              </button>
+              
+              <button className="action-btn" onClick={() => handleQuickAction('whatsapp')}>
+                <span style={{ fontSize: '1.2rem' }}>💬</span>
+                <div style={{ textAlign: 'left' }}>
+                  <div style={{ fontWeight: 600 }}>WhatsApp Blast</div>
+                  <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Draft & send messages</div>
+                </div>
+              </button>
+              
+              <button className="action-btn" onClick={() => handleQuickAction('sleep')}>
+                <span style={{ fontSize: '1.2rem' }}>💤</span>
+                <div style={{ textAlign: 'left' }}>
+                  <div style={{ fontWeight: 600 }}>Sleep / Wake</div>
+                  <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Toggle background listening</div>
+                </div>
+              </button>
+            </div>
+          </div>
+          
+          <div style={{ flex: 1, background: 'rgba(0,0,0,0.2)', borderRadius: '16px', padding: '16px' }}>
+            <h2 className="panel-title" style={{ marginBottom: '12px', fontSize: '0.9rem', color: 'var(--text-muted)' }}>RECENT ALERTS</h2>
+            <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', fontStyle: 'italic', textAlign: 'center', marginTop: '40px' }}>
+              No active alerts.
             </div>
           </div>
         </aside>
 
-        {/* ─── MAIN CONTENT ─── */}
-        <main className="main-content">
-          {activeTab === 'chat' && (
-            <div className="chat-panel">
-              <div className="messages-area">
-                {messages.map(msg => (
-                  <div key={msg.id} className={`message ${msg.role}`}>
-                    <div className="message-bubble">
-                      <p>{msg.content}</p>
-                      <span className="message-meta">
-                        {new Date(msg.timestamp).toLocaleTimeString()} · {msg.platform}
-                      </span>
-                    </div>
-                  </div>
-                ))}
-                
-                {mizuneState.isThinking && (
-                  <div className="message assistant thinking">
-                    <div className="message-bubble">
-                      <div className="typing-dots">
-                        <span /><span /><span />
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-              
-              <div className="input-area">
-                <textarea
-                  value={input}
-                  onChange={e => setInput(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  placeholder="Message Mizune..."
-                  rows={1}
-                />
-                <button 
-                  className="send-btn"
-                  onClick={() => sendMessage()}
-                  disabled={!input.trim() || mizuneState.isThinking}
-                >
-                  ➤
-                </button>
-              </div>
-            </div>
-          )}
+      </main>
 
-          {activeTab === 'skills' && <SkillsPanel />}
-          {activeTab === 'whatsapp' && <WhatsAppPanel messages={whatsappMessages} />}
-          {activeTab === 'emails' && (
-            <div className="emails-panel" style={{padding: '24px', height: '100%', overflowY: 'auto'}}>
-              <div className="settings-card" style={{minHeight: '100%', display: 'flex', flexDirection: 'column'}}>
-                <h3>Important Emails</h3>
-                <div style={{flex: 1, display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '16px'}}>
-                  {emails.length === 0 ? (
-                    <div style={{color: '#888', fontStyle: 'italic', textAlign: 'center', marginTop: '40px'}}>
-                      No new important emails. (Make sure you connect Gmail in Settings)
-                    </div>
-                  ) : (
-                    emails.map(email => (
-                      <div key={email.id} className="email-card" style={{
-                        background: 'var(--bg-secondary)', 
-                        padding: '16px', 
-                        borderRadius: '8px',
-                        borderLeft: email.importance >= 8 ? '4px solid #ef4444' : '4px solid #3b82f6'
-                      }}>
-                        <div style={{display: 'flex', justifyContent: 'space-between', marginBottom: '8px'}}>
-                          <span style={{fontWeight: 'bold', fontSize: '14px', color: 'var(--text-primary)'}}>{email.sender}</span>
-                          <span style={{
-                            background: email.importance >= 8 ? 'rgba(239, 68, 68, 0.2)' : 'rgba(59, 130, 246, 0.2)',
-                            color: email.importance >= 8 ? '#fca5a5' : '#93c5fd',
-                            padding: '2px 8px', borderRadius: '12px', fontSize: '12px'
-                          }}>
-                            Importance: {email.importance}/10
-                          </span>
-                        </div>
-                        <div style={{fontWeight: 'bold', marginBottom: '6px', color: 'var(--text-primary)'}}>{email.subject}</div>
-                        <div style={{color: 'var(--text-muted)', fontSize: '13px', lineHeight: '1.4'}}>{email.snippet}</div>
-                      </div>
-                    ))
-                  )}
+      {/* ─── APPROVAL MODAL ─── */}
+      {approvalRequest && (
+        <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', background: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}>
+          <div className="glass-panel" style={{ padding: '32px', borderRadius: '24px', maxWidth: '500px', border: '2px solid var(--accent-danger, #ef4444)' }}>
+            <h2 style={{ color: 'var(--accent-danger, #ef4444)', display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
+              <span style={{ fontSize: '1.5rem' }}>⚠️</span> DANGEROUS ACTION
+            </h2>
+            <p style={{ marginBottom: '24px', color: 'var(--text-secondary)' }}>
+              Mizune is attempting to execute a potentially destructive system command. Do you approve?
+            </p>
+            <div style={{ background: 'rgba(0,0,0,0.4)', padding: '16px', borderRadius: '8px', fontFamily: 'monospace', color: '#fca5a5', marginBottom: '32px', wordBreak: 'break-all' }}>
+              {approvalRequest}
+            </div>
+            <div style={{ display: 'flex', gap: '16px', justifyContent: 'flex-end' }}>
+              <button 
+                onClick={() => handleApprovalResponse(false)}
+                style={{ padding: '12px 24px', background: 'transparent', border: '1px solid rgba(255,255,255,0.2)', color: 'white', borderRadius: '12px', cursor: 'pointer' }}
+              >
+                Deny & Cancel
+              </button>
+              <button 
+                onClick={() => handleApprovalResponse(true)}
+                style={{ padding: '12px 24px', background: 'var(--accent-danger, #ef4444)', border: 'none', color: 'white', borderRadius: '12px', cursor: 'pointer', fontWeight: 'bold' }}
+              >
+                Approve Execution
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─── CHAT LOG MODAL ─── */}
+      {showChatLog && (
+        <div style={{ position: 'absolute', top: '80px', left: '20px', bottom: '20px', width: '400px', zIndex: 100, display: 'flex', flexDirection: 'column' }} className="glass-panel">
+          <div style={{ padding: '16px', borderBottom: '1px solid rgba(255,255,255,0.1)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <h3 style={{ margin: 0, fontSize: '1.1rem' }}>Communication Log</h3>
+            <button onClick={() => setShowChatLog(false)} style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '1.2rem' }}>✕</button>
+          </div>
+          <div style={{ flex: 1, overflowY: 'auto', padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            {messages.map((msg, idx) => (
+              <div key={idx} style={{ alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start', maxWidth: '80%' }}>
+                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '4px', textAlign: msg.role === 'user' ? 'right' : 'left' }}>
+                  {msg.role === 'user' ? 'You' : 'Mizune'} • {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                </div>
+                <div style={{ 
+                  padding: '10px 14px', 
+                  borderRadius: '16px', 
+                  borderBottomRightRadius: msg.role === 'user' ? '4px' : '16px',
+                  borderTopLeftRadius: msg.role === 'assistant' ? '4px' : '16px',
+                  background: msg.role === 'user' ? 'var(--accent-gradient)' : 'rgba(30, 41, 59, 0.8)',
+                  border: msg.role === 'assistant' ? '1px solid rgba(139, 92, 246, 0.3)' : 'none',
+                  color: 'white',
+                  fontSize: '0.9rem'
+                }}>
+                  {msg.content}
                 </div>
               </div>
-            </div>
-          )}
-          {activeTab === 'system' && (
-            <SystemMonitor />
-          )}
+            ))}
+            {messages.length === 0 && <div style={{ color: 'var(--text-muted)', textAlign: 'center', marginTop: '40px' }}>No messages yet.</div>}
+            <div ref={messagesEndRef} />
+          </div>
+        </div>
+      )}
 
-          {activeTab === 'kernel' && (
-            <div className="kernel-terminal">
-              {kernelLogs.map((log, i) => {
-                let statusClass = '';
-                if (log.toLowerCase().includes('error') || log.toLowerCase().includes('fail')) statusClass = 'error';
-                else if (log.toLowerCase().includes('success') || log.toLowerCase().includes('done')) statusClass = 'success';
-                
-                return (
-                  <div key={i} className={`kernel-log ${statusClass}`}>
-                    <span style={{color: '#888', marginRight: '8px'}}>[{new Date().toLocaleTimeString()}]</span>
-                    {log}
-                  </div>
-                );
-              })}
-              {kernelLogs.length === 0 && (
-                <div style={{ color: '#888', fontStyle: 'italic' }}>Waiting for kernel logs...</div>
-              )}
-            </div>
-          )}
-
-          {activeTab === 'settings' && (
-            <div className="settings-panel">
-              <div className="settings-card">
-                <h3>Integrations</h3>
-                <p style={{color: '#888', marginBottom: '16px', fontSize: '13px'}}>
-                  Connect external services to give Mizune access to your data.
-                </p>
-                <div className="form-group">
-                  <label>Google OAuth Token</label>
-                  <button className="btn-primary" onClick={() => {
-                    sendMessage('/nuke_cache');
-                  }}>Check Token Status</button>
-                  <p style={{marginTop: '8px', fontSize: '11px', color: '#666'}}>
-                    Note: To connect Google, please run the <code>connect_gmail.py</code> script in your terminal!
-                  </p>
-                </div>
-              </div>
-            </div>
-          )}
-        </main>
-      </div>
     </div>
   );
 };
@@ -489,13 +520,4 @@ function getEmotionColor(valence: number, arousal: number): string {
   if (valence < 0.5) return '#a855f7';
   if (valence < 0.8) return '#d946ef';
   return '#f472b6';
-}
-
-function getEmotionLabel(valence: number, arousal: number): string {
-  if (valence < -0.7) return 'Sad';
-  if (valence < -0.3) return 'Down';
-  if (valence < 0.3) return 'Neutral';
-  if (valence < 0.7) return 'Happy';
-  if (arousal > 0.7) return 'Excited';
-  return 'Joyful';
 }

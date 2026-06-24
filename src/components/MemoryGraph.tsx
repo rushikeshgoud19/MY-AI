@@ -39,7 +39,8 @@ export const MemoryGraph: React.FC = () => {
     window.addEventListener('resize', updateDimensions);
     
     // Connect to websocket to fetch data
-    const ws = new WebSocket('ws://localhost:8001/ws');
+    const wsHost = window.location.hostname === 'localhost' ? '192.168.0.2' : window.location.hostname;
+    const ws = new WebSocket(`ws://${wsHost}:8001/ws`);
     
     ws.onopen = () => {
       ws.send(JSON.stringify({ type: 'get_knowledge_graph' }));
@@ -64,22 +65,22 @@ export const MemoryGraph: React.FC = () => {
   }, []);
 
   const colorMap: Record<number, string> = {
-    0: '#4CAF50', // Core
-    1: '#ff00ff', // Skills
-    2: '#00ffff', // Sessions
-    3: '#ffff00'  // Semantic
+    0: '#00f0ff', // Core (Cyan)
+    1: '#3b82f6', // Skills (Blue)
+    2: '#10b981', // Sessions (Green)
+    3: '#f59e0b'  // Semantic (Orange)
   };
 
   return (
     <div className="panel-container memory-graph-panel" ref={containerRef} style={{ display: 'flex', flexDirection: 'column', height: '100%', padding: 0, overflow: 'hidden' }}>
-      <div style={{ padding: '24px', paddingBottom: '0' }}>
-        <h2>Neural Memory Graph</h2>
-        <div className="graph-legend" style={{ display: 'flex', gap: '16px', fontSize: '12px', marginBottom: '16px' }}>
-          <span style={{ color: colorMap[0] }}>● Core Network</span>
-          <span style={{ color: colorMap[1] }}>● Acquired Skills</span>
-          <span style={{ color: colorMap[2] }}>● Session Timeline</span>
-          <span style={{ color: colorMap[3] }}>● Semantic Memories</span>
-        </div>
+      <div className="panel-header" style={{ padding: '15px 20px', borderBottom: '1px solid rgba(0, 240, 255, 0.2)' }}>
+        <h2>NEURAL GRAPH</h2>
+      </div>
+      <div className="graph-legend" style={{ display: 'flex', gap: '16px', fontSize: '12px', padding: '10px 20px', fontFamily: '"Share Tech Mono", monospace', color: 'var(--text-secondary)' }}>
+        <span style={{ color: colorMap[0] }}>[■] Core Network</span>
+        <span style={{ color: colorMap[1] }}>[■] Acquired Skills</span>
+        <span style={{ color: colorMap[2] }}>[■] Session Timeline</span>
+        <span style={{ color: colorMap[3] }}>[■] Semantic Memories</span>
       </div>
       
       <div style={{ flex: 1, position: 'relative' }}>
@@ -95,10 +96,11 @@ export const MemoryGraph: React.FC = () => {
             nodeLabel="name"
             nodeColor={(node: any) => colorMap[node.group] || '#ffffff'}
             nodeRelSize={5}
-            linkColor={() => 'rgba(255,255,255,0.2)'}
+            linkColor={() => 'rgba(0, 240, 255, 0.2)'}
             linkWidth={1.5}
             linkDirectionalParticles={2}
             linkDirectionalParticleSpeed={0.005}
+            linkDirectionalParticleColor={() => '#00f0ff'}
             backgroundColor="transparent"
           />
         )}

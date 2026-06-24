@@ -8,6 +8,9 @@ import re
 import sys
 import asyncio
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+
 # ─── Import the ManagerAgent classifier ───────────────────────────────────────
 sys.path.insert(0, ".")
 from agents.manager_agent import ManagerAgent

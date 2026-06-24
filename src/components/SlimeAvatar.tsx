@@ -14,11 +14,26 @@ interface SlimeAvatarProps {
   size?: number;
 }
 
-export const SlimeAvatar: React.FC<SlimeAvatarProps> = ({ state, size = 200 }) => {
+export const SlimeAvatar: React.FC<SlimeAvatarProps> = ({ state, size = 250 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [lastActive, setLastActive] = useState<number>(Date.now());
   const [blink, setBlink] = useState(false);
-  
-  // Auto-blink every 3-5 seconds
+  const mousePosRef = useRef({ x: 0, y: 0 }); // Normalized -1 to 1
+
+  // Track global mouse position without re-rendering React
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      // Normalize to -1 (left/top) to 1 (right/bottom)
+      const nx = (e.clientX / window.innerWidth) * 2 - 1;
+      const ny = (e.clientY / window.innerHeight) * 2 - 1;
+      mousePosRef.current = { x: nx, y: ny };
+      setLastActive(Date.now()); // Keep awake when moving mouse
+    };
+    window.addEventListener('mousemove', handleMouseMove);
+    return () => window.removeEventListener('mousemove', handleMouseMove);
+  }, []);
+
+  // Auto-blink
   useEffect(() => {
     const blinkInterval = setInterval(() => {
       setBlink(true);
@@ -27,109 +42,199 @@ export const SlimeAvatar: React.FC<SlimeAvatarProps> = ({ state, size = 200 }) =
     return () => clearInterval(blinkInterval);
   }, []);
 
+  // Track activity for sleep
+  useEffect(() => {
+    if (state.isThinking || state.isListening || state.isTalking) {
+      setLastActive(Date.now());
+    }
+  }, [state]);
+
   // Render slime on canvas
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d')!;
     const dpr = window.devicePixelRatio || 1;
-    
+
     canvas.width = size * dpr;
     canvas.height = size * dpr;
     ctx.scale(dpr, dpr);
-    
+
     const centerX = size / 2;
     const centerY = size / 2;
-    
-    // Color based on emotion
-    const baseColor = getSlimeColor(state.valence, state.arousal);
-    const glowColor = getGlowColor(state.valence);
-    
+
+    // Core colors (Rimuru style base)
+    // Default happy: light blue (#9bd4f5)
+    // Angry: red/orange
+    // Ecstatic: glowing cyan/yellow
+    let baseColor = { r: 155, g: 212, b: 245 }; // Light blue
+
+    if (state.valence < -0.3) {
+      baseColor = { r: 130, g: 150, b: 200 }; // Sad purple-ish
+    } else if (state.valence > 0.6 && state.arousal > 0.6) {
+      baseColor = { r: 100, g: 255, b: 255 }; // Hyper cyan
+    }
+
     let animationFrameId: number;
 
     const render = () => {
-      // Clear
       ctx.clearRect(0, 0, size, size);
-      
-      // Glow effect (CSS-like box-shadow)
-      const gradient = ctx.createRadialGradient(
-        centerX, centerY, 0,
-        centerX, centerY, size * 0.6
-      );
-      gradient.addColorStop(0, glowColor + '40');  // 25% opacity
-      gradient.addColorStop(1, glowColor + '00');  // 0% opacity
-      ctx.fillStyle = gradient;
-      ctx.fillRect(0, 0, size, size);
-      
-      // Slime body — organic blob shape using bezier curves
-      ctx.beginPath();
+
       const time = Date.now() / 1000;
-      const breathe = Math.sin(time * 2) * 3;  // Breathing animation
-      
-      // Dynamic shape based on emotion
-      const baseRadius = size * 0.35;
-      const stretchX = state.arousal > 0.7 ? 1.15 : 1.0;  // Excited = stretched
-      const stretchY = state.valence < -0.5 ? 0.85 : 1.0;   // Sad = squished
-      
-      // Draw organic blob
-      const points = 8;
-      for (let i = 0; i <= points; i++) {
-        const angle = (i / points) * Math.PI * 2;
-        const wobble = Math.sin(angle * 3 + time * 3) * 4;
-        const r = baseRadius + wobble + breathe;
-        const x = centerX + Math.cos(angle) * r * stretchX;
-        const y = centerY + Math.sin(angle) * r * stretchY;
-        
-        if (i === 0) ctx.moveTo(x, y);
-        else {
-          const prevAngle = ((i - 1) / points) * Math.PI * 2;
-          const cpx = centerX + Math.cos(prevAngle + 0.4) * r * 1.2 * stretchX;
-          const cpy = centerY + Math.sin(prevAngle + 0.4) * r * 1.2 * stretchY;
-          ctx.quadraticCurveTo(cpx, cpy, x, y);
+
+      // Physics calculations
+      const breathe = Math.sin(time * 2.5) * 2;
+
+      // Happy bounce physics
+      let bounceY = 0;
+      let squishY = 1.0;
+      let squishX = 1.0;
+
+      if (state.valence > 0.5) {
+        // Jumping up and down
+        bounceY = -Math.abs(Math.sin(time * 4)) * (size * 0.1);
+
+        // Squish when hitting the ground
+        if (Math.abs(bounceY) < 2) {
+          squishY = 0.85;
+          squishX = 1.15;
+        } else if (Math.abs(bounceY) > size * 0.08) {
+          squishY = 1.1;
+          squishX = 0.9;
         }
       }
-      ctx.closePath();
-      
-      // Fill with gradient
-      const bodyGradient = ctx.createRadialGradient(
-        centerX - size * 0.1, centerY - size * 0.1, 0,
-        centerX, centerY, baseRadius
-      );
-      bodyGradient.addColorStop(0, lightenColor(baseColor, 30));
-      bodyGradient.addColorStop(0.7, baseColor);
-      bodyGradient.addColorStop(1, darkenColor(baseColor, 20));
-      
-      ctx.fillStyle = bodyGradient;
-      ctx.fill();
-      
-      // Highlight (shiny slime look)
+
+      ctx.save();
+      // Push the slime further down the canvas to prevent the top from clipping!
+      ctx.translate(centerX, size * 0.70 + bounceY); 
+      ctx.scale(squishX, squishY);
+
+      // Slime radius
+      const r = (size * 0.35) + breathe;
+
+      // 1. Draw Outer Slime Body
       ctx.beginPath();
-      ctx.ellipse(
-        centerX - size * 0.12,
-        centerY - size * 0.15,
-        size * 0.12,
-        size * 0.08,
-        -0.5, 0, Math.PI * 2
-      );
-      ctx.fillStyle = 'rgba(255,255,255,0.3)';
+      ctx.ellipse(0, -r, r * 1.2, r * 0.95, 0, 0, Math.PI * 2);
+
+      const bodyGrad = ctx.createLinearGradient(0, -r * 2, 0, 0);
+      bodyGrad.addColorStop(0, `rgba(255, 255, 255, 0.6)`);
+      bodyGrad.addColorStop(0.2, `rgba(${baseColor.r}, ${baseColor.g}, ${baseColor.b}, 0.9)`);
+      bodyGrad.addColorStop(0.8, `rgba(${baseColor.r - 20}, ${baseColor.g - 20}, ${baseColor.b - 20}, 0.95)`);
+      bodyGrad.addColorStop(1, `rgba(${baseColor.r - 40}, ${baseColor.g - 40}, ${baseColor.b - 40}, 1)`);
+
+      // Drop shadow for the whole slime
+      ctx.shadowColor = `rgba(${baseColor.r}, ${baseColor.g}, ${baseColor.b}, 0.6)`;
+      ctx.shadowBlur = 20;
+      ctx.shadowOffsetY = 10;
+
+      ctx.fillStyle = bodyGrad;
       ctx.fill();
-      
-      // Eyes
-      drawEyes(ctx, centerX, centerY, size, state, blink);
-      
-      // Mouth
-      drawMouth(ctx, centerX, centerY, size, state);
-      
-      // Thinking bubbles
-      if (state.isThinking) {
-        drawThinkingBubbles(ctx, centerX, centerY, size, time);
+
+      // Turn off shadow for inner elements
+      ctx.shadowBlur = 0;
+      ctx.shadowOffsetY = 0;
+
+      // 2. Inner Darker Core
+      ctx.beginPath();
+      // Organic blob shape for the core
+      const coreR = r * 0.6;
+      ctx.moveTo(-coreR * 0.8, -r * 0.6);
+      ctx.quadraticCurveTo(0, -r * 1.3, coreR * 0.8, -r * 0.6);
+      ctx.quadraticCurveTo(coreR * 1.2, -r * 0.2, coreR * 0.5, -r * 0.1);
+      ctx.quadraticCurveTo(0, 0, -coreR * 0.5, -r * 0.1);
+      ctx.quadraticCurveTo(-coreR * 1.2, -r * 0.2, -coreR * 0.8, -r * 0.6);
+
+      ctx.fillStyle = `rgba(${baseColor.r - 60}, ${baseColor.g - 60}, ${baseColor.b - 50}, 0.6)`;
+      ctx.fill();
+
+      // 3. Highlight (Top Left)
+      ctx.beginPath();
+      ctx.ellipse(-r * 0.4, -r * 1.5, r * 0.35, r * 0.15, -Math.PI / 6, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+      ctx.fill();
+
+      // 4. Blush Marks (Pink Ovals on Cheeks)
+      const blushOpacity = state.valence > 0 ? 0.6 + (state.valence * 0.4) : 0.2;
+      const blushY = -r * 0.7;
+      const blushX = r * 0.7;
+
+      ctx.beginPath();
+      ctx.ellipse(-blushX, blushY, r * 0.25, r * 0.12, -0.1, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(255, 150, 200, ${blushOpacity})`;
+      ctx.fill();
+
+      ctx.beginPath();
+      ctx.ellipse(blushX, blushY, r * 0.25, r * 0.12, 0.1, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(255, 150, 200, ${blushOpacity})`;
+      ctx.fill();
+
+      // 5. Eyes
+      const isSleeping = (Date.now() - lastActive) > 120000; // 2 minutes
+
+      const eyeY = -r * 0.85;
+      const eyeX = r * 0.35;
+      const eyeW = r * 0.25;
+
+      if (isSleeping) {
+        // Closed slits: \ /
+        const eyeH = state.valence > 0.5 ? r * 0.1 : r * 0.05;
+
+        ctx.strokeStyle = '#1e3a8a';
+        ctx.lineWidth = 3;
+        ctx.lineCap = 'round';
+
+        // Left eye
+        ctx.beginPath();
+        ctx.moveTo(-eyeX - eyeW, eyeY);
+        ctx.quadraticCurveTo(-eyeX - (eyeW/2), eyeY + eyeH, -eyeX, eyeY + (eyeH * 0.5));
+        ctx.stroke();
+
+        // Right eye
+        ctx.beginPath();
+        ctx.moveTo(eyeX, eyeY + (eyeH * 0.5));
+        ctx.quadraticCurveTo(eyeX + (eyeW/2), eyeY + eyeH, eyeX + eyeW, eyeY);
+        ctx.stroke();
+      } else {
+        // Awake: Open Eyes
+        const eyeH = blink ? r * 0.02 : r * 0.15; // Blink mechanic
+
+        // Calculate offset based on mouse position
+        const maxEyeOffset = r * 0.1;
+        const maxPupilOffset = r * 0.08;
+        const mPos = mousePosRef.current;
+        const eOffsetX = mPos.x * maxEyeOffset;
+        const eOffsetY = mPos.y * maxEyeOffset;
+        const pOffsetX = mPos.x * maxPupilOffset;
+        const pOffsetY = mPos.y * maxPupilOffset;
+
+        // Left eye
+        ctx.beginPath();
+        ctx.ellipse(-eyeX - (eyeW/2) + eOffsetX, eyeY + eOffsetY, eyeW * 0.4, eyeH, 0, 0, Math.PI * 2);
+        ctx.fillStyle = '#1e3a8a';
+        ctx.fill();
+
+        // Right eye
+        ctx.beginPath();
+        ctx.ellipse(eyeX + (eyeW/2) + eOffsetX, eyeY + eOffsetY, eyeW * 0.4, eyeH, 0, 0, Math.PI * 2);
+        ctx.fillStyle = '#1e3a8a';
+        ctx.fill();
+
+        if (!blink) {
+          // Pupils
+          ctx.beginPath();
+          ctx.arc(-eyeX - (eyeW/2) + eOffsetX + pOffsetX, eyeY + eOffsetY + pOffsetY, eyeW * 0.15, 0, Math.PI * 2);
+          ctx.fillStyle = '#fff';
+          ctx.fill();
+
+          ctx.beginPath();
+          ctx.arc(eyeX + (eyeW/2) + eOffsetX + pOffsetX, eyeY + eOffsetY + pOffsetY, eyeW * 0.15, 0, Math.PI * 2);
+          ctx.fillStyle = '#fff';
+          ctx.fill();
+        }
       }
-      
-      // Listening ripple
-      if (state.isListening) {
-        drawListeningRipple(ctx, centerX, centerY, size, time);
-      }
-      
+
+      ctx.restore();
+
       animationFrameId = requestAnimationFrame(render);
     };
 
@@ -138,139 +243,29 @@ export const SlimeAvatar: React.FC<SlimeAvatarProps> = ({ state, size = 200 }) =
     return () => {
       cancelAnimationFrame(animationFrameId);
     };
-    
-  }, [state, blink, size]);
-  
+
+  }, [state, size, lastActive, blink]);
+
+  const handleSlimeClick = () => {
+    // Manually wake up and act happy when clicked
+    setLastActive(Date.now());
+    setBlink(true);
+    setTimeout(() => setBlink(false), 200);
+  };
+
   return (
-    <canvas
-      ref={canvasRef}
-      style={{
-        width: size,
-        height: size,
-        filter: 'drop-shadow(0 0 20px rgba(139, 92, 246, 0.3))'
-      }}
-    />
+    <div
+      className="classic-blob-container"
+      style={{ width: size, height: size, cursor: 'pointer', transition: 'transform 0.2s ease-out' }}
+      onClick={handleSlimeClick}
+      onMouseOver={(e) => (e.currentTarget.style.transform = 'scale(1.05)')}
+      onMouseOut={(e) => (e.currentTarget.style.transform = 'scale(1)')}
+    >
+      <canvas
+        ref={canvasRef}
+        className="blob-canvas"
+        style={{ width: '100%', height: '100%' }}
+      />
+    </div>
   );
 };
-
-// ─── DRAWING HELPERS ───
-
-function drawEyes(ctx: CanvasRenderingContext2D, cx: number, cy: number, size: number, state: SlimeState, blink: boolean) {
-  const eyeY = cy - size * 0.08;
-  const eyeSpacing = size * 0.18;
-  const eyeSize = size * 0.08;
-  
-  // Eye shape changes with emotion
-  const eyeHeight = blink ? eyeSize * 0.1 : 
-                    state.valence < -0.5 ? eyeSize * 0.6 :  // Sad = flat
-                    eyeSize;
-  
-  // Left eye
-  ctx.beginPath();
-  ctx.ellipse(cx - eyeSpacing, eyeY, eyeSize, eyeHeight, 0, 0, Math.PI * 2);
-  ctx.fillStyle = '#1a1a2e';
-  ctx.fill();
-  
-  // Right eye
-  ctx.beginPath();
-  ctx.ellipse(cx + eyeSpacing, eyeY, eyeSize, eyeHeight, 0, 0, Math.PI * 2);
-  ctx.fillStyle = '#1a1a2e';
-  ctx.fill();
-  
-  if (!blink) {
-    // Pupils — follow "attention" direction
-    const pupilOffset = state.isListening ? size * 0.02 : 0;
-    const pupilSize = eyeSize * 0.4;
-    
-    // Left pupil
-    ctx.beginPath();
-    ctx.arc(cx - eyeSpacing + pupilOffset, eyeY, pupilSize, 0, Math.PI * 2);
-    ctx.fillStyle = '#fff';
-    ctx.fill();
-    
-    // Eye shine
-    ctx.beginPath();
-    ctx.arc(cx - eyeSpacing - pupilSize * 0.3, eyeY - pupilSize * 0.3, pupilSize * 0.3, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(255,255,255,0.8)';
-    ctx.fill();
-    
-    // Right pupil
-    ctx.beginPath();
-    ctx.arc(cx + eyeSpacing + pupilOffset, eyeY, pupilSize, 0, Math.PI * 2);
-    ctx.fillStyle = '#fff';
-    ctx.fill();
-    
-    // Eye shine
-    ctx.beginPath();
-    ctx.arc(cx + eyeSpacing - pupilSize * 0.3, eyeY - pupilSize * 0.3, pupilSize * 0.3, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(255,255,255,0.8)';
-    ctx.fill();
-  }
-}
-
-function drawMouth(ctx: CanvasRenderingContext2D, cx: number, cy: number, size: number, state: SlimeState) {
-  // User requested no mouth, just the classic eyes!
-  return;
-}
-
-function drawThinkingBubbles(ctx: CanvasRenderingContext2D, cx: number, cy: number, size: number, time: number) {
-  const bubbles = [
-    { x: cx + size * 0.45, y: cy - size * 0.35, r: size * 0.04, delay: 0 },
-    { x: cx + size * 0.55, y: cy - size * 0.45, r: size * 0.06, delay: 0.3 },
-    { x: cx + size * 0.65, y: cy - size * 0.55, r: size * 0.08, delay: 0.6 },
-  ];
-  
-  bubbles.forEach(b => {
-    const opacity = (Math.sin(time * 2 + b.delay) + 1) / 2 * 0.6;
-    ctx.beginPath();
-    ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
-    ctx.fillStyle = `rgba(255, 255, 255, ${opacity})`;
-    ctx.fill();
-  });
-}
-
-function drawListeningRipple(ctx: CanvasRenderingContext2D, cx: number, cy: number, size: number, time: number) {
-  const rippleRadius = (time * 50) % (size * 0.6);
-  const opacity = 1 - (rippleRadius / (size * 0.6));
-  
-  ctx.beginPath();
-  ctx.arc(cx, cy, rippleRadius, 0, Math.PI * 2);
-  ctx.strokeStyle = `rgba(139, 92, 246, ${opacity * 0.3})`;
-  ctx.lineWidth = 2;
-  ctx.stroke();
-}
-
-// ─── COLOR HELPERS ───
-
-function getSlimeColor(valence: number, arousal: number): string {
-  if (valence < -0.5) return '#6366f1';      // Indigo — sad
-  if (valence < -0.2) return '#8b5cf6';      // Violet — meh
-  if (valence < 0.3) return '#a855f7';       // Purple — neutral
-  if (valence < 0.7) return '#d946ef';      // Fuchsia — happy
-  return '#f472b6';                           // Pink — ecstatic
-}
-
-function getGlowColor(valence: number): string {
-  if (valence < -0.5) return '#4338ca';      // Dark indigo
-  if (valence < 0) return '#7c3aed';         // Dark violet
-  if (valence < 0.5) return '#9333ea';       // Dark purple
-  return '#db2777';                            // Dark pink
-}
-
-function lightenColor(hex: string, percent: number): string {
-  const num = parseInt(hex.replace('#', ''), 16);
-  const amt = Math.round(2.55 * percent);
-  const R = Math.min(255, (num >> 16) + amt);
-  const G = Math.min(255, ((num >> 8) & 0x00FF) + amt);
-  const B = Math.min(255, (num & 0x0000FF) + amt);
-  return `#${(0x1000000 + R * 0x10000 + G * 0x100 + B).toString(16).slice(1)}`;
-}
-
-function darkenColor(hex: string, percent: number): string {
-  const num = parseInt(hex.replace('#', ''), 16);
-  const amt = Math.round(2.55 * percent);
-  const R = Math.max(0, (num >> 16) - amt);
-  const G = Math.max(0, ((num >> 8) & 0x00FF) - amt);
-  const B = Math.max(0, (num & 0x0000FF) - amt);
-  return `#${(0x1000000 + R * 0x10000 + G * 0x100 + B).toString(16).slice(1)}`;
-}

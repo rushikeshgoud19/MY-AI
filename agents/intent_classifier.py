@@ -99,7 +99,7 @@ class IntentClassifier:
         r"what('s|\s+is)\s+(this|that)\s+(on\s+)?(my\s+)?screen|"
         r"read\s+(my\s+)?screen|read\s+what's\s+on|"
         r"(how\s+many\s+)?calories\s+(in\s+)?(this|that|food|meal)|"
-        r"look\s+at\s+(this|me|the\s+camera)|"
+        r"look\s+at\s+(me|the\s+camera|this\s+(screen|camera|image|photo|picture))|"
         r"what\s+am\s+i\s+(eating|holding)|"
         r"what('s|\s+is)\s+(this|in\s+front\s+of\s+you|on\s+camera)|"
         r"on\s+(the\s+)?screen\s+(right\s+)?now|"
@@ -124,6 +124,8 @@ class IntentClassifier:
         r"(code|solution)\s+(better|correct|wrong|right|good|bad)|"
         r"coding\s+question|"
         r"can\s+you\s+(check|look\s+at|review)\s+(my\s+|the\s+)?(code|script|function|class)|"
+        r"can\s+you\s+look\s+at\s+this|"
+        r"is\s+it\s+(correct|right|wrong|good|bad|ok|okay)|"
         r"(is|was)\s+(this|that|my)\s+(code|script|solution)\s+(correct|right|wrong|good|bad))\b"
     )
 

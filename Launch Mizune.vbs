@@ -5,11 +5,13 @@ Set fso = CreateObject("Scripting.FileSystemObject")
 currentDir = fso.GetParentFolderName(WScript.ScriptFullName)
 WshShell.CurrentDirectory = currentDir
 
-' 1. Start the Tauri Frontend App
+' 1. Start the Python Backend silently
+backendCmd = "python server.py"
+WshShell.Run "cmd /c " & backendCmd, 0, False
+
+' 2. Start the Tauri Frontend App
 tauriApp = currentDir & "\src-tauri\target\release\mizune-ai.exe"
 WshShell.Run """" & tauriApp & """", 1, False
-
-
 
 Set WshShell = Nothing
 Set fso = Nothing

@@ -120,6 +120,20 @@ TOOLS_SCHEMA = [
     {
         "type": "function",
         "function": {
+            "name": "run_command",
+            "description": "Execute a terminal/shell command on Master's computer. Use this when Master asks you to install packages, clone repos, or manage the OS. WARNING: High-risk commands (delete, format) should be confirmed with Master first.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "The exact shell command to execute in PowerShell/CMD."}
+                },
+                "required": ["command"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "headless_web_agent",
             "description": "Launch a background browser to navigate websites and scrape data without moving the user's mouse. Set visible to true if the user wants to watch.",
             "parameters": {
@@ -160,6 +174,51 @@ TOOLS_SCHEMA = [
                     "message_to_speak": {"type": "string", "description": "The exact sentence you want to say out loud to Master (e.g., 'Master, John wants you to call him when you are free!')"}
                 },
                 "required": ["message_to_speak"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "schedule_task",
+            "description": "Use this tool when Master asks you to remind him or execute a task in the future (e.g., 'remind me in 10min' or 'execute this in an hour').",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "delay_minutes": {"type": "number", "description": "How many minutes from now the task should run (e.g., 10 for 10 minutes, 60 for 1 hour)."},
+                    "action_to_take": {"type": "string", "description": "A description of what you should do when the timer goes off (e.g., 'Speak out loud: Master, it is time for your meeting')."}
+                },
+                "required": ["delay_minutes", "action_to_take"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "google_workspace",
+            "description": "Interact with Google Calendar and Gmail (Morning Briefing).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["get_todays_calendar", "read_unread_emails", "get_morning_briefing"], "description": "What to do"}
+                },
+                "required": ["action"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "obsidian_vault",
+            "description": "Read or write markdown notes to the local Obsidian Vault.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["read_note", "write_note"], "description": "Action to perform"},
+                    "note_name": {"type": "string", "description": "Name of the note (without .md)"},
+                    "content": {"type": "string", "description": "Content to write (only required for write_note)"}
+                },
+                "required": ["action", "note_name"]
             }
         }
     },
@@ -252,6 +311,9 @@ TOOLS_SCHEMA = [
 ]
 
 
+from traceroot import observe
+
+@observe(name="AI.Router", type="llm")
 def get_ai_response(text: str, history: list, config: dict, system_prompt_override: str = None, hints: dict = None) -> tuple:
     """Router function to send prompt to the optimal LLM. Returns (text_response, tool_calls_list)."""
     from server.tokenjuice import TokenJuice
@@ -632,6 +694,17 @@ def _gemini_response(text: str, history: list, system_prompt: str, config: dict)
                                 from .memory import memory
                                 memory.store_longterm(fact)
                                 tool_result = f"Memorized: {fact}"
+                        elif tool_name == "schedule_task":
+                            delay_mins = float(args.get("delay_minutes", 0))
+                            action = args.get("action_to_take", "")
+                            if delay_mins > 0 and action:
+                                from .processor import global_cron_manager
+                                import datetime
+                                trigger_time = datetime.datetime.now() + datetime.timedelta(minutes=delay_mins)
+                                global_cron_manager.add_one_time_task(action, trigger_time.isoformat())
+                                tool_result = f"Task scheduled successfully for {trigger_time.strftime('%I:%M %p')}."
+                            else:
+                                tool_result = "Failed: Invalid parameters."
                         elif tool_name == "add_core_directive":
                             rule = args.get("rule", "")
                             if rule:
@@ -642,6 +715,21 @@ def _gemini_response(text: str, history: list, system_prompt: str, config: dict)
                             category = args.get("category", "all")
                             from .commands import get_system_info
                             tool_result = get_system_info(category)
+                        elif tool_name == "google_workspace":
+                            action = args.get("action", "")
+                            from server.integrations.google_api import global_google_api
+                            if action == "get_todays_calendar": tool_result = global_google_api.get_todays_calendar()
+                            elif action == "read_unread_emails": tool_result = global_google_api.read_unread_emails()
+                            elif action == "get_morning_briefing": tool_result = global_google_api.get_morning_briefing()
+                            else: tool_result = "Invalid action"
+                        elif tool_name == "obsidian_vault":
+                            action = args.get("action", "")
+                            note_name = args.get("note_name", "")
+                            content = args.get("content", "")
+                            from server.integrations.obsidian import global_obsidian
+                            if action == "read_note": tool_result = global_obsidian.read_note(note_name)
+                            elif action == "write_note": tool_result = global_obsidian.write_note(note_name, content)
+                            else: tool_result = "Invalid action"
                         elif tool_name == "phone_control":
                             action = args.get("action", "")
                             from server.platforms.android.phone_bridge import AndroidPhoneBridge
@@ -844,6 +932,56 @@ def _groq_response(text: str, history: list, system_prompt: str, config: dict) -
                             from server.master_profile import master_profile
                             master_profile.add_core_directive(rule)
                             tool_result = f"Successfully injected rule into core directives: {rule}"
+                    elif tool_name == "schedule_task":
+                        delay_mins = float(args.get("delay_minutes", 0))
+                        action = args.get("action_to_take", "")
+                        if delay_mins > 0 and action:
+                            from .processor import global_cron_manager
+                            import datetime
+                            trigger_time = datetime.datetime.now() + datetime.timedelta(minutes=delay_mins)
+                            global_cron_manager.add_one_time_task(action, trigger_time.isoformat())
+                            tool_result = f"Task scheduled successfully for {trigger_time.strftime('%I:%M %p')}."
+                        else:
+                            tool_result = "Failed: Invalid parameters."
+                    elif tool_name == "google_workspace":
+                        action = args.get("action", "")
+                        from server.integrations.google_api import global_google_api
+                        if action == "get_todays_calendar": tool_result = global_google_api.get_todays_calendar()
+                        elif action == "read_unread_emails": tool_result = global_google_api.read_unread_emails()
+                        elif action == "get_morning_briefing": tool_result = global_google_api.get_morning_briefing()
+                        else: tool_result = "Invalid action"
+                    elif tool_name == "obsidian_vault":
+                        action = args.get("action", "")
+                        note_name = args.get("note_name", "")
+                        content = args.get("content", "")
+                        from server.integrations.obsidian import global_obsidian
+                        if action == "read_note": tool_result = global_obsidian.read_note(note_name)
+                        elif action == "write_note": tool_result = global_obsidian.write_note(note_name, content)
+                        else: tool_result = "Invalid action"
+                    elif tool_name == "run_command":
+                        cmd = args.get("command", "")
+                        if cmd:
+                            try:
+                                import subprocess
+                                # Safety guardrail for dangerous commands
+                                dangerous = ["del ", "rmdir ", "rm -", "format ", "diskpart"]
+                                if any(d in cmd.lower() for d in dangerous):
+                                    from server.websocket import ws_manager
+                                    ws_manager.broadcast_sync({"type": "approval_required", "command": cmd})
+                                    tool_result = f"Command execution blocked for safety. Master, please confirm manually: {cmd}"
+                                else:
+                                    log_info(f"[AI] Executing shell command: {cmd}")
+                                    result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
+                                    output = (result.stdout + "\n" + result.stderr).strip()
+                                    if len(output) > 500:
+                                        output = output[:500] + "...(truncated)"
+                                    tool_result = f"Command executed. Exit code: {result.returncode}\nOutput:\n{output}"
+                            except subprocess.TimeoutExpired:
+                                tool_result = f"Command timed out after 30 seconds: {cmd}"
+                            except Exception as e:
+                                tool_result = f"Failed to execute command: {e}"
+                        else:
+                            tool_result = "No command provided."
                     elif tool_name == "headless_web_agent":
                         url = args.get("url", "")
                         objective = args.get("objective", "")

@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Mizune</string>
+    <string name="title_activity_main">Mizune</string>
+    <string name="package_name">com.rushi.mizune</string>
+    <string name="custom_url_scheme">com.rushi.mizune</string>
+</resources>

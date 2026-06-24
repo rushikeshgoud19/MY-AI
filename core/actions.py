@@ -1,10 +1,13 @@
 """Action execution for Mizune AI - opens/closes apps, controls PC."""
 import subprocess
 import webbrowser
-import shlex
 import logging
+import re
+from urllib.parse import urlparse
 
 log_info = logging.info
+
+_SAFE_APP_NAME = re.compile(r"^[\w .+\-]+$")
 
 
 COMMON_APPS = {
@@ -40,6 +43,24 @@ COMMON_APPS = {
 }
 
 
+def _is_url_or_protocol(value: str) -> bool:
+    parsed = urlparse(value)
+    return parsed.scheme in {"http", "https"} or value.startswith("ms-") or "://" in value
+
+
+def _is_safe_app_name(value: str) -> bool:
+    return bool(value and _SAFE_APP_NAME.fullmatch(value))
+
+
+def _is_safe_url(value: str) -> bool:
+    parsed = urlparse(value)
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc) and not any(c.isspace() for c in value)
+
+
+def _start_app(exe: str):
+    subprocess.Popen(["cmd", "/c", "start", "", exe])
+
+
 def open_app(target: str) -> str:
     """Open an application or URL."""
     if not target:
@@ -49,12 +70,16 @@ def open_app(target: str) -> str:
     exe = COMMON_APPS.get(target, target)
 
     log_info(f"[ACTION] Launching: {exe}")
-    if exe.startswith("http") or exe.startswith("ms-") or "://" in exe:
+    if _is_url_or_protocol(exe):
+        if exe.startswith("http") and not _is_safe_url(exe):
+            return f"Sorry Master, I couldn't open {target}!"
         webbrowser.open(exe)
     else:
+        if not _is_safe_app_name(exe):
+            log_info(f"[ACTION] Blocked unsafe app target: {exe}")
+            return f"Sorry Master, I couldn't open {target}!"
         try:
-            safe_exe = shlex.quote(exe)
-            subprocess.Popen(f"start {safe_exe}", shell=True)
+            _start_app(exe)
         except Exception as e:
             log_info(f"[ACTION] Failed to launch '{exe}': {e}")
             return f"Sorry Master, I couldn't open {target}!"
@@ -77,9 +102,12 @@ def close_app(target: str) -> str:
         exe += ".exe"
 
     log_info(f"[ACTION] Closing: {exe}")
+    if not _is_safe_app_name(exe):
+        log_info(f"[ACTION] Blocked unsafe close target: {exe}")
+        return f"Sorry Master, I couldn't close {target}!"
+
     try:
-        safe_exe = shlex.quote(exe)
-        subprocess.Popen(f"taskkill /IM {safe_exe} /F", shell=True)
+        subprocess.Popen(["taskkill", "/IM", exe, "/F"])
     except Exception as e:
         log_info(f"[ACTION] Failed to close '{exe}': {e}")
         return f"Sorry Master, I couldn't close {target}!"
@@ -115,12 +143,15 @@ def open_url(url: str, browser: str = None) -> str:
         url = "https://" + url
 
     log_info(f"[ACTION] Opening URL: {url}")
+    if not _is_safe_url(url):
+        return f"Sorry Master, I couldn't open {url}!"
+
     if browser:
         exe = COMMON_APPS.get(browser.lower(), browser)
         try:
-            safe_exe = shlex.quote(exe)
-            safe_url = shlex.quote(url)
-            subprocess.Popen(f'start {safe_exe} {safe_url}', shell=True)
+            if not _is_safe_app_name(exe):
+                raise ValueError("Unsafe browser or URL")
+            subprocess.Popen(["cmd", "/c", "start", "", exe, url])
         except Exception as e:
             log_info(f"[ACTION] Browser launch failed: {e}")
             webbrowser.open(url)

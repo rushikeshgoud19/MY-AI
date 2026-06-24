@@ -157,6 +157,8 @@ Use the same JSON format as before. Start from the current screen state."""
             screen_context = context.get("screen_context", "Unknown") if context else "Unknown"
             return await self.create_plan(task_input, screen_context)
 
+    from traceroot import observe
+    @observe(name="TaskPlanner.create_plan", type="agent")
     async def create_plan(self, goal: str, screen_context: str = "Desktop") -> Dict:
         """Create a structured execution plan from a high-level goal."""
         self.log(f"Planning: '{goal}'")

@@ -10,8 +10,17 @@ print("=========================================")
 print("Connect Mizune to Gmail (OAuth2)")
 print("=========================================")
 
-CLIENT_ID = ""
-CLIENT_SECRET = ""
+import os
+import json
+
+try:
+    with open("config.json", "r") as f:
+        config_data = json.load(f)
+        CLIENT_ID = config_data.get("google_client_id", "")
+        CLIENT_SECRET = config_data.get("google_client_secret", "")
+except Exception:
+    CLIENT_ID = ""
+    CLIENT_SECRET = ""
 
 if not CLIENT_ID or not CLIENT_SECRET:
     print("Client ID and Secret are required.")

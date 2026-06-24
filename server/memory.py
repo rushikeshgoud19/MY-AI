@@ -164,6 +164,8 @@ class MemorySystem:
         
 
             
+    from traceroot import observe
+    @observe(name="Memory.recall", type="tool")
     def recall_longterm(self, query: str, n_results: int = 3) -> List[str]:
         if not self.collection: return []
         try:

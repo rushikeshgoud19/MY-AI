@@ -52,6 +52,9 @@ def process_command(text: str, config: dict, broadcast_sync_fn, session_id: str 
     finally:
         _processing_lock.release()
 
+from traceroot import observe
+
+@observe(name="Mizune.ProcessCommand", type="span")
 def _process_command_internal(text: str, config: dict, broadcast_sync_fn, session_id: str = 'main') -> str:
     # Initialize session and load emotion state
     platform = "whatsapp" if "whatsapp:" in session_id else "desktop"

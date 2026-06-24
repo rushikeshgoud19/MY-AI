@@ -262,19 +262,15 @@ class TestSecurityIntegration(unittest.TestCase):
     """Security-related integration tests."""
 
     def test_shell_quote_prevents_injection(self):
-        import shlex
         from core.actions import open_app
 
         # Attempt injection via app name
         malicious_input = "notepad; echo hacked"
 
         with patch('core.actions.subprocess.Popen') as mock_popen:
-            open_app(malicious_input)
-            call_args = mock_popen.call_args[0][0]
-
-            # Verify it's quoted and safe
-            self.assertIn("notepad", call_args)
-            # The ; should be escaped/quoted, not interpreted as command separator
+            result = open_app(malicious_input)
+            mock_popen.assert_not_called()
+            self.assertIn("couldn't open", result)
 
     def test_url_injection_prevented(self):
         from core.actions import open_app
@@ -283,9 +279,9 @@ class TestSecurityIntegration(unittest.TestCase):
         malicious_input = "https://evil.com; echo stolen"
 
         with patch('core.actions.webbrowser.open') as mock:
-            open_app(malicious_input)
-            # Should open the URL safely
-            mock.assert_called_once()
+            result = open_app(malicious_input)
+            mock.assert_not_called()
+            self.assertIn("couldn't open", result)
 
 
 if __name__ == "__main__":

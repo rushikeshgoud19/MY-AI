@@ -11,6 +11,7 @@ import webbrowser
 from agents.base_agent import BaseAgent
 from typing import Any, Optional, Dict
 import logging
+from urllib.parse import urlparse
 
 # COMMON_APPS defined locally to avoid circular import with server.py
 COMMON_APPS = {
@@ -25,6 +26,26 @@ COMMON_APPS = {
     "youtube": "https://youtube.com", "github": "https://github.com",
     "gmail": "https://mail.google.com", "netflix": "https://netflix.com",
 }
+
+_SAFE_APP_NAME = re.compile(r"^[\w .+\-]+$")
+
+
+def _is_url_or_protocol(value: str) -> bool:
+    parsed = urlparse(value)
+    return parsed.scheme in {"http", "https"} or value.startswith("ms-") or "://" in value or value.endswith(":")
+
+
+def _is_safe_app_name(value: str) -> bool:
+    return bool(value and _SAFE_APP_NAME.fullmatch(value))
+
+
+def _is_safe_url(value: str) -> bool:
+    parsed = urlparse(value)
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc) and not any(c.isspace() for c in value)
+
+
+def _start_app(exe: str):
+    subprocess.Popen(["cmd", "/c", "start", "", exe])
 
 # ─── Task Scheduler ───────────────────────────────────────────────────────────
 _SCHEDULE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "scheduled_tasks.json")
@@ -245,7 +266,7 @@ class SystemAgent(BaseAgent):
                     self.log("Installing Tailwind CSS...")
 
             self.log("Launching VS Code in project directory...")
-            subprocess.Popen(f"code {proj_path}", shell=True)
+            subprocess.Popen(["code", proj_path])
 
             pyautogui.alert(f"Mizune has finished building your project at {proj_path}!", "Project Ready")
             return "I've set up the environment for you, Master! Your project is ready and I've opened the editor. Hai~!"
@@ -349,10 +370,16 @@ class SystemAgent(BaseAgent):
         if app_match:
             target = app_match.group(1).strip()
             exe = COMMON_APPS.get(target, target)
-            if exe.startswith("http") or exe.startswith("ms-") or "://" in exe:
+            if _is_url_or_protocol(exe):
+                if exe.startswith("http") and not _is_safe_url(exe):
+                    self.log(f"Blocked unsafe URL target: {exe}")
+                    return f"I blocked that URL for safety, Master."
                 webbrowser.open(exe)
             else:
-                subprocess.Popen(f"start {exe}", shell=True)
+                if not _is_safe_app_name(exe):
+                    self.log(f"Blocked unsafe app target: {exe}")
+                    return f"I blocked that app name for safety, Master."
+                _start_app(exe)
             return f"Opening {target} for you right away!"
 
         return None

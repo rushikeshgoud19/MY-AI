@@ -65,6 +65,8 @@ class ActionExecutorAgent(BaseAgent):
 
         return await self.execute_step(step, context)
 
+    from traceroot import observe
+    @observe(name="ActionExecutor.execute_step", type="tool")
     async def execute_step(self, step: Dict, context: Optional[Dict] = None) -> Dict:
         """Execute a single planned step and return result."""
         action = step.get("action", "")

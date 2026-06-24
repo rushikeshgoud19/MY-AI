@@ -1,4 +1,6 @@
 import os
+from dotenv import load_dotenv
+load_dotenv()
 os.environ["OPENCV_LOG_LEVEL"] = "FATAL"
 import time
 import json
@@ -26,6 +28,10 @@ from server.tts import generate_tts
 from server.emotion import detect_emotion
 
 # Globals
+import traceroot
+from traceroot import Integration
+traceroot.initialize(integrations=[Integration.GOOGLE_GENAI, Integration.OPENAI])
+
 CFG = load_config()
 whatsapp_core_instance = None
 
@@ -258,6 +264,24 @@ async def websocket_endpoint(websocket: WebSocket):
                         async def handle_chat():
                             res = await asyncio.to_thread(process_command, text, CFG, ws_manager.broadcast_sync)
                             if res:
+                                from server.emotion import detect_emotion
+                                emo_str = detect_emotion(res)
+                                
+                                # Convert emotion string to biometric scores
+                                v, a = 0.0, 0.5
+                                if emo_str in ["happy", "excited"]: v, a = 1.0, 0.8
+                                elif emo_str == "sad": v, a = -1.0, 0.2
+                                elif emo_str == "angry": v, a = -0.8, 0.9
+                                elif emo_str == "surprised": v, a = 0.5, 0.8
+                                elif emo_str == "blush": v, a = 0.8, 0.6
+                                elif emo_str == "sleepy": v, a = 0.0, 0.1
+                                
+                                # Send Biometrics to Dashboard so Slime Avatar reacts
+                                ws_manager.broadcast_sync({
+                                    "type": "state_update", 
+                                    "payload": {"valence": v, "arousal": a}
+                                })
+                                
                                 ws_manager.broadcast_sync({"type": "speak", "text": res})
                                 try:
                                     from server.tts import generate_tts
@@ -270,6 +294,10 @@ async def websocket_endpoint(websocket: WebSocket):
                             ws_manager.broadcast_sync({"type": "status", "text": "Idle"})
 
                         asyncio.create_task(handle_chat())
+                elif msg.get("type") == "trigger_listen":
+                    # Spawns the voice recording logic in a background thread
+                    import threading
+                    threading.Thread(target=on_wake_trigger, daemon=True).start()
                 elif msg.get("type") == "get_knowledge_graph":
                     try:
                         from server.knowledge_graph import get_graph_data
