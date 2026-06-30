@@ -12,6 +12,7 @@ except ImportError:
 from .config import log_info
 import uuid
 from .memory_tree import memory_tree_db
+from traceroot import observe, update_current_span
 
 __all__ = ["MemorySystem"]
 
@@ -136,7 +137,9 @@ class MemorySystem:
         # Return in chronological order
         return [{"role": r[0], "content": r[1]} for r in reversed(rows)]
         
+    @observe(name="memory.write", type="tool")
     def store_longterm(self, text: str, metadata: dict = None):
+        update_current_span(metadata={"content_preview": text[:50]})
         doc_id = f"mem_{os.urandom(8).hex()}"
         
         # 1. Route to ChromaDB
@@ -161,12 +164,11 @@ class MemorySystem:
             token_count=token_count,
             metadata=metadata
         )
-        
 
             
-    from traceroot import observe
-    @observe(name="Memory.recall", type="tool")
+    @observe(name="memory.read", type="tool")
     def recall_longterm(self, query: str, n_results: int = 3) -> List[str]:
+        update_current_span(metadata={"query": query[:50], "limit": n_results})
         if not self.collection: return []
         try:
             results = self.collection.query(

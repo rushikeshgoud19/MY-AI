@@ -43,7 +43,7 @@ class MemoryTreeDB:
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS episodic (
                     id INTEGER PRIMARY KEY,
-                    timestamp REAL DEFAULT (unixepoch()),
+                    timestamp REAL DEFAULT (strftime('%s', 'now')),
                     session_id TEXT,
                     source TEXT CHECK(source IN ('chat','vision','tool','system','screen','voice','whatsapp','telegram','discord')),
                     content TEXT,
@@ -59,7 +59,7 @@ class MemoryTreeDB:
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS screen_memory (
                     id INTEGER PRIMARY KEY,
-                    timestamp REAL DEFAULT (unixepoch()),
+                    timestamp REAL DEFAULT (strftime('%s', 'now')),
                     frame_hash TEXT,
                     app_name TEXT,
                     window_title TEXT,
@@ -86,8 +86,8 @@ class MemoryTreeDB:
                     total_uses INTEGER DEFAULT 0,
                     is_pinned BOOLEAN DEFAULT FALSE,
                     is_archived BOOLEAN DEFAULT FALSE,
-                    created_at REAL DEFAULT (unixepoch()),
-                    updated_at REAL DEFAULT (unixepoch())
+                    created_at REAL DEFAULT (strftime('%s', 'now')),
+                    updated_at REAL DEFAULT (strftime('%s', 'now'))
                 )
             ''')
 
@@ -100,7 +100,7 @@ class MemoryTreeDB:
                     hotness REAL DEFAULT 0.0,
                     l2_summary TEXT,
                     related_topics JSON,
-                    last_accessed REAL DEFAULT (unixepoch())
+                    last_accessed REAL DEFAULT (strftime('%s', 'now'))
                 )
             ''')
 
@@ -113,7 +113,7 @@ class MemoryTreeDB:
                     status TEXT CHECK(status IN ('pending','running','completed','failed')) DEFAULT 'pending',
                     worker_id TEXT,
                     lease_expires REAL,
-                    created_at REAL DEFAULT (unixepoch()),
+                    created_at REAL DEFAULT (strftime('%s', 'now')),
                     completed_at REAL
                 )
             ''')
@@ -122,7 +122,7 @@ class MemoryTreeDB:
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS emotional_memory (
                     id INTEGER PRIMARY KEY,
-                    timestamp REAL DEFAULT (unixepoch()),
+                    timestamp REAL DEFAULT (strftime('%s', 'now')),
                     session_id TEXT,
                     user_input TEXT,
                     mizune_response TEXT,
@@ -141,11 +141,11 @@ class MemoryTreeDB:
                 CREATE TABLE IF NOT EXISTS connection_strength (
                     entity TEXT PRIMARY KEY,
                     strength REAL DEFAULT 0.0,
-                    last_updated REAL DEFAULT (unixepoch()),
+                    last_updated REAL DEFAULT (strftime('%s', 'now')),
                     interaction_count INTEGER DEFAULT 0,
                     positive_interactions INTEGER DEFAULT 0,
                     negative_interactions INTEGER DEFAULT 0,
-                    first_seen REAL DEFAULT (unixepoch()),
+                    first_seen REAL DEFAULT (strftime('%s', 'now')),
                     emotional_arc JSON
                 )
             ''')
@@ -154,7 +154,7 @@ class MemoryTreeDB:
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS mood_history (
                     id INTEGER PRIMARY KEY,
-                    timestamp REAL DEFAULT (unixepoch()),
+                    timestamp REAL DEFAULT (strftime('%s', 'now')),
                     valence REAL,
                     arousal REAL,
                     dominance REAL,
@@ -170,7 +170,7 @@ class MemoryTreeDB:
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS evolution_genes (
                     id TEXT PRIMARY KEY,
-                    created_at REAL DEFAULT (unixepoch()),
+                    created_at REAL DEFAULT (strftime('%s', 'now')),
                     level INTEGER CHECK(level IN (1,2,3,4)),
                     name TEXT,
                     description TEXT,
@@ -182,7 +182,7 @@ class MemoryTreeDB:
                     success_count INTEGER DEFAULT 0,
                     failure_count INTEGER DEFAULT 0,
                     fitness_score REAL DEFAULT 0.5,
-                    last_fitness_update REAL DEFAULT (unixepoch()),
+                    last_fitness_update REAL DEFAULT (strftime('%s', 'now')),
                     active BOOLEAN DEFAULT TRUE,
                     deprecated_by TEXT
                 )
@@ -192,7 +192,7 @@ class MemoryTreeDB:
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS evolution_hypotheses (
                     id TEXT PRIMARY KEY,
-                    timestamp REAL DEFAULT (unixepoch()),
+                    timestamp REAL DEFAULT (strftime('%s', 'now')),
                     level INTEGER,
                     target TEXT,
                     current_state TEXT,
@@ -214,7 +214,7 @@ class MemoryTreeDB:
                 CREATE TABLE IF NOT EXISTS evolution_experiments (
                     id TEXT PRIMARY KEY,
                     hypothesis_id TEXT,
-                    timestamp_start REAL DEFAULT (unixepoch()),
+                    timestamp_start REAL DEFAULT (strftime('%s', 'now')),
                     timestamp_end REAL,
                     change_patch TEXT,
                     test_environment TEXT,
@@ -240,7 +240,7 @@ class MemoryTreeDB:
                     motivation TEXT,
                     expected_improvement TEXT,
                     rollback_strategy TEXT,
-                    requested_at REAL DEFAULT (unixepoch()),
+                    requested_at REAL DEFAULT (strftime('%s', 'now')),
                     rescheduled_for REAL,
                     status TEXT DEFAULT 'pending',
                     user_response TEXT,

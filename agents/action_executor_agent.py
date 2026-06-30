@@ -52,12 +52,18 @@ class ActionExecutorAgent(BaseAgent):
         self._max_actions_per_session = _system_settings.get("max_actions_per_session", 100)  # Hard safety limit
         self.log(f"ActionExecutorAgent initialized. Screen: {self._screen_width}x{self._screen_height}")
 
+    from traceroot import observe, update_current_span
+    @observe(name="action_executor.run", type="agent")
     async def execute(self, task_input: str, context: Optional[Dict] = None) -> Any:
         """
         Execute a single action step.
         task_input: JSON string of the step to execute
         context: Must contain "vision_elements" from VisionPerceptionAgent
         """
+        update_current_span({
+            "task_input_preview": str(task_input)[:100],
+            "intent": None,
+        })
         try:
             step = json.loads(task_input) if isinstance(task_input, str) else task_input
         except json.JSONDecodeError:
@@ -376,6 +382,7 @@ class ActionExecutorAgent(BaseAgent):
         # Unknown command - require confirmation
         return False, "Command not in allowlist - confirmation required"
 
+    @observe(name="ActionExecutor.run_terminal_command", type="tool")
     async def _action_run_terminal_command(self, params: Dict, context: Optional[Dict]) -> Dict:
         """Execute a command in PowerShell/CMD with security validation."""
         command = params.get("command", "")

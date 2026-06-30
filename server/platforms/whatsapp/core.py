@@ -600,13 +600,19 @@ def start_whatsapp_core(config):
     global _core_instance
     try:
         import subprocess
+        import os
+        is_windows = os.name == 'nt'
+        
         log_info("[WHATSAPP] Clearing orphaned bridge processes on port 9876...")
         try:
-            res = subprocess.run('netstat -ano | findstr :9876', shell=True, capture_output=True, text=True)
-            for line in res.stdout.strip().split('\n'):
-                if 'LISTENING' in line:
-                    pid = line.strip().split()[-1]
-                    subprocess.run(f'taskkill /F /PID {pid}', shell=True, capture_output=True)
+            if is_windows:
+                res = subprocess.run('netstat -ano | findstr :9876', shell=True, capture_output=True, text=True)
+                for line in res.stdout.strip().split('\n'):
+                    if 'LISTENING' in line:
+                        pid = line.strip().split()[-1]
+                        subprocess.run(f'taskkill /F /PID {pid}', shell=True, capture_output=True)
+            else:
+                subprocess.run('fuser -k 9876/tcp', shell=True, capture_output=True)
         except Exception:
             pass
 
@@ -614,13 +620,17 @@ def start_whatsapp_core(config):
         script_path = os.path.join(os.path.dirname(__file__), "baileys_bridge.cjs")
         root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
         log_file = open(os.path.join(root_dir, "baileys_bridge.log"), "w")
-        CREATE_NO_WINDOW = 0x08000000
+        
+        kwargs = {}
+        if is_windows:
+            kwargs['creationflags'] = 0x08000000
+            
         _bridge_process = subprocess.Popen(
             ["node", script_path], 
             stdout=log_file,
             stderr=subprocess.STDOUT,
             cwd=root_dir,
-            creationflags=CREATE_NO_WINDOW
+            **kwargs
         )
     except Exception as e:
         log_info(f"[WHATSAPP] Failed to auto-launch bridge: {e}")

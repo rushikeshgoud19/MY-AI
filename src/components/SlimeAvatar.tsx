@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef } from 'react';
 
 export interface SlimeState {
   valence: number;      // -1 to 1 (sad to happy)
@@ -16,9 +16,20 @@ interface SlimeAvatarProps {
 
 export const SlimeAvatar: React.FC<SlimeAvatarProps> = ({ state, size = 250 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [lastActive, setLastActive] = useState<number>(Date.now());
-  const [blink, setBlink] = useState(false);
+  
+  // Use Refs for state that changes rapidly to avoid destroying the canvas loop!
+  const lastActiveRef = useRef<number>(Date.now());
+  const blinkRef = useRef<boolean>(false);
   const mousePosRef = useRef({ x: 0, y: 0 }); // Normalized -1 to 1
+  const stateRef = useRef<SlimeState>(state);
+
+  // Sync state prop to ref
+  useEffect(() => {
+    stateRef.current = state;
+    if (state.isThinking || state.isListening || state.isTalking) {
+      lastActiveRef.current = Date.now();
+    }
+  }, [state]);
 
   // Track global mouse position without re-rendering React
   useEffect(() => {
@@ -27,7 +38,7 @@ export const SlimeAvatar: React.FC<SlimeAvatarProps> = ({ state, size = 250 }) =
       const nx = (e.clientX / window.innerWidth) * 2 - 1;
       const ny = (e.clientY / window.innerHeight) * 2 - 1;
       mousePosRef.current = { x: nx, y: ny };
-      setLastActive(Date.now()); // Keep awake when moving mouse
+      lastActiveRef.current = Date.now(); // Keep awake when moving mouse
     };
     window.addEventListener('mousemove', handleMouseMove);
     return () => window.removeEventListener('mousemove', handleMouseMove);
@@ -36,20 +47,13 @@ export const SlimeAvatar: React.FC<SlimeAvatarProps> = ({ state, size = 250 }) =
   // Auto-blink
   useEffect(() => {
     const blinkInterval = setInterval(() => {
-      setBlink(true);
-      setTimeout(() => setBlink(false), 150);
+      blinkRef.current = true;
+      setTimeout(() => { blinkRef.current = false; }, 150);
     }, 3000 + Math.random() * 2000);
     return () => clearInterval(blinkInterval);
   }, []);
 
-  // Track activity for sleep
-  useEffect(() => {
-    if (state.isThinking || state.isListening || state.isTalking) {
-      setLastActive(Date.now());
-    }
-  }, [state]);
-
-  // Render slime on canvas
+  // Render slime on canvas (Continuous loop, decoupled from React state!)
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -61,19 +65,6 @@ export const SlimeAvatar: React.FC<SlimeAvatarProps> = ({ state, size = 250 }) =
     ctx.scale(dpr, dpr);
 
     const centerX = size / 2;
-    const centerY = size / 2;
-
-    // Core colors (Rimuru style base)
-    // Default happy: light blue (#9bd4f5)
-    // Angry: red/orange
-    // Ecstatic: glowing cyan/yellow
-    let baseColor = { r: 155, g: 212, b: 245 }; // Light blue
-
-    if (state.valence < -0.3) {
-      baseColor = { r: 130, g: 150, b: 200 }; // Sad purple-ish
-    } else if (state.valence > 0.6 && state.arousal > 0.6) {
-      baseColor = { r: 100, g: 255, b: 255 }; // Hyper cyan
-    }
 
     let animationFrameId: number;
 
@@ -81,6 +72,20 @@ export const SlimeAvatar: React.FC<SlimeAvatarProps> = ({ state, size = 250 }) =
       ctx.clearRect(0, 0, size, size);
 
       const time = Date.now() / 1000;
+      const currentState = stateRef.current;
+      const isSleeping = (Date.now() - lastActiveRef.current) > 120000; // 2 minutes
+      const blink = blinkRef.current;
+
+      // Core colors
+      let baseColor = { r: 155, g: 212, b: 245 }; // Light blue
+      if (currentState.valence < -0.3) {
+        baseColor = { r: 130, g: 150, b: 200 }; // Sad purple-ish
+      } else if (currentState.valence > 0.6 && currentState.arousal > 0.6) {
+        baseColor = { r: 100, g: 255, b: 255 }; // Hyper cyan
+      }
+      if (currentState.isListening) {
+        baseColor = { r: 255, g: 182, b: 193 }; // Cute pink when listening!
+      }
 
       // Physics calculations
       const breathe = Math.sin(time * 2.5) * 2;
@@ -90,7 +95,7 @@ export const SlimeAvatar: React.FC<SlimeAvatarProps> = ({ state, size = 250 }) =
       let squishY = 1.0;
       let squishX = 1.0;
 
-      if (state.valence > 0.5) {
+      if (currentState.valence > 0.5 || currentState.isListening) {
         // Jumping up and down
         bounceY = -Math.abs(Math.sin(time * 4)) * (size * 0.1);
 
@@ -105,8 +110,15 @@ export const SlimeAvatar: React.FC<SlimeAvatarProps> = ({ state, size = 250 }) =
       }
 
       ctx.save();
-      // Push the slime further down the canvas to prevent the top from clipping!
+      
+      // Push the slime further down the canvas to prevent the top from clipping
       ctx.translate(centerX, size * 0.70 + bounceY); 
+      
+      // Add a cute tilt when listening
+      if (currentState.isListening) {
+        ctx.rotate(Math.sin(time * 6) * 0.15);
+      }
+      
       ctx.scale(squishX, squishY);
 
       // Slime radius
@@ -154,7 +166,9 @@ export const SlimeAvatar: React.FC<SlimeAvatarProps> = ({ state, size = 250 }) =
       ctx.fill();
 
       // 4. Blush Marks (Pink Ovals on Cheeks)
-      const blushOpacity = state.valence > 0 ? 0.6 + (state.valence * 0.4) : 0.2;
+      let blushOpacity = currentState.valence > 0 ? 0.6 + (currentState.valence * 0.4) : 0.2;
+      if (currentState.isListening) blushOpacity = 0.9;
+      
       const blushY = -r * 0.7;
       const blushX = r * 0.7;
 
@@ -169,15 +183,44 @@ export const SlimeAvatar: React.FC<SlimeAvatarProps> = ({ state, size = 250 }) =
       ctx.fill();
 
       // 5. Eyes
-      const isSleeping = (Date.now() - lastActive) > 120000; // 2 minutes
-
       const eyeY = -r * 0.85;
       const eyeX = r * 0.35;
       const eyeW = r * 0.25;
 
-      if (isSleeping) {
+      if (currentState.isListening) {
+        // Cute ^ ^ eyes for listening
+        ctx.strokeStyle = '#1e3a8a';
+        ctx.lineWidth = Math.max(2, r * 0.08);
+        ctx.lineCap = 'round';
+        
+        const eyeH = r * 0.15;
+        // Left eye ^
+        ctx.beginPath();
+        ctx.moveTo(-eyeX - eyeW, eyeY + eyeH/2);
+        ctx.quadraticCurveTo(-eyeX - eyeW/2, eyeY - eyeH, -eyeX, eyeY + eyeH/2);
+        ctx.stroke();
+
+        // Right eye ^
+        ctx.beginPath();
+        ctx.moveTo(eyeX, eyeY + eyeH/2);
+        ctx.quadraticCurveTo(eyeX + eyeW/2, eyeY - eyeH, eyeX + eyeW, eyeY + eyeH/2);
+        ctx.stroke();
+
+        // Floating Sparkles / Music Notes
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        const symbols = ['🎵', '✨', '🎶'];
+        for(let i=0; i<3; i++) {
+            const floatY = (time * 2 + i * 2) % (Math.PI * 2);
+            const nx = Math.sin(time * 3 + i * 2.5) * r * 1.8;
+            const ny = -r * 1.8 - floatY * r * 0.4;
+            ctx.font = `${r*0.4}px Arial`;
+            ctx.fillText(symbols[i], nx, ny);
+        }
+
+      } else if (isSleeping) {
         // Closed slits: \ /
-        const eyeH = state.valence > 0.5 ? r * 0.1 : r * 0.05;
+        const eyeH = currentState.valence > 0.5 ? r * 0.1 : r * 0.05;
 
         ctx.strokeStyle = '#1e3a8a';
         ctx.lineWidth = 3;
@@ -244,13 +287,15 @@ export const SlimeAvatar: React.FC<SlimeAvatarProps> = ({ state, size = 250 }) =
       cancelAnimationFrame(animationFrameId);
     };
 
-  }, [state, size, lastActive, blink]);
+  // Only recreate the loop if the canvas size changes! 
+  // We removed state and lastActive to prevent the lag!
+  }, [size]);
 
   const handleSlimeClick = () => {
     // Manually wake up and act happy when clicked
-    setLastActive(Date.now());
-    setBlink(true);
-    setTimeout(() => setBlink(false), 200);
+    lastActiveRef.current = Date.now();
+    blinkRef.current = true;
+    setTimeout(() => { blinkRef.current = false; }, 200);
   };
 
   return (

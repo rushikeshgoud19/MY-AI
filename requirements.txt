@@ -39,3 +39,4 @@ fastdtw
 deepfilternet
 torchaudio
 watchdog
+traceroot>=0.1.0

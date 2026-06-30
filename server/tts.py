@@ -94,8 +94,11 @@ def clean_text_for_tts(text: str) -> str:
         
     return tts_text
 
+from traceroot import observe, update_current_span
+@observe(name="media.generate", type="agent")
 async def generate_tts(text: str, config: dict) -> bytes:
     """Generate speech from text using edge-tts (free Microsoft Neural voices) and return audio bytes."""
+    update_current_span(metadata={"text_preview": text[:50]})
     tts_text = clean_text_for_tts(text)
     if not tts_text:
         return b""

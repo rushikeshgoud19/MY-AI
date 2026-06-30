@@ -19,6 +19,7 @@ logger = logging.getLogger("mizune.audio")
 is_active_listening = False
 _recording_lock = threading.Lock()
 LAST_WAKE_TIME = 0.0
+MANUAL_WAKE_TRIGGER = threading.Event()
 
 # Initialize speech recognizer
 recognizer = sr.Recognizer()
@@ -256,12 +257,22 @@ def listen_for_wake_word(config: dict, on_wake_trigger_fn, broadcast_sync_fn):
 
     wake_language = config.get("wake_language", "en-IN")
     wake_energy_threshold = int(config.get("wake_energy_threshold", 180))
-    wake_phrase_time_limit = float(config.get("wake_phrase_time_limit", 15.0)) # Increased from 4.5s
-    wake_timeout = float(config.get("wake_timeout", 6.0))
+    wake_phrase_time_limit = float(config.get("wake_phrase_time_limit", 2.5)) # Decreased from 15.0s to stop blocking F2 trigger
+    wake_timeout = 1.0 # Lowered to 1.0 to quickly release mic for F2
     wake_adjust_noise_sec = float(config.get("wake_adjust_noise_sec", 0.3))
     wake_cooldown = float(config.get("wake_cooldown_sec", 3.0))
 
     while True:
+        if MANUAL_WAKE_TRIGGER.is_set():
+            MANUAL_WAKE_TRIGGER.clear()
+            log_info("[WAKE] Manual trigger activated (F2)!")
+            broadcast_sync_fn({"type": "stop_audio"})
+            broadcast_sync_fn({"type": "status", "text": "Triggered"})
+            on_wake_trigger_fn(None)
+            # Clear it again in case F2 was mashed repeatedly while we were recording
+            MANUAL_WAKE_TRIGGER.clear()
+            continue
+
         # CRITICAL: Only listen for wake word if no one is currently recording a command
         if is_active_listening:
             time.sleep(0.5)
@@ -390,6 +401,9 @@ def listen_for_wake_word(config: dict, on_wake_trigger_fn, broadcast_sync_fn):
             time.sleep(3)
         except Exception as e:
             log_info(f"[WAKE] Error: {e}")
+            if "PyAudio" in str(e):
+                log_info("[WAKE] PyAudio is missing. Disabling wake word listener permanently on this machine.")
+                break
             time.sleep(1)
 
 def play_audio_bytes(audio_bytes: bytes):

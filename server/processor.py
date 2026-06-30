@@ -321,23 +321,24 @@ You are looking at Master through your webcam camera RIGHT NOW. Describe what yo
     chronicle = global_session_store.get_recent(session_id, limit=config.get("memory_size", 30))
     
     # Cross-session memory lookup
-    triggers = ["remember", "yesterday", "who is", "what is", "did i", "did we", "have i", "have we", "do you know", "where is", "where does", "tell me about", "what does", "do u know"]
-    if any(t in lower_text for t in triggers):
+    # OPTIMIZED: Only trigger heavy ChromaDB lookups for explicit memory requests, not common words like "what is"
+    triggers = ["remember", "yesterday", "did i", "did we", "have i", "have we"]
+    if any(t in lower_text for t in triggers) and len(lower_text) > 8:
         query = lower_text
-        for word in ["remember", "yesterday", "who is", "what is", "did i", "did we", "have i", "have we", "do you know", "can you", "where is", "where does", "tell me about", "what does", "do u know"]:
+        for word in triggers + ["do you know", "can you tell me", "what was"]:
             query = query.replace(word, "")
         query = query.strip()
         if len(query) > 2:
             past_context = ""
-            # Search SQLite Chat History
-            past = global_session_store.search_across_sessions(query, limit=3)
+            # Search SQLite Chat History (Fast)
+            past = global_session_store.search_across_sessions(query, limit=2)
             if past:
                 past_context += "Past Chat Mentions:\n" + "\n".join([f"[{p['timestamp']}] {p['role']}: {p['content']}" for p in past]) + "\n\n"
             
-            # Search ChromaDB Semantic Memory & Advanced Memory Tree
+            # Search ChromaDB Semantic Memory & Advanced Memory Tree (Slow - Now gated)
             try:
                 from .memory_tree import memory_tree_db
-                tree_facts = memory_tree_db.recall(query, None, {}, limit=5)
+                tree_facts = memory_tree_db.recall(query, None, {}, limit=2)
                 if tree_facts:
                     past_context += "Compressed Memory Graph Nodes:\n"
                     for fact in tree_facts:
@@ -346,7 +347,7 @@ You are looking at Master through your webcam camera RIGHT NOW. Describe what yo
                         else:
                             past_context += f"- {fact['content']}\n"
                             
-                semantic_facts = memory.recall_longterm(query, n_results=3)
+                semantic_facts = memory.recall_longterm(query, n_results=2)
                 if semantic_facts:
                     past_context += "Semantic Long-Term Memory Facts:\n" + "\n".join([f"- {fact}" for fact in semantic_facts]) + "\n"
             except Exception as e:
@@ -463,11 +464,11 @@ You are looking at Master through your webcam camera RIGHT NOW. Describe what yo
             clean_res = original_res
             tool_calls = []
         
-        if "[SLEEP]" in clean_res.upper() or "[SKIP]" in clean_res.upper():
+        if "[SLEEP]" in clean_res.upper() or "[SKIP]" in clean_res.upper() or clean_res.strip().lower() in ["skip", "skip.", '"skip"']:
             log_info("[PROACTIVE] Mizune decided to skip/sleep.")
             clean_res = re.sub(r"\[SLEEP\]", "", clean_res, flags=re.IGNORECASE).strip()
             clean_res = re.sub(r"\[SKIP\]", "", clean_res, flags=re.IGNORECASE).strip()
-            if not clean_res:
+            if not clean_res or clean_res.lower() in ["skip", "skip.", '"skip"']:
                 return None
 
         # Check explicit tags

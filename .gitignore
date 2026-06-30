@@ -81,3 +81,14 @@ Knowledge/
 Daily/
 contacts.json
 .env
+
+# Mobile and Android
+*.hprof
+.gradle/
+local.properties
+*.tar
+
+
+build/
+app/build/
+

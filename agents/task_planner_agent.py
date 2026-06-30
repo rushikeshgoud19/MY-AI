@@ -132,6 +132,8 @@ Use the same JSON format as before. Start from the current screen state."""
             except Exception as e:
                 self.log(f"Planner LLM init failed: {e}")
 
+    from traceroot import observe, update_current_span
+    @observe(name="task_planner.plan", type="agent")
     async def execute(self, task_input: str, context: Optional[Dict] = None) -> Any:
         """
         Entry point. Actions:
@@ -140,6 +142,7 @@ Use the same JSON format as before. Start from the current screen state."""
           - "next": Get the next step in current plan
           - "status": Get current plan status
         """
+        update_current_span({"task_input": task_input[:100]})
         if task_input.startswith("plan:"):
             goal = task_input[5:].strip()
             screen_context = context.get("screen_context", "Unknown") if context else "Unknown"

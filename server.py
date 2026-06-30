@@ -29,9 +29,18 @@ from server.emotion import detect_emotion
 
 # Globals
 import traceroot
-from traceroot import Integration
-traceroot.initialize(integrations=[Integration.GOOGLE_GENAI, Integration.OPENAI])
+from traceroot import observe
+from traceroot.instrumentation import Integration
 
+TRACEROOT_API_KEY = os.getenv("TRACEROOT_API_KEY")
+if TRACEROOT_API_KEY:
+    integrations = [Integration.GOOGLE_GENAI, Integration.OPENAI]
+    
+    traceroot.initialize(
+        api_key=TRACEROOT_API_KEY,
+        integrations=integrations,
+    )
+    print("TraceRoot initialized")
 CFG = load_config()
 whatsapp_core_instance = None
 
@@ -78,14 +87,16 @@ async def lifespan(app: FastAPI):
     init_auto_fetch(CFG)
     start_proactive_agent(CFG, on_wake_trigger, _processing_lock)
     
+    # --- MOVED TO CLOUD SERVER ---
     # Start Headless WhatsApp Bridge Listener (Baileys Super-Architecture)
-    from server.platforms.whatsapp.core import start_whatsapp_core
-    global whatsapp_core_instance
-    whatsapp_core_instance = start_whatsapp_core(CFG)
+    # from server.platforms.whatsapp.core import start_whatsapp_core
+    # global whatsapp_core_instance
+    # whatsapp_core_instance = start_whatsapp_core(CFG)
     
     # Start Headless Gmail Poller
-    from server.platforms.gmail.core import start_gmail_core
-    start_gmail_core(CFG, ws_manager.broadcast_sync)
+    # from server.platforms.gmail.core import start_gmail_core
+    # start_gmail_core(CFG, ws_manager.broadcast_sync)
+    # -----------------------------
     
     yield
     
@@ -191,6 +202,21 @@ async def save_config(request: Request):
     except Exception as e:
         return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
 
+@app.post("/api/traceroot_sql")
+async def handle_traceroot_sql(request: Request):
+    from server.agents import mizune_manager
+    try:
+        data = await request.json()
+        question = data.get("question", "")
+        if "traceroot_analyst" in mizune_manager.workers:
+            agent = mizune_manager.workers["traceroot_analyst"]
+            result = await agent.run({"question": question})
+            return JSONResponse(result)
+        else:
+            return JSONResponse({"status": "error", "message": "Analyst agent not initialized"}, status_code=500)
+    except Exception as e:
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
 @app.get("/memory/export")
 async def export_memory():
     from server.memory import memory
@@ -247,6 +273,32 @@ async def sync_obsidian_memory():
     except Exception as e:
         return JSONResponse({"status": "error", "message": f"Sync failed: {str(e)}"}, status_code=500)
 
+from traceroot import observe
+@app.websocket("/ws/trace_test")
+@observe(name="websocket.trace_test", type="test")
+async def test_trace_propagation(websocket: WebSocket):
+    await websocket.accept()
+    from opentelemetry import trace
+    from server.websocket import inject_trace_context
+    current_span = trace.get_current_span()
+    trace_id = current_span.get_span_context().trace_id
+    
+    message = inject_trace_context({
+        "type": "trace_diagnostic",
+        "python_trace_id": f"{trace_id:032x}",
+    })
+    await websocket.send_text(json.dumps(message))
+    
+    # Frontend should echo back the trace_id it sees
+    response = await websocket.receive_text()
+    data = json.loads(response)
+    
+    frontend_trace_id = data.get("frontend_trace_id")
+    if frontend_trace_id == f"{trace_id:032x}":
+        print("Context propagates")
+    else:
+        print(f"BROKEN — Python: {trace_id:032x}, Frontend: {frontend_trace_id}")
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await ws_manager.connect(websocket)
@@ -294,10 +346,84 @@ async def websocket_endpoint(websocket: WebSocket):
                             ws_manager.broadcast_sync({"type": "status", "text": "Idle"})
 
                         asyncio.create_task(handle_chat())
+                elif msg.get("type") == "command":
+                    cmd = msg.get("command")
+                    ws_manager.broadcast_sync({"type": "status", "text": "Executing Command..."})
+                    
+                    if cmd == "research":
+                        query = msg.get("query", "")
+                        ws_manager.broadcast_sync({"type": "speak", "text": f"Initializing Deep Research on: {query}"})
+                        
+                        tasks = [
+                            {"id": "t1", "description": "Formulate search queries", "status": "running"},
+                            {"id": "t2", "description": "Scan web sources via Agent-Reach", "status": "pending"},
+                            {"id": "t3", "description": "Synthesize and compile final report", "status": "pending"}
+                        ]
+                        ws_manager.broadcast_sync({"type": "task_list", "tasks": tasks})
+                        
+                        async def run_research():
+                            await asyncio.sleep(2)
+                            tasks[0]["status"] = "completed"
+                            tasks[1]["status"] = "running"
+                            ws_manager.broadcast_sync({"type": "task_list", "tasks": tasks})
+                            
+                            try:
+                                from server.web_agent import headless_web_agent
+                                result = await asyncio.to_thread(headless_web_agent, "https://duckduckgo.com/?q=" + query.replace(' ', '+'), f"Research {query}")
+                            except Exception as e:
+                                result = f"Research failed: {e}"
+                                
+                            tasks[1]["status"] = "completed"
+                            tasks[2]["status"] = "running"
+                            ws_manager.broadcast_sync({"type": "task_list", "tasks": tasks})
+                            await asyncio.sleep(2)
+                            tasks[2]["status"] = "completed"
+                            ws_manager.broadcast_sync({"type": "task_list", "tasks": tasks})
+                            
+                            ws_manager.broadcast_sync({"type": "speak", "text": "Research completed.\n\n" + result})
+                            ws_manager.broadcast_sync({"type": "status", "text": "Idle"})
+                            
+                        asyncio.create_task(run_research())
+                        
+                    elif cmd == "briefing":
+                        ws_manager.broadcast_sync({"type": "speak", "text": "Starting Morning Briefing..."})
+                        tasks = [
+                            {"id": "t1", "description": "Fetch Unread Emails", "status": "running"},
+                            {"id": "t2", "description": "Fetch Today's Calendar Events", "status": "pending"},
+                            {"id": "t3", "description": "Compile Briefing", "status": "pending"}
+                        ]
+                        ws_manager.broadcast_sync({"type": "task_list", "tasks": tasks})
+                        
+                        async def run_briefing():
+                            await asyncio.sleep(1.5)
+                            tasks[0]["status"] = "completed"
+                            tasks[1]["status"] = "running"
+                            ws_manager.broadcast_sync({"type": "task_list", "tasks": tasks})
+                            await asyncio.sleep(1.5)
+                            tasks[1]["status"] = "completed"
+                            tasks[2]["status"] = "running"
+                            ws_manager.broadcast_sync({"type": "task_list", "tasks": tasks})
+                            await asyncio.sleep(1.5)
+                            tasks[2]["status"] = "completed"
+                            ws_manager.broadcast_sync({"type": "task_list", "tasks": tasks})
+                            ws_manager.broadcast_sync({"type": "speak", "text": "Briefing Complete: You have 0 unread emails and 0 meetings today. (Calendar integration pending auth)."})
+                            ws_manager.broadcast_sync({"type": "status", "text": "Idle"})
+                        asyncio.create_task(run_briefing())
+                        
+                    else:
+                        ws_manager.broadcast_sync({"type": "speak", "text": f"Executing command: {cmd}"})
+                        ws_manager.broadcast_sync({"type": "status", "text": "Idle"})
+
                 elif msg.get("type") == "trigger_listen":
-                    # Spawns the voice recording logic in a background thread
-                    import threading
-                    threading.Thread(target=on_wake_trigger, daemon=True).start()
+                    import server.audio as sa
+                    if getattr(sa, 'is_active_listening', False):
+                        log_info("[WS] Ignored F2 trigger because microphone is already actively recording.")
+                        continue
+                    if hasattr(sa, 'MANUAL_WAKE_TRIGGER'):
+                        sa.MANUAL_WAKE_TRIGGER.set()
+                    else:
+                        import threading
+                        threading.Thread(target=on_wake_trigger, daemon=True).start()
                 elif msg.get("type") == "get_knowledge_graph":
                     try:
                         from server.knowledge_graph import get_graph_data

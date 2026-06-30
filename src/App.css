@@ -167,6 +167,7 @@ body::after {
 /* ─── AVATAR CONTAINER ─── */
 .avatar-container {
   display: flex;
+  flex-direction: column;
   justify-content: center;
   align-items: center;
   flex: 1;

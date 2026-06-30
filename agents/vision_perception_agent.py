@@ -152,6 +152,8 @@ Return ONLY valid JSON:
             except Exception as e:
                 self.log(f"Groq Vision init failed: {e}")
 
+    from traceroot import observe, update_current_span
+    @observe(name="perception.process", type="agent")
     async def execute(self, task_input: str, context: Optional[Dict] = None) -> Any:
         """
         Main entry point. Supports multiple actions:
@@ -159,6 +161,7 @@ Return ONLY valid JSON:
           - "find:<target>": Find a specific element on screen
           - "verify:<action>": Compare before/after screenshots
         """
+        update_current_span({"vision_task": task_input})
         if task_input.startswith("find:"):
             target = task_input[5:].strip()
             return await self.find_element(target)

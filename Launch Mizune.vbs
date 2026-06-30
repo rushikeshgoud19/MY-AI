@@ -5,12 +5,11 @@ Set fso = CreateObject("Scripting.FileSystemObject")
 currentDir = fso.GetParentFolderName(WScript.ScriptFullName)
 WshShell.CurrentDirectory = currentDir
 
-' 1. Start the Python Backend silently
-backendCmd = "python server.py"
-WshShell.Run "cmd /c " & backendCmd, 0, False
+' 1. (REMOVED) The Python Backend now runs 24/7 on the Azure Cloud.
 
-' 2. Start the Tauri Frontend App
+' 2. Start the Tauri Frontend App (or dev server)
 tauriApp = currentDir & "\src-tauri\target\release\mizune-ai.exe"
+' If the release exe doesn't exist, you can use npm run dev instead
 WshShell.Run """" & tauriApp & """", 1, False
 
 Set WshShell = Nothing

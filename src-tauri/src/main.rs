@@ -72,15 +72,20 @@ fn main() {
             #[cfg(target_os = "windows")]
             let child_process = {
                 use std::os::windows::process::CommandExt;
-                std::process::Command::new(".venv\\Scripts\\python.exe")
+                let root_dir = "C:\\Users\\rushi\\OneDrive\\Desktop\\my Ai";
+                
+                std::process::Command::new("python")
                     .arg("server.py")
+                    .current_dir(root_dir)
                     .creation_flags(0x08000000)
                     .spawn()
+                    .map_err(|e| log::error!("Failed to spawn python server: {}", e))
                     .ok()
             };
             #[cfg(not(target_os = "windows"))]
             let child_process = {
                 std::process::Command::new(".venv/bin/python")
+                    .current_dir("..")
                     .arg("server.py")
                     .spawn()
                     .ok()

@@ -39,7 +39,7 @@ export const MemoryGraph: React.FC = () => {
     window.addEventListener('resize', updateDimensions);
     
     // Connect to websocket to fetch data
-    const wsHost = window.location.hostname === 'localhost' ? '192.168.0.2' : window.location.hostname;
+    const wsHost = '127.0.0.1';
     const ws = new WebSocket(`ws://${wsHost}:8001/ws`);
     
     ws.onopen = () => {

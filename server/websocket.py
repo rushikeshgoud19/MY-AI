@@ -14,6 +14,17 @@ from .config import log_info
 
 logger = logging.getLogger("mizune.websocket")
 
+from opentelemetry import trace
+from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
+
+def inject_trace_context(message_dict: dict) -> dict:
+    """Inject OTel trace context into WebSocket message."""
+    propagator = TraceContextTextMapPropagator()
+    carrier = {}
+    propagator.inject(carrier)
+    message_dict["_trace_context"] = carrier
+    return message_dict
+
 class WebSocketManager:
     """Manages WebSocket connections and broadcasting messages."""
     def __init__(self):
@@ -44,7 +55,8 @@ class WebSocketManager:
             return
 
         async def _send():
-            data = json.dumps(message)
+            msg_injected = inject_trace_context(message.copy())
+            data = json.dumps(msg_injected)
             dead = []
             with self._clients_lock:
                 client_list = self.connected_clients.copy()
@@ -68,3 +80,4 @@ class WebSocketManager:
 
 # Create a default instance to be imported
 ws_manager = WebSocketManager()
+

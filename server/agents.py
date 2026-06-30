@@ -217,12 +217,14 @@ class MizuneManagerWrapper:
             from agents.system_agent import SystemAgent
             from agents.vision_perception_agent import VisionPerceptionAgent
             from agents.new.obsidian_agent import ObsidianAgent
+            from agents.traceroot_analyst_agent import TracerootAnalystAgent
             
             self.workers["planner"] = TaskPlannerAgent(config)
             self.workers["executor"] = ActionExecutorAgent(config)
             self.workers["system"] = SystemAgent(config)
             self.workers["vision"] = VisionPerceptionAgent(config)
             self.workers["obsidian"] = ObsidianAgent(config)
+            self.workers["traceroot_analyst"] = TracerootAnalystAgent(config)
         except Exception as e:
             log_info(f"[BRAIN] Failed to connect agentic brains: {e}")
             
