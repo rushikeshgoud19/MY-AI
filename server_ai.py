@@ -342,7 +342,8 @@ def get_ai_response(text: str, history: list, config: dict, system_prompt_overri
             system_prompt = config.get("personality", "You are an AI assistant.")
             
         import datetime
-        current_time = datetime.datetime.now().strftime("%I:%M %p, %A %B %d, %Y")
+        tz_ist = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
+        current_time = datetime.datetime.now(tz_ist).strftime("%I:%M %p, %A %B %d, %Y")
         context_layer = (
             "\n\n[CONTEXT LAYER]\n"
             f"Current Time: {current_time}\n"
