@@ -22,7 +22,7 @@ try:
 
     print("3. Testing MemoryTreeDB...")
     from server.memory_tree import memory_tree_db
-    memory_tree_db.insert_chunk("test_chunk_1", "test_source", "This is a test chunk", 5, {"test": True})
+    memory_tree_db.insert_chunk("test_chunk_1", "system", "This is a test chunk", 5, {"test": True})
     print("MemoryTreeDB inserted chunk successfully.")
 
     print("4. Testing VaultSync initialization...")
@@ -55,10 +55,10 @@ try:
     print(f"Security Scanner block working: {not safe} (Msg: {msg})")
     validate_api_keys(config)
 
-    print("\n✅ All core systems loaded and initialized successfully!".encode('utf-8').decode('utf-8', 'ignore'))
+    print("\n[SUCCESS] All core systems loaded and initialized successfully!")
     sys.exit(0)
 except Exception as e:
     import traceback
     traceback.print_exc()
-    print(f"\n❌ ERROR: {e}")
+    print(f"\n[ERROR] ERROR: {e}")
     sys.exit(1)

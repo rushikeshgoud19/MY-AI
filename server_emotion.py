@@ -47,7 +47,7 @@ from traceroot import observe, update_current_span
 @observe(name="emotion.analyze", type="agent")
 def detect_emotion(text: str) -> str:
     """Analyze text and return the dominant emotion, or 'neutral'."""
-    pass
+    update_current_span(metadata={"text_preview": text[:50]})
     text_lower = text.lower()
     
     # First check explicit tags like [EMOTION: happy]

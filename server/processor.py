@@ -35,7 +35,12 @@ def _scheduler_callback(task_description):
     from server.config import load_config
     config = load_config()
     log_info(f"[SCHEDULER WAKEUP] Processing task: {task_description}")
+    
     prompt = f"[SYSTEM ALERT: A scheduled task has triggered!] Task description: {task_description}. Please execute this task now and speak your response."
+    
+    if "VIA_WHATSAPP" in task_description or "whatsapp" in task_description.lower():
+        prompt += " IMPORTANT: The user requested this reminder on WhatsApp. You MUST use the message_whatsapp tool to send this reminder to 'Master' (or the requested contact) right now! Do NOT just say it out loud, actually send the WhatsApp message using the tool!"
+        
     threading.Thread(target=process_command, args=(prompt, config, ws_manager.broadcast_sync, 'main'), daemon=True).start()
 
 global_cron_manager.start(task_callback=_scheduler_callback)
@@ -532,12 +537,14 @@ You are looking at Master through your webcam camera RIGHT NOW. Describe what yo
                         skill_result = skill_manager.execute_skill(skill_name, *s_args)
                         log_info(f"[SKILL RESULT] {skill_result}")
                         
-                    elif name == "schedule_one_time_task":
-                        desc = args.get("description", "")
-                        trigger_time = args.get("trigger_time_iso", "")
-                        if desc and trigger_time:
-                            global_cron_manager.add_one_time_task(desc, trigger_time)
-                            log_info(f"[PROCESSOR] Scheduled one-time task: {desc} at {trigger_time}")
+                    elif name == "schedule_task":
+                        delay_mins = float(args.get("delay_minutes", 0))
+                        action = args.get("action_to_take", "")
+                        if delay_mins > 0 and action:
+                            import datetime
+                            trigger_time = datetime.datetime.now() + datetime.timedelta(minutes=delay_mins)
+                            global_cron_manager.add_one_time_task(action, trigger_time.isoformat())
+                            log_info(f"[PROCESSOR] Scheduled task: {action} at {trigger_time}")
                             
                     elif name == "schedule_recurring_task":
                         desc = args.get("description", "")
@@ -705,3 +712,59 @@ You are looking at Master through your webcam camera RIGHT NOW. Describe what yo
             log_info(f"[AI] All emergency fallbacks failed: {retry_e}")
         
         return "I'm sorry Master, all my AI connections are down right now. Please check your API keys or internet connection!"
+
+def process_mobile_vision(image_bytes: bytes, config: dict) -> str:
+    """Process image captured from mobile app using Llama 3.2 Vision on Groq (fallback to Gemini)."""
+    import base64
+    from openai import OpenAI
+    
+    log_info("[MOBILE VISION] Processing shared image/photo...")
+    prompt = "Master just showed you this image through the mobile app. Look closely and tell Master what you see. Be excited, natural, and brief (2-3 sentences). Use cute anime expressions."
+    
+    groq_key = config.get("groq_api_key", "")
+    if groq_key:
+        try:
+            b64_img = base64.b64encode(image_bytes).decode("utf-8")
+            groq_client = OpenAI(api_key=groq_key, base_url="https://api.groq.com/openai/v1")
+            
+            # Using Meta's Open Source Vision model via Groq!
+            resp = groq_client.chat.completions.create(
+                model="llama-3.2-11b-vision-preview",
+                messages=[{"role": "user", "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"}}
+                ]}],
+                max_tokens=250
+            )
+            result = (resp.choices[0].message.content or "").strip()
+            if result:
+                log_info("[MOBILE VISION] Groq Llama 3.2 Vision success!")
+                # Strip reasoning tokens if any
+                import re
+                result = re.sub(r"<think>.*?</think>", "", result, flags=re.IGNORECASE | re.DOTALL).strip()
+                return result
+        except Exception as e:
+            log_info(f"[MOBILE VISION] Groq vision failed, falling back to Gemini: {e}")
+
+    # Fallback to Gemini
+    api_key = config.get("gemini_api_key", "")
+    if api_key:
+        try:
+            from google import genai
+            from google.genai import types
+            client = genai.Client(api_key=api_key)
+            response = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=[
+                    types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
+                    types.Part.from_text(text=prompt)
+                ]
+            )
+            result = (response.text or "").strip()
+            if result:
+                log_info("[MOBILE VISION] Gemini fallback success!")
+                return result
+        except Exception as e:
+            log_info(f"[MOBILE VISION] Gemini failed: {e}")
+            
+    return "I tried to look at the picture, Master, but my eyes are a bit blurry right now! Please check your API keys."

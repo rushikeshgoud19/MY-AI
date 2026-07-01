@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  mizune-api:
+    build: .
+    container_name: mizune_backend
+    restart: always
+    ports:
+      - "8000:8000"
+    volumes:
+      # Map the memory databases to a persistent volume outside the container
+      - mizune_data:/app/data
+      - mizune_vault:/app/MizuneVault
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+
+  # Caddy Reverse Proxy for Automatic HTTPS
+  caddy:
+    image: caddy:2-alpine
+    container_name: mizune_caddy
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - mizune-api
+
+volumes:
+  mizune_data:
+  mizune_vault:
+  caddy_data:
+  caddy_config:

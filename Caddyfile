@@ -1,0 +1,5 @@
+# Replace your_azure_domain_or_ip.com with your actual Azure IP or Domain
+# If using a raw IP address without a domain, Caddy will use an internal TLS certificate instead of Let's Encrypt.
+your_azure_domain_or_ip.com {
+    reverse_proxy mizune-api:8000
+}

@@ -2,7 +2,6 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 os.environ["OPENCV_LOG_LEVEL"] = "FATAL"
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 import time
 import json
 import asyncio
@@ -88,16 +87,14 @@ async def lifespan(app: FastAPI):
     init_auto_fetch(CFG)
     start_proactive_agent(CFG, on_wake_trigger, _processing_lock)
     
-    # --- MOVED TO CLOUD SERVER ---
     # Start Headless WhatsApp Bridge Listener (Baileys Super-Architecture)
-    # from server.platforms.whatsapp.core import start_whatsapp_core
-    # global whatsapp_core_instance
-    # whatsapp_core_instance = start_whatsapp_core(CFG)
+    from server.platforms.whatsapp.core import start_whatsapp_core
+    global whatsapp_core_instance
+    whatsapp_core_instance = start_whatsapp_core(CFG)
     
     # Start Headless Gmail Poller
-    # from server.platforms.gmail.core import start_gmail_core
-    # start_gmail_core(CFG, ws_manager.broadcast_sync)
-    # -----------------------------
+    from server.platforms.gmail.core import start_gmail_core
+    start_gmail_core(CFG, ws_manager.broadcast_sync)
     
     yield
     
@@ -310,12 +307,13 @@ async def websocket_endpoint(websocket: WebSocket):
                 msg = json.loads(data)
                 if msg.get("type") == "chat":
                     text = msg.get("text", "").strip()
+                    platform = msg.get("platform", "desktop")
                     if text:
-                        ws_manager.broadcast_sync({"type": "user_input", "text": text})
+                        ws_manager.broadcast_sync({"type": "user_input", "text": text, "platform": platform})
                         ws_manager.broadcast_sync({"type": "status", "text": "Thinking..."})
 
-                        async def handle_chat():
-                            res = await asyncio.to_thread(process_command, text, CFG, ws_manager.broadcast_sync)
+                        async def handle_chat(input_text, source_platform):
+                            res = await asyncio.to_thread(process_command, input_text, CFG, ws_manager.broadcast_sync)
                             if res:
                                 from server.emotion import detect_emotion
                                 emo_str = detect_emotion(res)
@@ -329,24 +327,38 @@ async def websocket_endpoint(websocket: WebSocket):
                                 elif emo_str == "blush": v, a = 0.8, 0.6
                                 elif emo_str == "sleepy": v, a = 0.0, 0.1
                                 
-                                # Send Biometrics to Dashboard so Slime Avatar reacts
                                 ws_manager.broadcast_sync({
                                     "type": "state_update", 
                                     "payload": {"valence": v, "arousal": a}
                                 })
                                 
-                                ws_manager.broadcast_sync({"type": "speak", "text": res})
-                                try:
-                                    from server.tts import generate_tts
-                                    from server.audio import play_audio_bytes
-                                    audio_bytes = await generate_tts(res, CFG)
-                                    if audio_bytes:
-                                        play_audio_bytes(audio_bytes)
-                                except Exception as e:
-                                    log_info(f"[WS] TTS generation error: {e}")
+                                # SENTENCE-BOUNDARY CHUNKING FOR LOW LATENCY
+                                import re
+                                # Split by punctuation (. ! ?) followed by space or end of string
+                                sentences = re.split(r'(?<=[.!?])\s+|(?<=[.!?])$', res.strip())
+                                sentences = [s.strip() for s in sentences if s.strip()]
+                                
+                                if not sentences:
+                                    sentences = [res.strip()]
+                                
+                                for sentence in sentences:
+                                    ws_manager.broadcast_sync({"type": "speak", "text": sentence, "emotion": emo_str})
+                                    # Very slight delay to ensure correct order
+                                    await asyncio.sleep(0.1)
+                                
+                                # Only play audio locally if it's not a mobile client
+                                if source_platform != "mobile":
+                                    try:
+                                        from server.tts import generate_tts
+                                        from server.audio import play_audio_bytes
+                                        audio_bytes = await generate_tts(res, CFG)
+                                        if audio_bytes:
+                                            play_audio_bytes(audio_bytes)
+                                    except Exception as e:
+                                        log_info(f"[WS] TTS generation error: {e}")
                             ws_manager.broadcast_sync({"type": "status", "text": "Idle"})
 
-                        asyncio.create_task(handle_chat())
+                        asyncio.create_task(handle_chat(text, platform))
                 elif msg.get("type") == "command":
                     cmd = msg.get("command")
                     ws_manager.broadcast_sync({"type": "status", "text": "Executing Command..."})
@@ -414,6 +426,24 @@ async def websocket_endpoint(websocket: WebSocket):
                     else:
                         ws_manager.broadcast_sync({"type": "speak", "text": f"Executing command: {cmd}"})
                         ws_manager.broadcast_sync({"type": "status", "text": "Idle"})
+
+                elif msg.get("type") == "mobile_vision":
+                    base64_image = msg.get("image_b64", "")
+                    if base64_image:
+                        ws_manager.broadcast_sync({"type": "status", "text": "Looking at image..."})
+                        async def handle_vision(img_data):
+                            import base64
+                            try:
+                                img_bytes = base64.b64decode(img_data)
+                                from server.processor import process_mobile_vision
+                                res = await asyncio.to_thread(process_mobile_vision, img_bytes, CFG)
+                                if res:
+                                    ws_manager.broadcast_sync({"type": "speak", "text": res, "emotion": "surprised"})
+                                ws_manager.broadcast_sync({"type": "status", "text": "Idle"})
+                            except Exception as e:
+                                log_info(f"[WS] Mobile vision error: {e}")
+                                ws_manager.broadcast_sync({"type": "status", "text": "Vision Error"})
+                        asyncio.create_task(handle_vision(base64_image))
 
                 elif msg.get("type") == "trigger_listen":
                     import server.audio as sa

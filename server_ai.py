@@ -181,12 +181,12 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "schedule_task",
-            "description": "Use this tool when Master asks you to remind him or execute a task in the future. VERY IMPORTANT: If Master asks to be reminded on WhatsApp, you MUST include 'VIA_WHATSAPP' in the action_to_take description!",
+            "description": "Use this tool when Master asks you to remind him or execute a task in the future (e.g., 'remind me in 10min' or 'execute this in an hour').",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "delay_minutes": {"type": "number", "description": "How many minutes from now the task should run (e.g., 10 for 10 minutes, 60 for 1 hour). For exact times, calculate the minutes from now."},
-                    "action_to_take": {"type": "string", "description": "A description of what you should do when the timer goes off (e.g., 'Speak out loud: Master, it is time for your meeting' or 'VIA_WHATSAPP: message john hello')."}
+                    "delay_minutes": {"type": "number", "description": "How many minutes from now the task should run (e.g., 10 for 10 minutes, 60 for 1 hour)."},
+                    "action_to_take": {"type": "string", "description": "A description of what you should do when the timer goes off (e.g., 'Speak out loud: Master, it is time for your meeting')."}
                 },
                 "required": ["delay_minutes", "action_to_take"]
             }
@@ -278,7 +278,21 @@ TOOLS_SCHEMA = [
             }
         }
     },
-
+    {
+        "type": "function",
+        "function": {
+            "name": "schedule_one_time_task",
+            "description": "Schedule a task to be executed once at a specific future time. The time MUST be in ISO 8601 format (e.g., '2026-06-17T08:00:00'). Use this for alarms, reminders, or delayed actions.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "description": {"type": "string", "description": "A natural language description of what to do (e.g., 'remind me to drink water', 'message john hello')."},
+                    "trigger_time_iso": {"type": "string", "description": "The exact time to trigger the task in ISO 8601 format."}
+                },
+                "required": ["description", "trigger_time_iso"]
+            }
+        }
+    },
     {
         "type": "function",
         "function": {
@@ -328,8 +342,7 @@ def get_ai_response(text: str, history: list, config: dict, system_prompt_overri
             system_prompt = config.get("personality", "You are an AI assistant.")
             
         import datetime
-        tz_ist = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
-        current_time = datetime.datetime.now(tz_ist).strftime("%I:%M %p, %A %B %d, %Y")
+        current_time = datetime.datetime.now().strftime("%I:%M %p, %A %B %d, %Y")
         context_layer = (
             "\n\n[CONTEXT LAYER]\n"
             f"Current Time: {current_time}\n"
@@ -485,15 +498,15 @@ def get_ai_response(text: str, history: list, config: dict, system_prompt_overri
                     return _groq_response(text, history, system_prompt, config)
                     
             elif model_choice == "gemini":
-                if config.get("nvidia_api_key"):
-                    try:
-                        log_info("[AI] Falling back to Nvidia NIM...")
-                        return _nvidia_response(text, history, system_prompt, config)
-                    except Exception as fallback_e:
-                        log_info(f"[AI] Nvidia fallback failed: {fallback_e}")
                 if config.get("groq_api_key"):
-                    log_info("[AI] Falling back to Groq...")
-                    return _groq_response(text, history, system_prompt, config)
+                    try:
+                        log_info("[AI] Falling back to Groq...")
+                        return _groq_response(text, history, system_prompt, config)
+                    except Exception as fallback_e:
+                        log_info(f"[AI] Groq fallback failed: {fallback_e}")
+                if config.get("nvidia_api_key"):
+                    log_info("[AI] Falling back to Nvidia NIM...")
+                    return _nvidia_response(text, history, system_prompt, config)
                     
             elif model_choice == "openai" and config.get("anthropic_api_key"):
                 log_info("[AI] Falling back to Anthropic...")
@@ -597,9 +610,7 @@ def _gemini_response(text: str, history: list, system_prompt: str, config: dict)
                                 parsed_tools.append({"name": tool_name, "args": args_dict})
                                 
                         elif part.text and not text_response:
-                            cleaned_text = part.text.strip()
-                            if cleaned_text not in ["}", "{", "```json", "```"]:
-                                text_response = cleaned_text
+                            text_response = part.text
                 
                 if not parsed_tools:
                     if not text_response:
@@ -618,7 +629,6 @@ def _gemini_response(text: str, history: list, system_prompt: str, config: dict)
                 import shlex
                 
                 tool_responses = []
-                fast_track_results = []
                 log_info(f"[AI] Gemini requested {len(parsed_tools)} native tool calls. Executing...")
                 for t in parsed_tools:
                     tool_name = t["name"]
@@ -741,22 +751,7 @@ def _gemini_response(text: str, history: list, system_prompt: str, config: dict)
                             response={"result": str(tool_result)}
                         )
                     )
-                    fast_track_results.append(str(tool_result))
                 
-                FAST_TRACK_TOOLS = ["schedule_task", "open_app", "close_app", "message_whatsapp", "execute_skill", "notify_master"]
-                all_fast_track = all(t["name"] in FAST_TRACK_TOOLS for t in parsed_tools)
-                
-                if all_fast_track and parsed_tools:
-                    fast_response = " ".join(fast_track_results)
-                    if not fast_response: fast_response = "Action completed."
-                    
-                    if executed_tools_meta:
-                        from .trajectory_logger import trajectory_logger
-                        trajectory_logger.log_trajectory(text, history, executed_tools_meta, fast_response)
-                        
-                    log_info("[AI] Fast-tracking response (bypassing Trip 2 to model).")
-                    return (fast_response, [])
-
                 response = chat.send_message(tool_responses)
             
             return (text_response, [])

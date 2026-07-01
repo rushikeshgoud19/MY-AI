@@ -58,7 +58,7 @@ class PushToTalkManager(
 
         try {
             recorder.apply {
-                setAudioSource(MediaRecorder.AudioSource.VOICE_RECOGNITION)
+                setAudioSource(MediaRecorder.AudioSource.MIC)
                 setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
                 setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
                 setAudioEncodingBitRate(128_000)
@@ -81,27 +81,38 @@ class PushToTalkManager(
 
     fun stopRecordingAndUpload() {
         if (!isRecording) return
-
-        try {
-            mediaRecorder?.stop()
-        } catch (e: Exception) {
-            Log.w(TAG, "stop() threw — recording likely too short", e)
-        } finally {
-            safeReleaseRecorder()
-            isRecording = false
-            listener.onRecordingStopped()
-        }
+        
+        // 1. Immediately update UI to show we stopped listening
+        isRecording = false
+        listener.onRecordingStopped()
 
         val file = audioFile
+        val recorder = mediaRecorder
         audioFile = null
+        mediaRecorder = null
 
-        if (file == null || !file.exists() || file.length() < MIN_VALID_FILE_BYTES) {
-            listener.onError("Recording was empty or too short — try holding the button longer.")
-            file?.delete()
-            return
+        // 2. Stop and upload in the background to avoid blocking the main thread/UI
+        managerScope.launch {
+            try {
+                recorder?.stop()
+            } catch (e: Exception) {
+                Log.w(TAG, "stop() threw — recording likely too short", e)
+            } finally {
+                try {
+                    recorder?.release()
+                } catch (e: Exception) {}
+            }
+
+            if (file == null || !file.exists() || file.length() < MIN_VALID_FILE_BYTES) {
+                withContext(Dispatchers.Main) {
+                    listener.onError("Recording was empty or too short — try holding the button longer.")
+                }
+                file?.delete()
+                return@launch
+            }
+
+            uploadAudio(file)
         }
-
-        uploadAudio(file)
     }
 
     fun cancelRecording() {
@@ -127,7 +138,9 @@ class PushToTalkManager(
     }
 
     private fun uploadAudio(file: File) {
-        listener.onUploadStarted()
+        managerScope.launch(Dispatchers.Main) {
+            listener.onUploadStarted()
+        }
 
         managerScope.launch {
             try {

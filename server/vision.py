@@ -142,7 +142,7 @@ def _analyze_screen_now(mode: str, config: dict, broadcast_sync_fn):
                 groq_client = OpenAI(api_key=groq_key, base_url="https://api.groq.com/openai/v1")
 
                 resp = groq_client.chat.completions.create(
-                    model="meta-llama/llama-4-scout-17b-16e-instruct",
+                    model="llama-3.2-11b-vision-preview",
                     messages=[{
                         "role": "user",
                         "content": [

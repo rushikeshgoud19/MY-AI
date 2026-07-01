@@ -35,11 +35,11 @@ class CodeReviewAgent:
     def __init__(self, config: Dict[str, Any]):
         self.config = config
 
-    from traceroot import observe, update_current_span
+    from traceroot import observe
     @observe(name="critic.review", type="agent")
     def review_file(self, file_path: str) -> Dict[str, Any]:
         """Review a code file."""
-        update_current_span({"file_path": file_path})
+        # update_current_span({"file_path": file_path})
         if not os.path.exists(file_path):
             return {"success": False, "error": "File not found"}
 

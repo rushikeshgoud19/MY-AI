@@ -5,11 +5,18 @@ import android.net.Uri
 import android.util.Log
 import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
-import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import org.json.JSONObject
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 
 class TtsPlayer(private val context: Context) {
-    private val player = ExoPlayer.Builder(context).build()
+    private val player = ExoPlayer.Builder(context).build().apply {
+        val audioAttributes = androidx.media3.common.AudioAttributes.Builder()
+            .setUsage(androidx.media3.common.C.USAGE_MEDIA)
+            .setContentType(androidx.media3.common.C.AUDIO_CONTENT_TYPE_SPEECH)
+            .build()
+        setAudioAttributes(audioAttributes, true)
+    }
 
     private var onPlaybackEndedCallback: (() -> Unit)? = null
 
@@ -35,8 +42,8 @@ class TtsPlayer(private val context: Context) {
         Thread {
             try {
                 val client = okhttp3.OkHttpClient()
-                val json = """{"text": "${text.replace("\"", "\\\"")}"}"""
-                val mediaType = "application/json".toMediaTypeOrNull()
+                val json = JSONObject().put("text", text).toString()
+                val mediaType = "application/json".toMediaType()
                 val body = json.toRequestBody(mediaType)
                 val request = okhttp3.Request.Builder()
                     .url(ttsUrl)

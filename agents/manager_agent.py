@@ -76,16 +76,13 @@ class ManagerAgent(BaseAgent):
                 w.stop()
 
     from traceroot import observe, update_current_span
+    from traceroot import observe
     @observe(name="orchestrator.dispatch", type="agent")
     async def execute(self, text: str, context: Optional[Dict] = None) -> Any:
         """
         The Brain. Takes ANY user input and routes it to the right handler.
         No explicit mode triggers needed — intent is detected automatically.
         """
-        update_current_span({
-            "message_preview": text[:100],
-            "intent": None,
-        })
         lower = text.lower().strip()
         self.log(f"[Brain] Input: '{text[:80]}' | Background mode: {self.current_mode}")
 

@@ -485,11 +485,13 @@ class MizuneWhatsAppCore:
         self.loop = asyncio.get_running_loop()
         await self.dashboard.start()
         
+        last_error_logged = False
         while True:
             try:
                 async with websockets.connect(self.bridge_uri) as ws:
                     self.bridge_ws = ws
                     log_info("[Core] Connected to Baileys bridge on port 9876")
+                    last_error_logged = False
                     
                     async for message in ws:
                         await self.handle_bridge_message(message)
@@ -498,7 +500,9 @@ class MizuneWhatsAppCore:
                 log_info("[Core] Bridge disconnected, retrying in 5s...")
                 await asyncio.sleep(5)
             except Exception as e:
-                log_info(f"[Core] Connection error: {e}")
+                if not last_error_logged:
+                    log_info(f"[Core] Connection error: {e}. Retrying in background...")
+                    last_error_logged = True
                 await asyncio.sleep(5)
     
     async def handle_bridge_message(self, raw_message: str):

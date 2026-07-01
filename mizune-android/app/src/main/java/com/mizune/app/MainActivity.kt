@@ -14,6 +14,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
+import android.content.Intent
+import android.graphics.BitmapFactory
+import android.net.Uri
+import android.util.Base64
+import java.io.ByteArrayOutputStream
 import com.mizune.app.audio.TtsPlayer
 import com.mizune.app.audio.PushToTalkManager
 import com.mizune.app.audio.PushToTalkListener
@@ -41,9 +46,9 @@ class MainActivity : ComponentActivity() {
     private val chatHistory = mutableStateListOf<ChatMessage>()
 
     private val requestPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { _ ->
-        // Permission granted
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        // Handle permissions
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -56,10 +61,13 @@ class MainActivity : ComponentActivity() {
                 runOnUiThread { isRecording.value = true }
             }
             override fun onRecordingStopped() {
-                // Keep glowing/recording true while uploading, or change to a different state
+                runOnUiThread { isRecording.value = false }
             }
             override fun onUploadStarted() {
-                // Can show a loading spinner
+                runOnUiThread {
+                    isThinking.value = true
+                    mizuneMessage.value = "Processing..."
+                }
             }
             override fun onSpeechResult(text: String) {
                 runOnUiThread {
@@ -125,11 +133,43 @@ class MainActivity : ComponentActivity() {
             }
         })
 
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissionLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA))
         }
 
         webSocket.connect()
+        
+        // Handle incoming image share
+        if (intent?.action == Intent.ACTION_SEND && intent.type?.startsWith("image/") == true) {
+            val imageUri = intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+            if (imageUri != null) {
+                Thread {
+                    try {
+                        contentResolver.openInputStream(imageUri)?.use { inputStream ->
+                            val bitmap = BitmapFactory.decodeStream(inputStream)
+                            if (bitmap != null) {
+                                val outputStream = ByteArrayOutputStream()
+                                bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, outputStream)
+                                val base64 = Base64.encodeToString(outputStream.toByteArray(), Base64.NO_WRAP)
+                                
+                                // Wait for websocket to connect (hacky but works for now)
+                                Thread.sleep(1500)
+                                webSocket.sendVisionMessage(base64)
+                                runOnUiThread {
+                                    isThinking.value = true
+                                    mizuneMessage.value = "Looking at your screenshot..."
+                                }
+                            } else {
+                                Log.e("MainActivity", "Failed to decode image from intent")
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.e("MainActivity", "Failed to process shared image", e)
+                    }
+                }.start()
+            }
+        }
 
         setContent {
             MaterialTheme {
@@ -146,7 +186,13 @@ class MainActivity : ComponentActivity() {
                         isRecording = isRecording.value,
                         onSendMessage = { text -> sendMessage(text) },
                         onStartRecording = { pttManager.startRecording() },
-                        onStopRecording = { pttManager.stopRecordingAndUpload() }
+                        onStopRecording = { pttManager.stopRecordingAndUpload() },
+                        onCancelRecording = { pttManager.cancelRecording() },
+                        onCaptureVision = { b64 ->
+                            webSocket.sendVisionMessage(b64)
+                            isThinking.value = true
+                            mizuneMessage.value = "Analyzing what I see..."
+                        }
                     )
                 }
             }

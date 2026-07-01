@@ -14,6 +14,8 @@ export class WebSocketClient {
     this.url = url;
   }
 
+  private reconnectAttempts = 0;
+
   connect() {
     if (this.ws) return;
 
@@ -22,12 +24,14 @@ export class WebSocketClient {
 
       this.ws.onopen = () => {
         this.isConnected = true;
+        this.reconnectAttempts = 0;
         this.notifyStatusListeners(true);
       };
 
       this.ws.onmessage = (event) => {
         try {
-          const data = JSON.parse(event.data);
+          const rawData = typeof event.data === 'string' ? event.data : event.data.toString();
+          const data = JSON.parse(rawData);
           this.notifyListeners(data);
         } catch (e) {
           console.error('[WS] Parse error', e);
@@ -38,7 +42,7 @@ export class WebSocketClient {
         this.ws = null;
         this.isConnected = false;
         this.notifyStatusListeners(false);
-        setTimeout(() => this.connect(), 5000);
+        this.scheduleReconnect();
       };
 
       this.ws.onerror = (e) => {
@@ -46,8 +50,14 @@ export class WebSocketClient {
       };
     } catch (e) {
       console.error('[WS] Setup Error', e);
-      setTimeout(() => this.connect(), 5000);
+      this.scheduleReconnect();
     }
+  }
+
+  private scheduleReconnect() {
+    const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
+    this.reconnectAttempts++;
+    setTimeout(() => this.connect(), delay);
   }
 
   send(data: WSMessage) {

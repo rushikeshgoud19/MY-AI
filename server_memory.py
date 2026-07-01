@@ -139,7 +139,7 @@ class MemorySystem:
         
     @observe(name="memory.write", type="tool")
     def store_longterm(self, text: str, metadata: dict = None):
-        pass
+        update_current_span(metadata={"content_preview": text[:50]})
         doc_id = f"mem_{os.urandom(8).hex()}"
         
         # 1. Route to ChromaDB
@@ -168,7 +168,7 @@ class MemorySystem:
             
     @observe(name="memory.read", type="tool")
     def recall_longterm(self, query: str, n_results: int = 3) -> List[str]:
-        pass
+        update_current_span(metadata={"query": query[:50], "limit": n_results})
         if not self.collection: return []
         try:
             results = self.collection.query(

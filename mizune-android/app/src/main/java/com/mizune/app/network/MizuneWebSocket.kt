@@ -43,6 +43,14 @@ class MizuneWebSocket(private val listener: MizuneWebSocketListener) {
         webSocket?.send(json.toString())
     }
 
+    fun sendVisionMessage(base64Image: String) {
+        val json = buildJsonObject {
+            put("type", "mobile_vision")
+            put("image_b64", base64Image)
+        }
+        webSocket?.send(json.toString())
+    }
+
     private fun createWebSocketListener(): WebSocketListener {
         return object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
@@ -85,9 +93,8 @@ class MizuneWebSocket(private val listener: MizuneWebSocketListener) {
                 Log.e("MizuneWS", "Connection failure", t)
                 this@MizuneWebSocket.webSocket = null
                 listener.onDisconnected()
-                // Auto-reconnect after 3 seconds
-                Thread.sleep(3000)
-                connect()
+                // Auto-reconnect after 3 seconds without blocking
+                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ connect() }, 3000)
             }
         }
     }
