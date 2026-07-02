@@ -16,14 +16,17 @@ import logging
 from typing import Any, Optional, Dict, List, Tuple
 from PIL import Image
 
-import pyautogui
-import keyboard as kb
-
 from agents.base_agent import BaseAgent
 
-# Safety: prevent pyautogui from moving too fast
-pyautogui.PAUSE = 0.3
-pyautogui.FAILSAFE = True  # Move mouse to corner to abort
+try:
+    import pyautogui
+    import keyboard as kb
+    # Safety: prevent pyautogui from moving too fast
+    pyautogui.PAUSE = 0.3
+    pyautogui.FAILSAFE = True  # Move mouse to corner to abort
+except ImportError:
+    pyautogui = None
+    kb = None
 
 
 class ActionExecutorAgent(BaseAgent):
