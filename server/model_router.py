@@ -36,20 +36,21 @@ class ModelRouter:
         
         is_task = intent in ("coding", "autonomous", "research", "task") or any(kw in text_lower for kw in task_keywords)
         
-        # Fast Conversational Platforms (WhatsApp) -> Route to Groq for ultra-low latency
         if hints.get("platform") == "whatsapp" and not is_task:
+            # FORCE Gemini for WhatsApp because Nvidia is too slow (user complained)
+            if self.config.get("gemini_api_key"):
+                return "gemini"
             if self.config.get("groq_api_key"):
                 return "groq"
-            else:
-                return self.config.get("ai_model", "gemini") # Force fallback to fast model if no groq
+            configured = self.config.get("ai_model")
+            return configured
         
         if is_task:
+            configured = self.config.get("ai_model")
+            if configured in ["nvidia", "openai", "anthropic", "gemini"]:
+                return configured
             if self.config.get("openrouter_api_key"):
                 return "openrouter"
-            if self.config.get("nvidia_api_key"):
-                return "nvidia"
-            if self.config.get("groq_api_key"):
-                return "groq"
                 
         # 3. Vision / Multimodal needs
         if "VISION" in text or "CAMERA" in text:

@@ -41,10 +41,12 @@ async def lifespan(app: FastAPI):
     global _local_model
     if TRANSCRIPTION_BACKEND == "local":
         try:
-            import whisper # type: ignore
-            logger.info(f"Loading local Whisper model '{WHISPER_MODEL_NAME}'...")
-            _local_model = whisper.load_model(WHISPER_MODEL_NAME)
-            logger.info("Whisper model loaded.")
+            from faster_whisper import WhisperModel
+            import torch
+            logger.info(f"Loading Faster-Whisper model '{WHISPER_MODEL_NAME}'...")
+            compute_type = "float16" if torch.cuda.is_available() else "int8"
+            _local_model = WhisperModel(WHISPER_MODEL_NAME, device="auto", compute_type=compute_type)
+            logger.info("Faster-Whisper model loaded.")
         except ImportError:
             logger.error("openai-whisper is not installed. Please run: pip install openai-whisper")
     else:
@@ -66,21 +68,29 @@ app.add_middleware(
 def _transcribe_local(path: str) -> dict:
     if _local_model is None:
         raise HTTPException(status_code=503, detail="Whisper model is still loading, try again shortly.")
-    result = _local_model.transcribe(path, fp16=False)
-    return {"text": result.get("text", "").strip(), "language": result.get("language")}
+    # faster-whisper transcribe returns an iterator of segments
+    segments, info = _local_model.transcribe(path, beam_size=5)
+    text = " ".join([segment.text for segment in segments]).strip()
+    return {"text": text, "language": info.language}
 
 def _transcribe_groq(path: str) -> dict:
     if not GROQ_API_KEY:
         raise HTTPException(status_code=500, detail="GROQ_API_KEY is not configured on the server.")
 
     from groq import Groq
-    client = Groq(api_key=GROQ_API_KEY)
-    with open(path, "rb") as audio_fh:
-        response = client.audio.transcriptions.create(
-            file=audio_fh,
-            model=GROQ_MODEL_NAME,
-        )
-    return {"text": (response.text or "").strip(), "language": None}
+    client = Groq(api_key=GROQ_API_KEY, timeout=5.0) # Reduced timeout for faster failover
+    
+    try:
+        with open(path, "rb") as audio_fh:
+            response = client.audio.transcriptions.create(
+                file=audio_fh,
+                model=GROQ_MODEL_NAME,
+            )
+        return {"text": (response.text or "").strip(), "language": None}
+    except Exception as e:
+        logger.warning(f"Groq STT failed: {e}. Falling back to faster-whisper.")
+        # If Groq fails, instantly fall back to local faster-whisper
+        return _transcribe_local(path)
 
 @app.post("/api/transcribe")
 async def transcribe_audio(audio_file: UploadFile = File(...)):

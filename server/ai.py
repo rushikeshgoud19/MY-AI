@@ -328,11 +328,18 @@ def get_ai_response(text: str, history: list, config: dict, system_prompt_overri
             system_prompt = config.get("personality", "You are an AI assistant.")
             
         import datetime
-        tz_ist = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
-        current_time = datetime.datetime.now(tz_ist).strftime("%I:%M %p, %A %B %d, %Y")
+        import zoneinfo
+        tz_str = config.get("timezone", "Asia/Kolkata")
+        try:
+            tz = zoneinfo.ZoneInfo(tz_str)
+        except Exception:
+            tz = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
+        current_time = datetime.datetime.now(tz).strftime("%I:%M %p, %A %B %d, %Y")
+        
         context_layer = (
             "\n\n[CONTEXT LAYER]\n"
             f"Current Time: {current_time}\n"
+            "CRITICAL TIME BOUNDARY: The Current Time provided above is the absolute source of truth. Ignore any contradictory timestamps in the chat history.\n"
             "If the user's greeting contradicts the current time (like saying 'Good morning' at 2 AM), playfully correct them. Otherwise, don't mention the time unless asked.\n"
             "You have full control over the user's PC via native function calling. "
             "IMPORTANT FOR execute_python: Include `time.sleep(1)` between UI actions so Windows renders! "
@@ -469,38 +476,22 @@ def get_ai_response(text: str, history: list, config: dict, system_prompt_overri
         log_info(f"[AI] Primary model ({model_choice}) failed: {e}")
         error_str = str(e).lower()
         if "empty" in error_str or "quota" in error_str or "exhausted" in error_str or "429" in error_str or "404" in error_str or "503" in error_str or "time" in error_str or "401" in error_str or "auth" in error_str:
-            # Fallback chain if quota exhausted or server error or empty response
-            if model_choice in ("groq", "openrouter", "nvidia"):
-                if config.get("gemini_api_key"):
-                    try:
-                        log_info("[AI] Falling back to Gemini...")
-                        return _gemini_response(text, history, system_prompt, config)
-                    except Exception as fallback_e:
-                        log_info(f"[AI] Gemini fallback failed: {fallback_e}")
-                if config.get("nvidia_api_key") and model_choice != "nvidia":
-                    log_info("[AI] Falling back to Nvidia NIM...")
-                    return _nvidia_response(text, history, system_prompt, config)
-                if config.get("groq_api_key") and model_choice != "groq":
-                    log_info("[AI] Falling back to Groq...")
-                    return _groq_response(text, history, system_prompt, config)
-                    
-            elif model_choice == "gemini":
-                if config.get("nvidia_api_key"):
-                    try:
-                        log_info("[AI] Falling back to Nvidia NIM...")
-                        return _nvidia_response(text, history, system_prompt, config)
-                    except Exception as fallback_e:
-                        log_info(f"[AI] Nvidia fallback failed: {fallback_e}")
-                if config.get("groq_api_key"):
-                    log_info("[AI] Falling back to Groq...")
-                    return _groq_response(text, history, system_prompt, config)
-                    
-            elif model_choice == "openai" and config.get("anthropic_api_key"):
-                log_info("[AI] Falling back to Anthropic...")
-                return _anthropic_response(text, history, system_prompt, config)
-            elif model_choice == "anthropic" and config.get("gemini_api_key"):
-                log_info("[AI] Falling back to Gemini...")
-                return _gemini_response(text, history, system_prompt, config)
+            # Fallback chain: Primary -> Gemini -> OpenAI -> Groq
+            if model_choice != "gemini" and config.get("gemini_api_key"):
+                try:
+                    log_info("[AI] Falling back to Gemini 2.5 Flash...")
+                    return _gemini_response(text, history, system_prompt, config)
+                except Exception as fallback_e:
+                    log_info(f"[AI] Gemini fallback failed: {fallback_e}")
+            if model_choice != "openai" and config.get("openai_api_key"):
+                try:
+                    log_info("[AI] Falling back to OpenAI...")
+                    return _openai_response(text, history, system_prompt, config)
+                except Exception as fallback_e:
+                    log_info(f"[AI] OpenAI fallback failed: {fallback_e}")
+            if model_choice != "groq" and config.get("groq_api_key"):
+                log_info("[AI] Falling back to Groq...")
+                return _groq_response(text, history, system_prompt, config)
         raise e
 
 def _gemini_response(text: str, history: list, system_prompt: str, config: dict) -> tuple:
@@ -1182,7 +1173,7 @@ def _nvidia_response(text: str, history: list, system_prompt: str, config: dict)
         client = OpenAI(
             base_url="https://integrate.api.nvidia.com/v1",
             api_key=api_key,
-            timeout=10.0 # Fast failover to prevent hanging!
+            timeout=45.0 # Fast failover to prevent hanging!
         )
         
         nvidia_system = system_prompt + (
@@ -1219,7 +1210,7 @@ def _nvidia_response(text: str, history: list, system_prompt: str, config: dict)
                 max_tokens=512,
                 tools=TOOLS_SCHEMA,
                 tool_choice=t_choice,
-                timeout=15.0
+                timeout=45.0
             )
             
             msg = response.choices[0].message

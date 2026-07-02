@@ -68,7 +68,7 @@ def listen_to_microphone(config: dict, broadcast_sync_fn) -> Optional[str]:
             recognizer.adjust_for_ambient_noise(source, duration=0.5)
 
             log_info("[MIC] Ready and listening for speech...")
-            audio = recognizer.listen(source, timeout=config.get("wake_timeout", 6.0), phrase_time_limit=15.0)
+            audio = recognizer.listen(source, timeout=config.get("wake_timeout", 6.0), phrase_time_limit=5.0)
 
         # Check volume gate to prevent Groq from hallucinating on pure silence
         import numpy as np
@@ -125,7 +125,7 @@ def listen_to_microphone(config: dict, broadcast_sync_fn) -> Optional[str]:
                     'prompt': 'mizune, misune, anime, song, baka, goshujin-sama, master, kawaii, sugoi'
                 }
                 headers = {'Authorization': f'Bearer {groq_api_key}'}
-                response = requests.post("https://api.groq.com/openai/v1/audio/transcriptions", files=files, data=data, headers=headers, timeout=7)
+                response = requests.post("https://api.groq.com/openai/v1/audio/transcriptions", files=files, data=data, headers=headers, timeout=3)
                 if response.status_code == 200:
                     text = response.json().get('text', '').strip()
                     if text:
