@@ -3,7 +3,7 @@ import json
 import logging
 from logging.handlers import RotatingFileHandler
 
-__all__ = ["CONFIG_PATH", "DEFAULT_CONFIG", "load_config", "_validate_config", "log_info"]
+__all__ = ["CONFIG_PATH", "DEFAULT_CONFIG", "load_config", "_validate_config", "log_info", "is_cloud_mode"]
 
 # Set up logging for the module
 logger = logging.getLogger("mizune")
@@ -28,6 +28,27 @@ def log_info(msg: str):
     except UnicodeEncodeError:
         print(str(msg).encode('ascii', 'replace').decode('ascii'))
     logger.info(msg)
+
+_CLOUD_MODE_CACHE = None
+
+def is_cloud_mode(config: dict = None) -> bool:
+    """True when Mizune runs headless on a cloud server (no webcam, no desktop, no UI
+    automation). Controlled by the MIZUNE_CLOUD env var (wins) or config['cloud_mode'].
+    Env values '1','true','yes','on' (case-insensitive) enable it. Result is cached."""
+    global _CLOUD_MODE_CACHE
+    env = os.environ.get("MIZUNE_CLOUD")
+    if env is not None:
+        return env.strip().lower() in ("1", "true", "yes", "on")
+    if config is not None and "cloud_mode" in config:
+        return bool(config.get("cloud_mode"))
+    if _CLOUD_MODE_CACHE is not None:
+        return _CLOUD_MODE_CACHE
+    try:
+        cfg = load_config()
+        _CLOUD_MODE_CACHE = bool(cfg.get("cloud_mode", False))
+    except Exception:
+        _CLOUD_MODE_CACHE = False
+    return _CLOUD_MODE_CACHE
     if _ws_callback:
         # Prevent recursive logging loops if websocket fails
         try:

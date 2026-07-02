@@ -55,7 +55,6 @@ class ActionExecutorAgent(BaseAgent):
         self._max_actions_per_session = _system_settings.get("max_actions_per_session", 100)  # Hard safety limit
         self.log(f"ActionExecutorAgent initialized. Screen: {self._screen_width}x{self._screen_height}")
 
-    from traceroot import observe, update_current_span
     @observe(name="action_executor.run", type="agent")
     async def execute(self, task_input: str, context: Optional[Dict] = None) -> Any:
         """
@@ -74,7 +73,6 @@ class ActionExecutorAgent(BaseAgent):
 
         return await self.execute_step(step, context)
 
-    from traceroot import observe
     @observe(name="ActionExecutor.execute_step", type="tool")
     async def execute_step(self, step: Dict, context: Optional[Dict] = None) -> Dict:
         """Execute a single planned step and return result."""

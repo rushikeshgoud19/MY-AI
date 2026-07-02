@@ -46,16 +46,30 @@ def _scheduler_callback(task_description):
 global_cron_manager.start(task_callback=_scheduler_callback)
 
 _processing_lock = threading.Lock()
+# Per-session locks so a slow WhatsApp reply doesn't drop the user's desktop input
+# (and vice versa). The old single global lock serialized ALL platforms and silently
+# returned None for any message that arrived while another was in flight.
+_session_locks = {}
+_session_locks_guard = threading.Lock()
+
+def _get_session_lock(session_id: str) -> threading.Lock:
+    with _session_locks_guard:
+        lock = _session_locks.get(session_id)
+        if lock is None:
+            lock = threading.Lock()
+            _session_locks[session_id] = lock
+        return lock
 
 def process_command(text: str, config: dict, broadcast_sync_fn, session_id: str = 'main') -> str:
-    """Wrapper to prevent ghost inputs from cloning Mizune's brain."""
-    if not _processing_lock.acquire(blocking=False):
-        log_info(f"[PROCESSOR] Ignoring overlapping input '{text}' (Mizune is busy).")
+    """Wrapper to prevent ghost inputs from cloning Mizune's brain (per-session)."""
+    lock = _get_session_lock(session_id)
+    if not lock.acquire(blocking=False):
+        log_info(f"[PROCESSOR] Ignoring overlapping input '{text}' for session '{session_id}' (busy).")
         return None
     try:
         return _process_command_internal(text, config, broadcast_sync_fn, session_id)
     finally:
-        _processing_lock.release()
+        lock.release()
 
 from traceroot import observe
 
@@ -135,7 +149,15 @@ def _process_command_internal(text: str, config: dict, broadcast_sync_fn, sessio
         r"describe my screen|what's on my monitor|what is on my monitor|check my screen|"
         r"see my screen|guess what i am doing|tell me what i am doing|"
         r"see what('s| is) on (my )?screen|what('s| is) happening on (my )?screen)\b", lower_text)
-    
+
+    # On cloud there is no screen/webcam to look at — short-circuit vision requests
+    # instead of trying to screenshot a headless box (which errors after a delay).
+    from server.config import is_cloud_mode
+    _cloud = is_cloud_mode(config)
+
+    if _is_screen_request and _cloud:
+        return "[EMOTION: neutral] I'm running on the cloud right now, Master, so I don't have eyes on your screen! Ask me something else~"
+
     if _is_screen_request:
         if not _acquire_vision_lock("screen_vision"):
             return "I'm already processing another vision task, Master~ Try again in a moment!"

@@ -207,8 +207,18 @@ class MizuneManagerWrapper:
         
     def initialize(self, config: dict):
         self.agent.config = config
-        self.workers["data"] = DataCollectionWorker(config)
-        self.workers["camera"] = CameraAgent(config)
+
+        # On cloud there is no webcam or desktop to observe — skip the workers that would
+        # try to grab /dev/video0 or read the active window, so we don't spin threads that
+        # error every loop.
+        from .config import is_cloud_mode
+        cloud = is_cloud_mode(config)
+
+        if not cloud:
+            self.workers["data"] = DataCollectionWorker(config)
+            self.workers["camera"] = CameraAgent(config)
+        else:
+            log_info("[BRAIN] Cloud mode: skipping CameraAgent + DataCollectionWorker (no local hardware).")
         
         # Connect Agentic Brains
         try:

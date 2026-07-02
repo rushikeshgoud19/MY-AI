@@ -13,6 +13,10 @@ logger = logging.getLogger("mizune.ai")
 
 import random
 
+class _SkipMemoryInjection(Exception):
+    """Control-flow sentinel to bypass the memory/priming block for override calls."""
+    pass
+
 def get_api_key(config, key_name):
     """Helper to support API key rotation. Accepts strings, comma-separated strings, or arrays."""
     val = config.get(key_name)
@@ -297,6 +301,23 @@ TOOLS_SCHEMA = [
 ]
 
 
+# Tools that only make sense on a machine with a desktop/keyboard/webcam. On cloud we
+# strip them from the schema so the model never wastes a round-trip trying to launch an
+# app or drive pyautogui on a headless server.
+_LOCAL_ONLY_TOOLS = {"open_app", "close_app", "execute_python", "run_command"}
+
+def _active_tools_schema(config: dict):
+    """Return TOOLS_SCHEMA, minus local-only tools when running in cloud mode."""
+    try:
+        from .config import is_cloud_mode
+        if is_cloud_mode(config):
+            return [t for t in TOOLS_SCHEMA
+                    if t.get("function", {}).get("name") not in _LOCAL_ONLY_TOOLS]
+    except Exception:
+        pass
+    return TOOLS_SCHEMA
+
+
 from traceroot import observe
 
 @observe(name="AI.Router", type="llm")
@@ -391,7 +412,12 @@ def get_ai_response(text: str, history: list, config: dict, system_prompt_overri
             log_info(f"[AI] Error injecting master profile: {e}")
 
     # Inject Memory Context & Emotional Priming
+    # Override calls (intent classifier, web-summary callbacks) use a fixed system
+    # prompt and don't benefit from recall — skipping it removes a full-table scan
+    # plus a ChromaDB vector query from every throwaway classification call.
     try:
+        if system_prompt_override:
+            raise _SkipMemoryInjection
         from .memory import memory
         from .memory_tree import memory_tree_db
         
@@ -441,58 +467,82 @@ def get_ai_response(text: str, history: list, config: dict, system_prompt_overri
                     mem_str = "\n".join(mem_context) if isinstance(mem_context, list) else str(mem_context)
                     context_str += f"[LONG-TERM MEMORY RECALL]\n{mem_str}\n"
                     system_prompt += f"\n\n[RELEVANT MEMORY (Use this if it applies to the user's query)]:\n{context_str}"
+    except _SkipMemoryInjection:
+        pass
     except Exception as e:
         log_info(f"[AI] Error fetching memory: {e}")
 
-    # Primary routing with fallback chain
-    try:
-        if model_choice == "openai":
-            res = _openai_response(text, history, system_prompt, config)
-        elif model_choice == "anthropic":
-            res = _anthropic_response(text, history, system_prompt, config)
-        elif model_choice == "openrouter":
-            res = _openrouter_response(text, history, system_prompt, config)
-        elif model_choice == "opencode":
-            res = _opencode_response(text, history, system_prompt, config)
-        elif model_choice == "groq":
-            res = _groq_response(text, history, system_prompt, config)
-        elif model_choice == "ollama" or model_choice == "local":
-            res = _ollama_response(text, history, system_prompt, config)
-        elif model_choice == "nvidia":
-            res = _nvidia_response(text, history, system_prompt, config)
-        else:
-            res = _gemini_response(text, history, system_prompt, config)
-            
+    # Primary routing with a resilient, cost-ordered fallback cascade.
+    # Cloud cascade (cheap+fast first, heavyweight NVIDIA 70B as last-resort backstop):
+    #   groq -> gemini -> openrouter -> nvidia
+    # Every provider that has no key is skipped, and the already-tried primary is not retried.
+    PROVIDER_FUNCS = {
+        "openai": _openai_response,
+        "anthropic": _anthropic_response,
+        "openrouter": _openrouter_response,
+        "opencode": _opencode_response,
+        "groq": _groq_response,
+        "ollama": _ollama_response,
+        "local": _ollama_response,
+        "nvidia": _nvidia_response,
+        "gemini": _gemini_response,
+    }
+    PROVIDER_KEYS = {
+        "openai": "openai_api_key",
+        "anthropic": "anthropic_api_key",
+        "openrouter": "openrouter_api_key",
+        "opencode": "opencode_api_key",
+        "groq": "groq_api_key",
+        "nvidia": "nvidia_api_key",
+        "gemini": "gemini_api_key",
+    }
+    CASCADE = ["groq", "gemini", "openrouter", "nvidia"]
+
+    def _has_key(provider):
+        # ollama/local need no key; everyone else must have one configured
+        if provider in ("ollama", "local"):
+            return True
+        return bool(config.get(PROVIDER_KEYS.get(provider, "")))
+
+    def _call(provider):
+        fn = PROVIDER_FUNCS.get(provider, _gemini_response)
+        res = fn(text, history, system_prompt, config)
+        # Validate: treat empty responses as failures so the cascade continues
         if isinstance(res, tuple):
             text_res, tools_res = res
             if not text_res.strip() and not tools_res:
-                raise ValueError(f"Empty response from {model_choice}")
+                raise ValueError(f"Empty response from {provider}")
         elif isinstance(res, str):
             if not res.strip():
-                raise ValueError(f"Empty response from {model_choice}")
-                
+                raise ValueError(f"Empty response from {provider}")
         return res
-    except Exception as e:
-        log_info(f"[AI] Primary model ({model_choice}) failed: {e}")
-        error_str = str(e).lower()
-        if "empty" in error_str or "quota" in error_str or "exhausted" in error_str or "429" in error_str or "404" in error_str or "503" in error_str or "time" in error_str or "401" in error_str or "auth" in error_str:
-            # Fallback chain: Primary -> Gemini -> OpenAI -> Groq
-            if model_choice != "gemini" and config.get("gemini_api_key"):
-                try:
-                    log_info("[AI] Falling back to Gemini 2.5 Flash...")
-                    return _gemini_response(text, history, system_prompt, config)
-                except Exception as fallback_e:
-                    log_info(f"[AI] Gemini fallback failed: {fallback_e}")
-            if model_choice != "openai" and config.get("openai_api_key"):
-                try:
-                    log_info("[AI] Falling back to OpenAI...")
-                    return _openai_response(text, history, system_prompt, config)
-                except Exception as fallback_e:
-                    log_info(f"[AI] OpenAI fallback failed: {fallback_e}")
-            if model_choice != "groq" and config.get("groq_api_key"):
-                log_info("[AI] Falling back to Groq...")
-                return _groq_response(text, history, system_prompt, config)
-        raise e
+
+    # Build the ordered attempt list: chosen primary first, then the cascade (deduped, keyed).
+    attempt_order = [model_choice] + [p for p in CASCADE if p != model_choice]
+    attempt_order = [p for p in attempt_order if _has_key(p)]
+
+    last_err = None
+    for idx, provider in enumerate(attempt_order):
+        try:
+            if idx > 0:
+                log_info(f"[AI] Falling back to '{provider}' (attempt {idx + 1}/{len(attempt_order)})...")
+            return _call(provider)
+        except Exception as e:
+            last_err = e
+            log_info(f"[AI] Provider '{provider}' failed: {e}")
+            error_str = str(e).lower()
+            # Only keep cascading on transient/quota/auth errors; hard bugs re-raise.
+            retriable = any(k in error_str for k in
+                            ("empty", "quota", "exhausted", "429", "404", "503", "500",
+                             "time", "timeout", "401", "auth", "rate", "overload"))
+            if not retriable:
+                raise e
+            continue
+
+    # Exhausted the whole cascade
+    if last_err:
+        raise last_err
+    return ("I'm sorry Master, all my AI providers are unavailable right now.", [])
 
 def _gemini_response(text: str, history: list, system_prompt: str, config: dict) -> tuple:
     """Fetch response from Google Gemini with fallback models. Returns (text, tool_calls)."""
@@ -515,7 +565,7 @@ def _gemini_response(text: str, history: list, system_prompt: str, config: dict)
     client = genai.Client(api_key=api_key)
 
     # Convert our standard JSON schema to Gemini Tools
-    gemini_tools = [{"function_declarations": [t["function"] for t in TOOLS_SCHEMA]}]
+    gemini_tools = [{"function_declarations": [t["function"] for t in _active_tools_schema(config)]}]
 
     # Convert our generic history to Gemini SDK format
     gemini_history = []
@@ -636,8 +686,10 @@ def _gemini_response(text: str, history: list, system_prompt: str, config: dict)
                         elif tool_name == "message_whatsapp":
                             contact = args.get("contact", "")
                             message = args.get("message", "")
-                            whatsapp_automation(contact, message)
-                            tool_result = f"Messaged {contact} on WhatsApp."
+                            # Use the real return value so a missing contact / disconnected
+                            # bridge short-circuits with an honest message instead of a
+                            # false "Messaged X" that would trigger a costly retry loop.
+                            tool_result = whatsapp_automation(contact, message)
                         elif tool_name == "execute_python":
                             code = args.get("code", "")
                             if code: tool_result = execute_python_code(code)
@@ -755,10 +807,15 @@ def _gemini_response(text: str, history: list, system_prompt: str, config: dict)
         except Exception as e:
             err_str = str(e).lower()
             last_err = e
-            if "503" in err_str or "429" in err_str or "quota" in err_str or "404" in err_str:
-                log_info(f"[AI] Gemini: {model_name} failed ({err_str[:40]}), trying next...")
-                import time
-                time.sleep(1)
+            # Quota/rate/auth errors are keyed to the whole Google project — every model
+            # in models_to_try shares the same exhausted quota, so retrying them is pure
+            # latency waste. Re-raise immediately and let the outer cascade switch provider.
+            if "429" in err_str or "quota" in err_str or "exhausted" in err_str or "rate" in err_str or "401" in err_str or "resource_exhausted" in err_str:
+                log_info(f"[AI] Gemini quota/rate exhausted on {model_name}; escalating to cascade.")
+                raise e
+            # A per-model outage (503/404) is worth trying the next model in the list.
+            if "503" in err_str or "404" in err_str or "500" in err_str:
+                log_info(f"[AI] Gemini: {model_name} unavailable ({err_str[:40]}), trying next model...")
                 continue
             raise e
 
@@ -804,7 +861,7 @@ def _groq_response(text: str, history: list, system_prompt: str, config: dict) -
                 messages=messages,
                 temperature=0.7,
                 max_tokens=256,
-                tools=TOOLS_SCHEMA,
+                tools=_active_tools_schema(config),
                 tool_choice="auto",
                 parallel_tool_calls=False
             )
@@ -853,11 +910,14 @@ def _groq_response(text: str, history: list, system_prompt: str, config: dict) -
         for _ in range(max_loops):
             if not msg.tool_calls:
                 break
-                
+
             log_info(f"[AI] Model requested {len(msg.tool_calls)} native tool calls. Executing...")
-            
+
+            round_tool_names = []
+            round_results = []
             for t in msg.tool_calls:
                 tool_name = t.function.name
+                round_tool_names.append(tool_name)
                 executed_tools.append({"name": tool_name, "args": json.loads(t.function.arguments) if t.function.arguments else {}})
                 tool_result = "Success"
                 try:
@@ -1007,7 +1067,21 @@ def _groq_response(text: str, history: list, system_prompt: str, config: dict) -
                     "tool_call_id": t.id,
                     "content": tool_result
                 })
-            
+                round_results.append(str(tool_result))
+
+            # FAST-TRACK: if every tool this round was a terminal action (send message,
+            # open app, schedule, notify...), there's nothing for the model to reason about.
+            # Return the tool results directly and skip the second round-trip. This is what
+            # keeps WhatsApp replies sub-second on the Groq path.
+            FAST_TRACK_TOOLS = ["schedule_task", "open_app", "close_app", "message_whatsapp", "execute_skill", "notify_master"]
+            if round_tool_names and all(n in FAST_TRACK_TOOLS for n in round_tool_names):
+                fast_response = " ".join(r for r in round_results if r) or "Action completed."
+                if executed_tools:
+                    from .trajectory_logger import trajectory_logger
+                    trajectory_logger.log_trajectory(text, history, executed_tools, fast_response)
+                log_info("[AI] Groq fast-tracking response (bypassing 2nd round-trip).")
+                return (fast_response, [])
+
             # Request next generation with tool results included
             try:
                 response = client.chat.completions.create(
@@ -1015,7 +1089,7 @@ def _groq_response(text: str, history: list, system_prompt: str, config: dict) -
                     messages=messages,
                     temperature=0.7,
                     max_tokens=256,
-                    tools=TOOLS_SCHEMA,
+                    tools=_active_tools_schema(config),
                     tool_choice="auto",
                     parallel_tool_calls=False
                 )
@@ -1084,7 +1158,7 @@ def _ollama_response(text: str, history: list, system_prompt: str, config: dict)
             messages=messages,
             temperature=0.7,
             max_tokens=256,
-            tools=TOOLS_SCHEMA,
+            tools=_active_tools_schema(config),
             tool_choice={"type": "function", "function": {"name": "mizune_response"}}
         )
         msg = response.choices[0].message
@@ -1137,7 +1211,7 @@ def _openai_response(text: str, history: list, system_prompt: str, config: dict)
         
     try:
         from openai import OpenAI
-        client = OpenAI(api_key=api_key)
+        client = OpenAI(api_key=api_key, timeout=20.0)
         
         messages = [{"role": "system", "content": system_prompt}]
         for turn in history:
@@ -1173,7 +1247,7 @@ def _nvidia_response(text: str, history: list, system_prompt: str, config: dict)
         client = OpenAI(
             base_url="https://integrate.api.nvidia.com/v1",
             api_key=api_key,
-            timeout=45.0 # Fast failover to prevent hanging!
+            timeout=20.0 # Fast failover to prevent hanging!
         )
         
         nvidia_system = system_prompt + (
@@ -1208,9 +1282,9 @@ def _nvidia_response(text: str, history: list, system_prompt: str, config: dict)
                 messages=messages,
                 temperature=0.7,
                 max_tokens=512,
-                tools=TOOLS_SCHEMA,
+                tools=_active_tools_schema(config),
                 tool_choice=t_choice,
-                timeout=45.0
+                timeout=20.0
             )
             
             msg = response.choices[0].message
@@ -1353,7 +1427,7 @@ def _anthropic_response(text: str, history: list, system_prompt: str, config: di
         
     try:
         from anthropic import Anthropic
-        client = Anthropic(api_key=api_key)
+        client = Anthropic(api_key=api_key, timeout=20.0)
         
         messages = []
         for turn in history:
@@ -1425,7 +1499,7 @@ def _openrouter_response(text: str, history: list, system_prompt: str, config: d
                 messages=messages,
                 temperature=0.7,
                 max_tokens=512,
-                tools=TOOLS_SCHEMA,
+                tools=_active_tools_schema(config),
                 tool_choice="auto",
                 timeout=15.0,
                 extra_headers={

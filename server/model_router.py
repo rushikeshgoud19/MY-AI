@@ -35,13 +35,15 @@ class ModelRouter:
         text_lower = clean_text.lower()
         
         is_task = intent in ("coding", "autonomous", "research", "task") or any(kw in text_lower for kw in task_keywords)
-        
-        if hints.get("platform") == "whatsapp" and not is_task:
-            # FORCE Gemini for WhatsApp because Nvidia is too slow (user complained)
-            if self.config.get("gemini_api_key"):
-                return "gemini"
+
+        # WhatsApp ALWAYS goes to a fast cloud provider — including task/tool requests.
+        # Primary = Groq (fastest + cheapest, sub-second llama-3.3-70b). The cascade in
+        # get_ai_response falls back Groq -> Gemini -> OpenRouter -> NVIDIA if it's down.
+        if hints.get("platform") == "whatsapp":
             if self.config.get("groq_api_key"):
                 return "groq"
+            if self.config.get("gemini_api_key"):
+                return "gemini"
             configured = self.config.get("ai_model")
             return configured
         

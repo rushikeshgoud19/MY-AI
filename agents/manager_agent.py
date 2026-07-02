@@ -199,7 +199,11 @@ class ManagerAgent(BaseAgent):
                     "Respond with ONLY the category name in lowercase (e.g. coding, conversation, system)."
                 )
                 from server.ai import get_ai_response
-                llm_response, _ = get_ai_response(prompt, [], self.config, system_prompt_override="You are a precise classifier. Return only the class name.")
+                # Force the classifier onto the fastest provider. Without hints the router
+                # falls through to the configured nvidia 70B (slow), which turned a one-word
+                # classification into a multi-second stall on every ambiguous message.
+                classify_hints = {"force_provider": "groq"}
+                llm_response, _ = get_ai_response(prompt, [], self.config, system_prompt_override="You are a precise classifier. Return only the class name.", hints=classify_hints)
                 llm_response = llm_response.lower().strip()
                 # Clean up and validate
                 for valid_intent in self.INTENTS:
