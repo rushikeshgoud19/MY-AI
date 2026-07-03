@@ -35,7 +35,7 @@ class IntegrationsManager:
 
         config_data = {}
         try:
-            with open("config.json", "r") as f:
+            with open("config.json", "r", encoding="utf-8", errors="replace") as f:
                 config_data = json.load(f)
         except Exception:
             pass
@@ -75,7 +75,7 @@ class IntegrationsManager:
         path = self.get_token_path(provider)
         if os.path.exists(path):
             try:
-                with open(path, 'r') as f:
+                with open(path, 'r', encoding='utf-8', errors='replace') as f:
                     return json.load(f)
             except Exception as e:
                 log_info(f"[OAUTH] Error loading token for {provider}: {e}")
@@ -84,7 +84,7 @@ class IntegrationsManager:
     def save_token(self, provider: str, token: dict):
         path = self.get_token_path(provider)
         try:
-            with open(path, 'w') as f:
+            with open(path, 'w', encoding='utf-8') as f:
                 json.dump(token, f)
             log_info(f"[OAUTH] Token saved for {provider}")
         except Exception as e:

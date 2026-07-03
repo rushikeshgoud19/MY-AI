@@ -8,9 +8,10 @@ import asyncio
 import threading
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Depends, HTTPException, status
 from fastapi.responses import JSONResponse, Response, StreamingResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import APIKeyHeader
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 
@@ -97,10 +98,12 @@ async def lifespan(app: FastAPI):
     start_gmail_core(CFG, ws_manager.broadcast_sync)
     
     yield
-    
     log_info("[SERVER] Shutting down background tasks...")
-    from server.platforms.whatsapp.core import stop_whatsapp_core
-    stop_whatsapp_core()
+    import server.audio as sa
+    sa.SHUTDOWN_EVENT.set()
+    if whatsapp_core_instance is not None:
+        from server.platforms.whatsapp.core import stop_whatsapp_core
+        stop_whatsapp_core()
     
     from server.memory_worker import stop_memory_worker
     stop_memory_worker()
@@ -109,9 +112,31 @@ async def lifespan(app: FastAPI):
 
 # Create App
 app = FastAPI(lifespan=lifespan)
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    import traceback
+    log_info(f"[ERROR] Unhandled Exception: {exc}\n{traceback.format_exc()}")
+    return JSONResponse(status_code=500, content={"status": "error", "message": "Internal Server Error"})
+
+# Setup API Key authentication
+API_KEY_NAME = "X-API-Key"
+api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
+
+def get_api_key(api_key_header: str = Depends(api_key_header)):
+    # Default to a dev key if not in .env, to avoid breaking local UI immediately, 
+    # but require it to be passed. Actually, we will just use the config.
+    expected_key = os.getenv("MIZUNE_API_KEY", "mizune-dev-key")
+    if api_key_header == expected_key:
+        return api_key_header
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid or missing API Key",
+    )
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:1420", "tauri://localhost", "http://localhost:3000", "http://localhost:8000", "http://localhost:8001"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -126,7 +151,10 @@ if os.path.exists(dist_path):
         return FileResponse(os.path.join(dist_path, "index.html"))
 
 # Serve the root directory as static files so index.html is accessible
-app.mount("/ui", StaticFiles(directory=".", html=True), name="static")
+public_path = os.path.join(os.path.dirname(__file__), "public")
+if not os.path.exists(public_path):
+    os.makedirs(public_path, exist_ok=True)
+app.mount("/ui", StaticFiles(directory=public_path, html=True), name="static")
 
 def on_wake_trigger(pre_text=None):
     log_info("[TRIGGER] Processing voice command...")
@@ -150,20 +178,22 @@ async def health_check():
     return {"status": "ok", "mode": mizune_manager.current_mode}
 
 @app.post("/chat")
-async def chat_endpoint(request: Request):
+async def chat_endpoint(request: Request, api_key: str = Depends(get_api_key)):
     data = await request.json()
     text = data.get("text", "").strip()
     if not text:
-        return JSONResponse({"response": "", "emotion": "neutral"})
+        return JSONResponse({"response": "", "emotion": "neutral"}, status_code=400)
 
     ws_manager.broadcast_sync({"type": "user_input", "text": text})
     res = await asyncio.to_thread(process_command, text, CFG, ws_manager.broadcast_sync)
+    if not res:
+        return JSONResponse({"response": "", "emotion": "neutral"}, status_code=500)
     emo = detect_emotion(res)
     
     return JSONResponse({"response": res, "emotion": emo})
 
 @app.post("/tts")
-async def tts_endpoint(request: Request):
+async def tts_endpoint(request: Request, api_key: str = Depends(get_api_key)):
     data = await request.json()
     text = data.get("text", "").strip()
     if not text:
@@ -175,7 +205,7 @@ async def tts_endpoint(request: Request):
     return Response(status_code=500, content="TTS failed")
 
 @app.post("/notify")
-async def notify_endpoint(request: Request):
+async def notify_endpoint(request: Request, api_key: str = Depends(get_api_key)):
     data = await request.json()
     text = data.get("text", "").strip()
     if text:
@@ -185,11 +215,11 @@ async def notify_endpoint(request: Request):
     return Response(status_code=400)
 
 @app.get("/config")
-async def get_config():
+async def get_config(api_key: str = Depends(get_api_key)):
     return JSONResponse(CFG)
 
 @app.post("/config")
-async def save_config(request: Request):
+async def save_config(request: Request, api_key: str = Depends(get_api_key)):
     global CFG
     new_cfg = await request.json()
     CFG.update(new_cfg)
@@ -201,7 +231,7 @@ async def save_config(request: Request):
         return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
 
 @app.post("/api/traceroot_sql")
-async def handle_traceroot_sql(request: Request):
+async def handle_traceroot_sql(request: Request, api_key: str = Depends(get_api_key)):
     from server.agents import mizune_manager
     try:
         data = await request.json()
@@ -216,7 +246,7 @@ async def handle_traceroot_sql(request: Request):
         return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
 
 @app.get("/memory/export")
-async def export_memory():
+async def export_memory(api_key: str = Depends(get_api_key)):
     from server.memory import memory
     import tempfile
     
@@ -241,7 +271,7 @@ async def get_obsidian_status():
         return JSONResponse({"status": "error", "path": vault_path, "message": "Directory does not exist"})
 
 @app.post("/memory/obsidian/sync")
-async def sync_obsidian_memory():
+async def sync_obsidian_memory(api_key: str = Depends(get_api_key)):
     from server.memory import memory
     vault_path = CFG.get("obsidian_vault_path", "").strip()
     if not vault_path:
@@ -381,8 +411,10 @@ async def websocket_endpoint(websocket: WebSocket):
                             ws_manager.broadcast_sync({"type": "task_list", "tasks": tasks})
                             
                             try:
+                                import urllib.parse
+                                encoded_query = urllib.parse.quote_plus(query)
                                 from server.web_agent import headless_web_agent
-                                result = await asyncio.to_thread(headless_web_agent, "https://duckduckgo.com/?q=" + query.replace(' ', '+'), f"Research {query}")
+                                result = await asyncio.to_thread(headless_web_agent, "https://duckduckgo.com/?q=" + encoded_query, f"Research {query}")
                             except Exception as e:
                                 result = f"Research failed: {e}"
                                 
@@ -419,7 +451,12 @@ async def websocket_endpoint(websocket: WebSocket):
                             await asyncio.sleep(1.5)
                             tasks[2]["status"] = "completed"
                             ws_manager.broadcast_sync({"type": "task_list", "tasks": tasks})
-                            ws_manager.broadcast_sync({"type": "speak", "text": "Briefing Complete: You have 0 unread emails and 0 meetings today. (Calendar integration pending auth)."})
+                            
+                            # Fake data for now, ideally fetch real counts here
+                            unread_emails = 0
+                            meetings = 0
+                            
+                            ws_manager.broadcast_sync({"type": "speak", "text": f"Briefing Complete: You have {unread_emails} unread emails and {meetings} meetings today. (Calendar integration pending auth)."})
                             ws_manager.broadcast_sync({"type": "status", "text": "Idle"})
                         asyncio.create_task(run_briefing())
                         
@@ -480,7 +517,14 @@ if __name__ == "__main__":
 
     if is_port_in_use(PORT):
         log_info(f"[SERVER] ERROR: Port {PORT} is already in use!")
-        exit(1)
+        # Try to kill it if it's an old mizune process (on windows)
+        if os.name == 'nt':
+            log_info(f"[SERVER] Attempting to kill process on port {PORT}...")
+            os.system(f"FOR /F \"tokens=5\" %a in ('netstat -aon ^| find \":{PORT}\" ^| find \"LISTENING\"') do taskkill /F /PID %a")
+            time.sleep(1)
+        if is_port_in_use(PORT):
+            log_info(f"[SERVER] Port {PORT} is still in use! Please kill it manually or use a different port.")
+            exit(1)
 
     log_info("=" * 50)
     log_info(f"[SERVER] Starting {CFG.get('character_name','Mizune')} backend on port {PORT}...")

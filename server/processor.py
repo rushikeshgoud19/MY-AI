@@ -313,7 +313,7 @@ You are looking at Master through your webcam camera RIGHT NOW. Describe what yo
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             loop.run_until_complete(evolution_engine._run_evolution_cycle())
-        threading.Thread(target=_manual_evolve).start()
+        threading.Thread(target=_manual_evolve, daemon=True).start()
         return "[EMOTION: excited] I just started a manual evolution cycle in the background, Master!"
 
     if lower_text.startswith("/evolution pause"):
@@ -386,12 +386,12 @@ You are looking at Master through your webcam camera RIGHT NOW. Describe what yo
 
     try:
         # Route through manager with emotional context
+        exec_ctx = {"history": chronicle, "emotion_modifier": emotion_modifier}
+        broadcast_sync_fn({"type": "status", "text": "Analyzing your intent..."})
         try:
             loop = asyncio.get_running_loop()
-            raise RuntimeError("force fallback")
+            res = asyncio.run_coroutine_threadsafe(mizune_manager.execute(text, context=exec_ctx), loop).result()
         except RuntimeError:
-            exec_ctx = {"history": chronicle, "emotion_modifier": emotion_modifier}
-            broadcast_sync_fn({"type": "status", "text": "Analyzing your intent..."})
             res = asyncio.run(mizune_manager.execute(text, context=exec_ctx))
 
         broadcast_sync_fn({"type": "mode", "mode": mizune_manager.current_mode})
@@ -446,10 +446,10 @@ You are looking at Master through your webcam camera RIGHT NOW. Describe what yo
 
         # ── System Commands ──
         if re.search(r"\b(lock|lock screen|lock pc)\b", lower_text):
-            subprocess.Popen("rundll32.exe user32.dll,LockWorkStation", shell=True)
+            subprocess.Popen(["rundll32.exe", "user32.dll,LockWorkStation"])
             return "Locking your PC!"
         elif re.search(r"\b(sleep|put pc to sleep|sleep pc)\b", lower_text):
-            subprocess.Popen("rundll32.exe powrprof.dll,SetSuspendState 0,1,0", shell=True)
+            subprocess.Popen(["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"])
             return "Putting your PC to sleep. Goodnight!"
             
         # ── Knowledge Graph ──

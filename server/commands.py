@@ -245,7 +245,7 @@ def whatsapp_automation(contact: str, message: str = None) -> str:
         import json, os
         contacts_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "contacts.json")
         if os.path.exists(contacts_file):
-            with open(contacts_file, "r") as f:
+            with open(contacts_file, "r", encoding="utf-8", errors="replace") as f:
                 contacts_db = json.load(f)
                 # lowercase match
                 for name, number in contacts_db.items():

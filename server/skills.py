@@ -47,6 +47,11 @@ class SkillManager:
         for filename in os.listdir(self.skills_dir):
             if filename.endswith(".py"):
                 skill_name = filename[:-3]
+                # Security Check: Only load if it is explicitly approved in metadata
+                meta = self.metadata.get(skill_name, {})
+                if meta.get("status") != "active":
+                    log_info(f"[SKILLS] Blocked auto-loading of unapproved skill: {skill_name}")
+                    continue
                 self._load_skill_file(skill_name, os.path.join(self.skills_dir, filename))
                 
     def _load_skill_file(self, skill_name: str, filepath: str):
@@ -57,8 +62,6 @@ class SkillManager:
             
             if hasattr(module, 'execute'):
                 self.loaded_skills[skill_name] = getattr(module, 'execute')
-                if skill_name not in self.metadata:
-                    self._init_skill_meta(skill_name, "Manually added")
                 log_info(f"[SKILLS] Successfully loaded skill: {skill_name}")
             else:
                 log_info(f"[SKILLS] Skill {skill_name} is missing 'execute' function.")

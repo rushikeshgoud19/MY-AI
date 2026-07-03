@@ -3,13 +3,10 @@ package com.mizune.app.audio
 import android.content.Context
 import android.media.MediaRecorder
 import android.os.Build
+import android.os.VibrationEffect
+import android.os.Vibrator
 import android.util.Log
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.*
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
@@ -26,6 +23,7 @@ interface PushToTalkListener {
     fun onUploadStarted()
     fun onSpeechResult(text: String)
     fun onError(message: String)
+    fun onAmplitude(amplitude: Int) {}
 }
 
 class PushToTalkManager(
@@ -39,6 +37,10 @@ class PushToTalkManager(
     private var isRecording = false
 
     private val managerScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var amplitudeJob: Job? = null
+    private val vibrator: Vibrator? by lazy {
+        context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+    }
 
     private val httpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
@@ -69,6 +71,8 @@ class PushToTalkManager(
             }
             mediaRecorder = recorder
             isRecording = true
+            vibrate()
+            startAmplitudePolling()
             listener.onRecordingStarted()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start recording", e)
@@ -81,9 +85,9 @@ class PushToTalkManager(
 
     fun stopRecordingAndUpload() {
         if (!isRecording) return
-        
-        // 1. Immediately update UI to show we stopped listening
+
         isRecording = false
+        stopAmplitudePolling()
         listener.onRecordingStopped()
 
         val file = audioFile
@@ -91,7 +95,6 @@ class PushToTalkManager(
         audioFile = null
         mediaRecorder = null
 
-        // 2. Stop and upload in the background to avoid blocking the main thread/UI
         managerScope.launch {
             try {
                 recorder?.stop()
@@ -126,6 +129,7 @@ class PushToTalkManager(
         } catch (_: Exception) {} finally {
             safeReleaseRecorder()
             isRecording = false
+            stopAmplitudePolling()
             audioFile?.delete()
             audioFile = null
             listener.onRecordingStopped()
@@ -135,6 +139,38 @@ class PushToTalkManager(
     fun release() {
         cancelRecording()
         managerScope.cancel()
+    }
+
+    fun isRecording(): Boolean = isRecording
+
+    private fun startAmplitudePolling() {
+        amplitudeJob = managerScope.launch {
+            while (isActive && isRecording) {
+                val amp = mediaRecorder?.maxAmplitude ?: 0
+                withContext(Dispatchers.Main) {
+                    listener.onAmplitude(amp)
+                }
+                delay(100)
+            }
+        }
+    }
+
+    private fun stopAmplitudePolling() {
+        amplitudeJob?.cancel()
+        amplitudeJob = null
+    }
+
+    private fun vibrate() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vibrator?.vibrate(VibrationEffect.createOneShot(50, VibrationEffect.DEFAULT_AMPLITUDE))
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator?.vibrate(50)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Vibration failed", e)
+        }
     }
 
     private fun uploadAudio(file: File) {

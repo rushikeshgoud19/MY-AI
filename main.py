@@ -29,9 +29,9 @@ for _ in range(5):
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# Execute server.py in the exact same process and namespace
-print("[main.py] Proxying execution to server.py...")
-server_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "server.py")
-with open(server_path, "r", encoding="utf-8") as f:
-    code = compile(f.read(), server_path, 'exec')
-    exec(code, globals())
+print("[main.py] Starting server module...")
+import server
+import uvicorn
+
+if __name__ == "__main__":
+    uvicorn.run(server.app, host="0.0.0.0", port=PORT)

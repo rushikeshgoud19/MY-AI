@@ -352,7 +352,7 @@ class MizuneKernel:
                 cutoff = time.time() - 300  # Last 5 minutes
                 cursor = self.db.execute("""
                     SELECT * FROM kernel_events 
-                    WHERE timestamp > ? AND indexed_at = 0
+                    WHERE timestamp < ? AND indexed_at = 0
                     ORDER BY timestamp
                 """, (cutoff,))
                 

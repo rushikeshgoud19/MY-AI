@@ -321,7 +321,7 @@ def _active_tools_schema(config: dict):
 from traceroot import observe
 
 @observe(name="AI.Router", type="llm")
-def get_ai_response(text: str, history: list, config: dict, system_prompt_override: str = None, hints: dict = None) -> tuple:
+def get_ai_response(text: str, history: list, config: dict, system_prompt_override: str = None, hints: dict = None, ws_broadcast_func=None) -> tuple:
     """Router function to send prompt to the optimal LLM. Returns (text_response, tool_calls_list)."""
     from server.tokenjuice import TokenJuice
     text = TokenJuice.compress(text)
@@ -533,7 +533,7 @@ def get_ai_response(text: str, history: list, config: dict, system_prompt_overri
             error_str = str(e).lower()
             # Only keep cascading on transient/quota/auth errors; hard bugs re-raise.
             retriable = any(k in error_str for k in
-                            ("empty", "quota", "exhausted", "429", "404", "503", "500",
+                            ("empty", "quota", "exhausted", "429", "503", "500",
                              "time", "timeout", "401", "auth", "rate", "overload"))
             if not retriable:
                 raise e
@@ -544,7 +544,7 @@ def get_ai_response(text: str, history: list, config: dict, system_prompt_overri
         raise last_err
     return ("I'm sorry Master, all my AI providers are unavailable right now.", [])
 
-def _gemini_response(text: str, history: list, system_prompt: str, config: dict) -> tuple:
+def _gemini_response(text: str, history: list, system_prompt: str, config: dict, ws_broadcast_func=None) -> tuple:
     """Fetch response from Google Gemini with fallback models. Returns (text, tool_calls)."""
     api_key = get_api_key(config, "gemini_api_key")
     if not api_key:
@@ -813,8 +813,8 @@ def _gemini_response(text: str, history: list, system_prompt: str, config: dict)
             if "429" in err_str or "quota" in err_str or "exhausted" in err_str or "rate" in err_str or "401" in err_str or "resource_exhausted" in err_str:
                 log_info(f"[AI] Gemini quota/rate exhausted on {model_name}; escalating to cascade.")
                 raise e
-            # A per-model outage (503/404) is worth trying the next model in the list.
-            if "503" in err_str or "404" in err_str or "500" in err_str:
+            # A per-model outage (503/500) is worth trying the next model in the list.
+            if "503" in err_str or "500" in err_str:
                 log_info(f"[AI] Gemini: {model_name} unavailable ({err_str[:40]}), trying next model...")
                 continue
             raise e
@@ -823,7 +823,7 @@ def _gemini_response(text: str, history: list, system_prompt: str, config: dict)
         raise last_err
     return ("I'm having trouble thinking right now.", [])
 
-def _groq_response(text: str, history: list, system_prompt: str, config: dict) -> tuple:
+def _groq_response(text: str, history: list, system_prompt: str, config: dict, ws_broadcast_func=None) -> tuple:
     """Fetch response from Groq (Llama/Mixtral). Returns (text, tool_calls)."""
     api_key = get_api_key(config, "groq_api_key")
     if not api_key:
@@ -1026,8 +1026,13 @@ def _groq_response(text: str, history: list, system_prompt: str, config: dict) -
                                     ws_manager.broadcast_sync({"type": "approval_required", "command": cmd})
                                     tool_result = f"Command execution blocked for safety. Master, please confirm manually: {cmd}"
                                 else:
+                                    import shlex
                                     log_info(f"[AI] Executing shell command: {cmd}")
-                                    result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
+                                    try:
+                                        cmd_args = shlex.split(cmd)
+                                    except Exception:
+                                        cmd_args = [cmd]
+                                    result = subprocess.run(cmd_args, capture_output=True, text=True, timeout=30)
                                     output = (result.stdout + "\n" + result.stderr).strip()
                                     if len(output) > 500:
                                         output = output[:500] + "...(truncated)"
@@ -1233,7 +1238,7 @@ def _openai_response(text: str, history: list, system_prompt: str, config: dict)
         return ("OpenAI package is not installed. Run: pip install openai", [])
 
 
-def _nvidia_response(text: str, history: list, system_prompt: str, config: dict) -> tuple:
+def _nvidia_response(text: str, history: list, system_prompt: str, config: dict, ws_broadcast_func=None) -> tuple:
     """Fetch response from NVIDIA NIM with full tool support."""
     api_key = get_api_key(config, "nvidia_api_key")
     model = config.get("nvidia_model", "meta/llama-3.1-70b-instruct")
@@ -1458,7 +1463,7 @@ def _anthropic_response(text: str, history: list, system_prompt: str, config: di
         return ("Anthropic package is not installed. Run: pip install anthropic", [])
 
 
-def _openrouter_response(text: str, history: list, system_prompt: str, config: dict) -> tuple:
+def _openrouter_response(text: str, history: list, system_prompt: str, config: dict, ws_broadcast_func=None) -> tuple:
     """Fetch response from OpenRouter with full tool support."""
     api_key = get_api_key(config, "openrouter_api_key")
     model = config.get("openrouter_model", "anthropic/claude-3-haiku")

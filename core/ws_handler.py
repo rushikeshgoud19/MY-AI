@@ -73,9 +73,15 @@ async def handle_websocket_message(websocket: WebSocket, message: str) -> None:
                 await ws_handler.broadcast({"type": "status", "text": "Thinking..."})
 
                 # Process chat in thread pool
-                from server import process_command
+                from server.processor import process_command
+                from server.config import load_config
+                cfg = load_config()
+                
                 loop = asyncio.get_event_loop()
-                res = await loop.run_in_executor(None, process_command, text)
+                def sync_broadcast(msg_dict):
+                    asyncio.run_coroutine_threadsafe(ws_handler.broadcast(msg_dict), loop)
+                    
+                res = await loop.run_in_executor(None, process_command, text, cfg, sync_broadcast)
                 await ws_handler.broadcast({"type": "speak", "text": res})
                 await ws_handler.broadcast({"type": "status", "text": "Idle"})
 

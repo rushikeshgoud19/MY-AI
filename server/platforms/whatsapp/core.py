@@ -609,14 +609,14 @@ def start_whatsapp_core(config):
         
         log_info("[WHATSAPP] Clearing orphaned bridge processes on port 9876...")
         try:
-            if is_windows:
-                res = subprocess.run('netstat -ano | findstr :9876', shell=True, capture_output=True, text=True)
-                for line in res.stdout.strip().split('\n'):
-                    if 'LISTENING' in line:
-                        pid = line.strip().split()[-1]
-                        subprocess.run(f'taskkill /F /PID {pid}', shell=True, capture_output=True)
-            else:
-                subprocess.run('fuser -k 9876/tcp', shell=True, capture_output=True)
+            import psutil
+            for conn in psutil.net_connections(kind='tcp'):
+                if conn.laddr.port == 9876 and conn.status == psutil.CONN_LISTEN:
+                    try:
+                        proc = psutil.Process(conn.pid)
+                        proc.terminate()
+                    except Exception:
+                        pass
         except Exception:
             pass
 

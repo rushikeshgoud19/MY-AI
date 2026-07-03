@@ -5,8 +5,11 @@ import time
 import re
 import threading
 import speech_recognition as sr
+import warnings
 import logging
 from typing import Optional
+
+SHUTDOWN_EVENT = threading.Event()
 
 __all__ = ["listen_to_microphone", "listen_for_wake_word", "is_active_listening", "LAST_WAKE_TIME", "play_audio_bytes"]
 
@@ -262,7 +265,7 @@ def listen_for_wake_word(config: dict, on_wake_trigger_fn, broadcast_sync_fn):
     wake_adjust_noise_sec = float(config.get("wake_adjust_noise_sec", 0.3))
     wake_cooldown = float(config.get("wake_cooldown_sec", 3.0))
 
-    while True:
+    while not SHUTDOWN_EVENT.is_set():
         if MANUAL_WAKE_TRIGGER.is_set():
             MANUAL_WAKE_TRIGGER.clear()
             log_info("[WAKE] Manual trigger activated (F2)!")
@@ -338,7 +341,7 @@ def listen_for_wake_word(config: dict, on_wake_trigger_fn, broadcast_sync_fn):
                             if os.path.exists(config_path):
                                 try:
                                     import json
-                                    with open(config_path, "r") as f:
+                                    with open(config_path, "r", encoding="utf-8", errors="replace") as f:
                                         bioconf = json.load(f)
                                         dtw_threshold = bioconf.get("dtw_threshold", 85.0)
                                 except Exception:
@@ -397,9 +400,13 @@ def listen_for_wake_word(config: dict, on_wake_trigger_fn, broadcast_sync_fn):
             if _wake_fail_count % 30 == 0:
                 log_info(f"[WAKE] Still listening... ({_wake_fail_count} silent cycles)")
         except OSError as e:
+            if SHUTDOWN_EVENT.is_set():
+                break
             log_info(f"[WAKE] Microphone error: {e} — retrying in 3s")
             time.sleep(3)
         except Exception as e:
+            if SHUTDOWN_EVENT.is_set():
+                break
             log_info(f"[WAKE] Error: {e}")
             if "PyAudio" in str(e):
                 log_info("[WAKE] PyAudio is missing. Disabling wake word listener permanently on this machine.")
