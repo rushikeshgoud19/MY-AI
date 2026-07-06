@@ -81,7 +81,14 @@ def do_install_app(args: dict) -> str:
     if not app:
         return "Error: no app name given."
     if os.name == "nt":
-        winget_id = WINGET_IDS.get(app.lower())
+        key = app.lower().strip()
+        winget_id = WINGET_IDS.get(key)
+        if not winget_id:
+            # Strip common filler ("vlc media player" -> "vlc", "google chrome browser" -> "chrome")
+            for filler in (" media player", " browser", " editor", " app", " for windows"):
+                key = key.replace(filler, "")
+            key = key.strip()
+            winget_id = WINGET_IDS.get(key)
         if winget_id:
             cmd = ["winget", "install", "--id", winget_id, "--source", "winget",
                    "--accept-package-agreements", "--accept-source-agreements", "--silent"]
