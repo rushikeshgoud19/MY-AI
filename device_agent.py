@@ -46,6 +46,34 @@ def do_download(args: dict) -> str:
     return f"Downloaded {filename} ({size_mb:.1f} MB) to {DOWNLOADS}."
 
 
+# Common apps -> official winget IDs, so we install the RIGHT thing from the
+# winget community source (not a flaky Microsoft Store lookalike).
+WINGET_IDS = {
+    "blender": "BlenderFoundation.Blender",
+    "chrome": "Google.Chrome",
+    "google chrome": "Google.Chrome",
+    "firefox": "Mozilla.Firefox",
+    "vscode": "Microsoft.VisualStudioCode",
+    "vs code": "Microsoft.VisualStudioCode",
+    "visual studio code": "Microsoft.VisualStudioCode",
+    "discord": "Discord.Discord",
+    "spotify": "Spotify.Spotify",
+    "vlc": "VideoLAN.VLC",
+    "obs": "OBSProject.OBSStudio",
+    "notepad++": "Notepad++.Notepad++",
+    "git": "Git.Git",
+    "python": "Python.Python.3.12",
+    "node": "OpenJS.NodeJS",
+    "nodejs": "OpenJS.NodeJS",
+    "steam": "Valve.Steam",
+    "zoom": "Zoom.Zoom",
+    "7zip": "7zip.7zip",
+    "audacity": "Audacity.Audacity",
+    "gimp": "GIMP.GIMP",
+    "brave": "Brave.Brave",
+}
+
+
 def do_install_app(args: dict) -> str:
     """Install an app by name via the OS package manager. No URL guessing — this
     is how 'download/install blender' should actually work."""
@@ -53,21 +81,27 @@ def do_install_app(args: dict) -> str:
     if not app:
         return "Error: no app name given."
     if os.name == "nt":
-        # winget resolves official sources for Blender, Chrome, VSCode, etc.
-        cmd = ["winget", "install", "-e", "--name", app,
-               "--accept-package-agreements", "--accept-source-agreements", "--silent"]
+        winget_id = WINGET_IDS.get(app.lower())
+        if winget_id:
+            cmd = ["winget", "install", "--id", winget_id, "--source", "winget",
+                   "--accept-package-agreements", "--accept-source-agreements", "--silent"]
+        else:
+            # Unknown app: search the winget source by name (avoids the msstore path)
+            cmd = ["winget", "install", "--name", app, "--source", "winget",
+                   "--accept-package-agreements", "--accept-source-agreements", "--silent"]
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
         except FileNotFoundError:
             return "winget is not available on this PC. Master can install 'App Installer' from the Microsoft Store, or give me a direct download link."
         except subprocess.TimeoutExpired:
             return f"Install of '{app}' is taking a while; it may still be running in the background."
         out = (r.stdout + "\n" + r.stderr).strip()
         if r.returncode == 0 or "successfully installed" in out.lower():
-            return f"Installed {app} successfully via winget."
-        if "No package found" in out or "no installed package" in out.lower():
-            return f"Couldn't find '{app}' in winget. Try the exact app name, or give me a direct download link."
-        return f"winget finished with code {r.returncode}. {out[-300:]}"
+            return f"Installed {app} successfully."
+        if "no package found" in out.lower() or "no available upgrade" in out.lower():
+            return (f"Couldn't find '{app}' in the winget catalog. "
+                    f"Master can give me the exact app name or a direct download link.")
+        return f"Install of '{app}' failed (code {r.returncode}). {out[-250:]}"
     else:
         # linux/mac best-effort
         for mgr in (["brew", "install"], ["apt-get", "install", "-y"]):
