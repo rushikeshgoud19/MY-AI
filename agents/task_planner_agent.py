@@ -14,6 +14,7 @@ import logging
 from typing import Any, Optional, Dict, List
 
 from agents.base_agent import BaseAgent
+from server.tracing import observe, update_current_span
 
 # LLM imports
 try:

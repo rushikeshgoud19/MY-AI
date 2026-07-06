@@ -21,6 +21,7 @@ from typing import Any, Optional, Dict, List
 import re
 import logging
 import json
+from server.tracing import observe, update_current_span
 
 
 class ManagerAgent(BaseAgent):

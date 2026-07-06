@@ -21,6 +21,7 @@ from PIL import Image
 import pyautogui
 
 from agents.base_agent import BaseAgent
+from server.tracing import observe, update_current_span
 
 # Vision API imports — multi-provider fallback
 try:

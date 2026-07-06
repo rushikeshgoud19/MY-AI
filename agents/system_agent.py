@@ -12,6 +12,7 @@ from agents.base_agent import BaseAgent
 from typing import Any, Optional, Dict
 import logging
 from urllib.parse import urlparse
+from server.tracing import observe, update_current_span
 
 # COMMON_APPS defined locally to avoid circular import with server.py
 COMMON_APPS = {

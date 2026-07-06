@@ -2,6 +2,7 @@
 import os
 import re
 from typing import Dict, Any, List
+from server.tracing import observe, update_current_span
 
 
 class CodeReviewAgent:

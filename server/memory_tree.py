@@ -330,10 +330,18 @@ class MemoryTreeDB:
             if cursor.fetchone():
                 return
                 
+            # source_id is a GROUPING key (e.g. 'rules', a session id) and belongs in
+            # session_id — NOT the source column, whose CHECK only allows a fixed enum.
+            # Cramming source_id into source raised "CHECK constraint failed" and every
+            # insert_chunk write was lost.
+            meta = dict(metadata or {})
+            meta.setdefault("source_id", source_id)
+            valid_sources = {'chat','vision','tool','system','screen','voice','whatsapp','telegram','discord','summary'}
+            source_col = source_id if source_id in valid_sources else 'system'
             cursor.execute('''
                 INSERT INTO episodic (session_id, source, content, content_hash, metadata)
                 VALUES (?, ?, ?, ?, ?)
-            ''', (chunk_id, source_id, content, content_hash, json.dumps(metadata) if metadata else '{}'))
+            ''', (source_id, source_col, content, content_hash, json.dumps(meta)))
             
             episodic_id = cursor.lastrowid
             cursor.execute('INSERT INTO episodic_fts (rowid, content) VALUES (?, ?)',

@@ -334,13 +334,54 @@ def _active_tools_schema(config: dict):
     return TOOLS_SCHEMA
 
 
+import threading as _dedup_threading
+
+# Side-effect dedup: when a provider times out AFTER its tools ran, the cascade
+# retries on the next provider, which calls the SAME tool again (observed: two
+# Blender downloads fired for one request). Remember recent executions and
+# short-circuit repeats.
+_TOOL_DEDUP_TTL_SECONDS = 90
+_SIDE_EFFECT_TOOLS = {
+    "remote_device_command", "message_whatsapp", "open_app", "close_app",
+    "execute_python", "run_command", "schedule_task", "create_skill",
+    "notify_master", "take_note", "store_memory", "add_core_directive",
+}
+_recent_tool_calls: dict = {}
+_recent_tool_lock = _dedup_threading.Lock()
+
+
 def execute_tool_call(tool_name: str, args: dict, config: dict, background_python: bool = False) -> str:
     """Single tool dispatcher shared by every provider path (Gemini, Groq, NVIDIA, OpenRouter).
 
     Always returns a human-readable result string and never raises.
-    background_python=True runs execute_python off-thread — for providers with short
-    client timeouts that can't afford to block on a long script.
+    Side-effect tools are deduplicated for _TOOL_DEDUP_TTL_SECONDS.
     """
+    dedup_key = None
+    if tool_name in _SIDE_EFFECT_TOOLS:
+        import json as _dj
+        try:
+            dedup_key = (tool_name, _dj.dumps(args, sort_keys=True, default=str))
+        except Exception:
+            dedup_key = (tool_name, str(args))
+        now = time.time()
+        with _recent_tool_lock:
+            # prune expired
+            for k in [k for k, (ts, _) in _recent_tool_calls.items() if now - ts > _TOOL_DEDUP_TTL_SECONDS]:
+                del _recent_tool_calls[k]
+            hit = _recent_tool_calls.get(dedup_key)
+            if hit:
+                log_info(f"[ACTION] Dedup: '{tool_name}' already executed {now - hit[0]:.0f}s ago; returning cached result.")
+                return f"[Already done moments ago — do NOT repeat it] {hit[1]}"
+
+    result = _execute_tool_call_impl(tool_name, args, config, background_python)
+
+    if dedup_key is not None and not str(result).startswith("Error"):
+        with _recent_tool_lock:
+            _recent_tool_calls[dedup_key] = (time.time(), result)
+    return result
+
+
+def _execute_tool_call_impl(tool_name: str, args: dict, config: dict, background_python: bool = False) -> str:
     from .commands import launch_app, close_app, take_note, whatsapp_automation, execute_python_code
     from .skills import skill_manager
     import shlex
