@@ -35,8 +35,8 @@ You have access to: open_app, close_app, execute_python, headless_web_agent, mes
 
 Rules:
 1. Use the provided context from previous steps.
-2. Output ONLY a JSON object: {"tool": "name", "args": {...}}
-3. If the task is already done by context, output {"tool": "none", "args": {}} and include the result in a "result" field.
+2. Output ONLY a JSON object: {{"tool": "name", "args": {{...}}}}
+3. If the task is already done by context, output {{"tool": "none", "args": {{}}}} and include the result in a "result" field.
 
 Task: {task_description}
 Context from previous steps:
@@ -235,14 +235,25 @@ class TaskPlanner:
 
 
 def is_multi_step_request(text: str) -> bool:
-    """Heuristic to detect requests that need task planning."""
+    """Heuristic to detect requests that need task planning.
+
+    Word-boundary matching only: the old substring version matched "then" inside
+    "authentic" and counted the "and" in "COMMANDING" — the WhatsApp system
+    wrapper alone was enough to send EVERY message into the planner.
+    """
+    import re as _re
     t = text.lower()
+    # Strip injected system wrapper lines before judging the user's actual request
+    t = _re.sub(r'\(system:.*?\)', '', t, flags=_re.DOTALL)
+
     markers = [
-        "and then", "then", "after that", "followed by", "in order to",
-        "steps", "step by step", "multi-step", "research and", "find and",
-        "write and", "send to", "compare and", "summarize and",
+        "and then", "after that", "followed by", "step by step", "multi-step",
+        "research and", "find and", "write and", "compare and", "summarize and",
     ]
-    return any(m in t for m in markers) or t.count("and") >= 2
+    if any(m in t for m in markers):
+        return True
+    # Several independent clauses joined by standalone "and"s
+    return len(_re.findall(r'\band\b', t)) >= 3
 
 
 # Global instance

@@ -199,7 +199,10 @@ class MemoryTreeWorker:
                 memory_tree_db.update_chunk_state(chunk_id, "admitted")
                 
                 # Queue the next phase: append to source buffer
-                job_payload = json.dumps({"chunk_id": chunk_id, "source_id": chunk["source_id"]})
+                # (episodic chunks carry session_id; older code expected a
+                # "source_id" key that get_chunk never returned — KeyError killed
+                # every extract job and no chunk ever reached the buffer)
+                job_payload = json.dumps({"chunk_id": chunk_id, "source_id": chunk.get("source_id") or chunk.get("session_id") or "session_unknown"})
                 cursor.execute(
                     "INSERT INTO jobs (job_type, payload, created_at) VALUES (?, ?, ?)",
                     ("append_buffer", job_payload, now)

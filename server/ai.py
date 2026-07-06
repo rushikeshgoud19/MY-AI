@@ -171,7 +171,7 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "remote_device_command",
-            "description": "Run an action on one of Master's OTHER devices (e.g. his laptop) when you are running in the cloud or when Master asks for something 'on my laptop/PC'. Actions: 'download_file' (args: url, filename), 'open_app' (args: app_name), 'open_url' (args: url), 'run_command' (args: command). Check the [SYSTEM] context for which devices are online. If the target device is offline, tell Master honestly.",
+            "description": "Run an action on one of Master's OTHER devices (e.g. his laptop) when you are running in the cloud or when Master asks for something 'on my laptop/PC'. Actions: 'download_file' (args: url, filename — downloads the actual FILE to the device's Downloads folder; url must be a direct file link), 'open_app' (args: app_name), 'open_url' (args: url), 'run_command' (args: command). IMPORTANT: when Master says 'download X', he wants the real installer/file saved to disk — use download_file with a direct download URL (e.g. for Blender use the direct .msi/.zip mirror link, not the download page). Only fall back to open_url if no direct link is known. Check the [SYSTEM] context for which devices are online; if the target device is offline, tell Master honestly.",
             "parameters": {
                 "type": "object",
                 "properties": {
