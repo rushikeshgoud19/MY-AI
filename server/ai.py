@@ -426,7 +426,15 @@ def execute_tool_call(tool_name: str, args: dict, config: dict, background_pytho
             action = args.get("action", "")
             if not device or not action:
                 return "Error: device and action are required."
-            return device_registry.send_command(device, action, args.get("args") or {})
+            inner = args.get("args") or {}
+            if isinstance(inner, str):
+                # LLMs often pass nested args as a JSON string — tolerate it
+                import json as _json
+                try:
+                    inner = _json.loads(inner)
+                except Exception:
+                    inner = {}
+            return device_registry.send_command(device, action, inner)
 
         if tool_name == "notify_master":
             from .websocket import ws_manager

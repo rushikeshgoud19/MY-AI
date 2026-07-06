@@ -52,6 +52,8 @@ def do_open_app(args: dict) -> str:
 
 def do_open_url(args: dict) -> str:
     url = args.get("url", "")
+    if url and not url.startswith(("http://", "https://")) and "." in url:
+        url = "https://" + url  # LLMs often drop the scheme
     if not url.startswith(("http://", "https://")):
         return "Error: invalid URL."
     webbrowser.open(url)
