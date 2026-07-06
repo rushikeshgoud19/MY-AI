@@ -34,7 +34,14 @@ def do_download(args: dict) -> str:
         return "Error: invalid URL."
     filename = os.path.basename(args.get("filename") or url.split("?")[0].rstrip("/").split("/")[-1] or "download.bin")
     dest = os.path.join(DOWNLOADS, filename)
-    urllib.request.urlretrieve(url, dest)
+    # Mirrors 403 Python's default user-agent; present as a normal browser
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+    with urllib.request.urlopen(req, timeout=300) as r, open(dest, "wb") as f:
+        while True:
+            chunk = r.read(1024 * 256)
+            if not chunk:
+                break
+            f.write(chunk)
     size_mb = os.path.getsize(dest) / 1e6
     return f"Downloaded {filename} ({size_mb:.1f} MB) to {DOWNLOADS}."
 
