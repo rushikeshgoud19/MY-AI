@@ -22,7 +22,7 @@ try:
 except ImportError:
     sys.exit("pip install websockets")
 
-CAPABILITIES = ["download_file", "open_app", "open_url", "run_command"]
+CAPABILITIES = ["install_app", "download_file", "open_app", "open_url", "run_command"]
 DANGEROUS = ["del ", "rmdir ", "rm -", "format ", "diskpart", "shutdown", "reg delete", "mkfs"]
 DOWNLOADS = os.path.join(os.path.expanduser("~"), "Downloads")
 
@@ -44,6 +44,37 @@ def do_download(args: dict) -> str:
             f.write(chunk)
     size_mb = os.path.getsize(dest) / 1e6
     return f"Downloaded {filename} ({size_mb:.1f} MB) to {DOWNLOADS}."
+
+
+def do_install_app(args: dict) -> str:
+    """Install an app by name via the OS package manager. No URL guessing — this
+    is how 'download/install blender' should actually work."""
+    app = (args.get("app_name") or args.get("app") or args.get("name") or "").strip()
+    if not app:
+        return "Error: no app name given."
+    if os.name == "nt":
+        # winget resolves official sources for Blender, Chrome, VSCode, etc.
+        cmd = ["winget", "install", "-e", "--name", app,
+               "--accept-package-agreements", "--accept-source-agreements", "--silent"]
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        except FileNotFoundError:
+            return "winget is not available on this PC. Master can install 'App Installer' from the Microsoft Store, or give me a direct download link."
+        except subprocess.TimeoutExpired:
+            return f"Install of '{app}' is taking a while; it may still be running in the background."
+        out = (r.stdout + "\n" + r.stderr).strip()
+        if r.returncode == 0 or "successfully installed" in out.lower():
+            return f"Installed {app} successfully via winget."
+        if "No package found" in out or "no installed package" in out.lower():
+            return f"Couldn't find '{app}' in winget. Try the exact app name, or give me a direct download link."
+        return f"winget finished with code {r.returncode}. {out[-300:]}"
+    else:
+        # linux/mac best-effort
+        for mgr in (["brew", "install"], ["apt-get", "install", "-y"]):
+            if subprocess.run(["which", mgr[0]], capture_output=True).returncode == 0:
+                r = subprocess.run(mgr + [app.lower()], capture_output=True, text=True, timeout=600)
+                return f"Ran {mgr[0]} install {app}: exit {r.returncode}."
+        return "No supported package manager found on this device."
 
 
 def do_open_app(args: dict) -> str:
@@ -81,6 +112,7 @@ def do_run_command(args: dict) -> str:
 
 
 ACTIONS = {
+    "install_app": do_install_app,
     "download_file": do_download,
     "open_app": do_open_app,
     "open_url": do_open_url,
