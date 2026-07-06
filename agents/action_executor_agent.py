@@ -17,6 +17,7 @@ from typing import Any, Optional, Dict, List, Tuple
 from PIL import Image
 
 from agents.base_agent import BaseAgent
+from server.tracing import observe, update_current_span
 
 try:
     import pyautogui
