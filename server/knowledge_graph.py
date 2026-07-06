@@ -6,54 +6,151 @@ import logging
 from server.config import log_info
 
 def get_graph_data():
-    """Returns the knowledge graph nodes and links as a dictionary."""
+    """Build Mizune's knowledge graph from REAL memory relationships.
+
+    Edges come from actual data — topics.related_topics, entity co-occurrence in
+    emotional_memory events, connection_strength interaction weights, and
+    which topics each memory/document actually mentions — not decorative links.
+
+    Groups: 0=core, 1=skills, 2=memories, 3=semantic docs, 4=topics, 5=people.
+    """
     nodes = []
     links = []
-    
-    # 1. Root Node
-    nodes.append({"id": "Mizune Core", "name": "Mizune's Brain", "group": 0, "val": 20})
-    
-    # 2. Extract Skills
+    node_ids = set()
+
+    def add_node(nid, name, group, val):
+        if nid in node_ids:
+            return
+        node_ids.add(nid)
+        nodes.append({"id": nid, "name": name, "group": group, "val": val})
+
+    def add_link(a, b, strength=1.0):
+        if a in node_ids and b in node_ids and a != b:
+            links.append({"source": a, "target": b, "value": round(float(strength), 2)})
+
+    def link_by_mentions(nid, text, topic_names, fallback_strength=0.5):
+        """Link a node to every topic its text actually mentions."""
+        lowered = (text or "").lower()
+        linked = False
+        for tname, tnode in topic_names.items():
+            if len(tname) >= 3 and tname in lowered:
+                add_link(nid, tnode)
+                linked = True
+        if not linked:
+            add_link("Mizune Core", nid, strength=fallback_strength)
+
+    add_node("Mizune Core", "Mizune's Brain", 0, 20)
+
+    # ── Memory Tree: topics, co-occurrence, connection strength, summaries ──
+    topic_names = {}  # lowercase entity name -> node id
+    try:
+        from server.memory_tree import memory_tree_db
+        db = getattr(memory_tree_db, "db", None)
+        if db:
+            cur = db.cursor()
+
+            # 1. Topics — the entities Mizune actually knows about, sized by hotness
+            topic_rows = cur.execute(
+                "SELECT entity_name, entity_type, hotness, related_topics FROM topics "
+                "ORDER BY hotness DESC LIMIT 60"
+            ).fetchall()
+            for name, ttype, hotness, _related in topic_rows:
+                if not name:
+                    continue
+                group = 5 if ttype == "person" else 4
+                nid = f"Topic: {name}"
+                add_node(nid, str(name), group, 6 + min(float(hotness or 0), 10))
+                topic_names[str(name).lower()] = nid
+
+            # 2. Real topic-to-topic edges from related_topics
+            for name, _ttype, _hot, related in topic_rows:
+                if not (name and related):
+                    continue
+                try:
+                    rel = json.loads(related)
+                except Exception:
+                    continue
+                src = f"Topic: {name}"
+                for r in (rel if isinstance(rel, list) else []):
+                    dst = topic_names.get(str(r).lower())
+                    if dst:
+                        add_link(src, dst)
+
+            # 3. Co-occurrence edges: entities that appeared in the same events
+            import collections
+            pair_counts = collections.Counter()
+            for (ents,) in cur.execute(
+                "SELECT entities FROM emotional_memory WHERE entities IS NOT NULL "
+                "ORDER BY timestamp DESC LIMIT 300"
+            ).fetchall():
+                try:
+                    elist = {str(e).lower() for e in json.loads(ents) if e}
+                except Exception:
+                    continue
+                known = sorted(e for e in elist if e in topic_names)
+                for i in range(len(known)):
+                    for j in range(i + 1, len(known)):
+                        pair_counts[(known[i], known[j])] += 1
+            for (a, b), cnt in pair_counts.most_common(80):
+                add_link(topic_names[a], topic_names[b], strength=min(cnt, 5))
+
+            # 4. Bond strength: entities anchored to the core by real interaction weight
+            for entity, strength, _count in cur.execute(
+                "SELECT entity, strength, interaction_count FROM connection_strength "
+                "ORDER BY strength DESC LIMIT 30"
+            ).fetchall():
+                if not entity:
+                    continue
+                nid = topic_names.get(str(entity).lower())
+                if not nid:
+                    nid = f"Topic: {entity}"
+                    add_node(nid, str(entity), 4, 6)
+                    topic_names[str(entity).lower()] = nid
+                add_link("Mizune Core", nid, strength=max(float(strength or 0.5), 0.5))
+
+            # 5. Recent compressed memories, linked to the topics they mention
+            for sid, content in cur.execute(
+                "SELECT id, content FROM episodic WHERE source = 'summary' "
+                "ORDER BY timestamp DESC LIMIT 30"
+            ).fetchall():
+                nid = f"Memory_{sid}"
+                add_node(nid, (content or "")[:48] + "...", 2, 5)
+                link_by_mentions(nid, content, topic_names)
+    except Exception as e:
+        log_info(f"[KNOWLEDGE GRAPH] Error reading memory tree: {e}")
+
+    # ── Contacts: real people, weighted by real message volume ──
+    if os.path.exists("cortex.db"):
+        try:
+            conn = sqlite3.connect("cortex.db")
+            c = conn.cursor()
+            for name, tier, rel_score, msg_count in c.execute(
+                "SELECT name, tier, relationship_score, message_count FROM contacts "
+                "WHERE name IS NOT NULL ORDER BY message_count DESC LIMIT 25"
+            ).fetchall():
+                nid = topic_names.get(str(name).lower()) or f"Person: {name}"
+                if nid not in node_ids:
+                    add_node(nid, str(name), 5, 6 + min((msg_count or 0) / 50.0, 8))
+                    topic_names[str(name).lower()] = nid
+                add_link("Mizune Core", nid, strength=max(float(rel_score or 1), 1))
+            conn.close()
+        except Exception as e:
+            log_info(f"[KNOWLEDGE GRAPH] Error reading contacts: {e}")
+
+    # ── Skills: capabilities Mizune owns ──
     skills_dir = ".data/skills/active"
     if os.path.exists(skills_dir):
         for filename in os.listdir(skills_dir):
             if filename.endswith(".py"):
                 skill_name = filename[:-3]
-                node_id = f"Skill: {skill_name}"
-                nodes.append({"id": node_id, "name": skill_name, "group": 1, "val": 10})
-                links.append({"source": "Mizune Core", "target": node_id})
-                
-    # 3. Extract Sessions (SQLite)
-    data_dir = ".data"
-    telemetry_dir = "data_collector"
-    db_path = os.path.join(telemetry_dir, "mizune_memory.db")
-    if os.path.exists(db_path):
-        try:
-            conn = sqlite3.connect(db_path)
-            c = conn.cursor()
-            c.execute("SELECT role, content FROM conversation_log ORDER BY timestamp DESC LIMIT 30")
-            rows = c.fetchall()
-            for i, row in enumerate(rows):
-                role, content = row
-                node_id = f"Session_{i}"
-                nodes.append({"id": node_id, "name": f"{role.upper()}: {content[:30]}...", "group": 2, "val": 5})
-                
-                # Link to core
-                if i % 3 == 0:
-                    links.append({"source": "Mizune Core", "target": node_id})
-                    
-                # Link sequentially for timeline
-                if i > 0:
-                    links.append({"source": f"Session_{i-1}", "target": node_id})
-            conn.close()
-        except Exception as e:
-            log_info(f"[KNOWLEDGE GRAPH] Error reading SQLite: {e}")
-            
-    # 4. Extract ChromaDB Semantic Memories
+                nid = f"Skill: {skill_name}"
+                add_node(nid, skill_name, 1, 10)
+                add_link("Mizune Core", nid)
+
+    # ── ChromaDB semantic memories, linked to the topics they mention ──
     try:
         import chromadb
-        data_dir = ".data"
-        chroma_dir = os.path.join(data_dir, "chroma_db")
+        chroma_dir = os.path.join(".data", "chroma_db")
         client = chromadb.PersistentClient(path=chroma_dir)
         collection = client.get_or_create_collection(name="mizune_longterm")
         results = collection.get()
@@ -61,12 +158,12 @@ def get_graph_data():
         # Limit to 50 nodes to avoid massive UI lag on the frontend
         docs = docs[-50:] if len(docs) > 50 else docs
         for i, doc in enumerate(docs):
-            node_id = f"Semantic_{i}"
-            nodes.append({"id": node_id, "name": doc[:40] + "...", "group": 3, "val": 8})
-            links.append({"source": "Mizune Core", "target": node_id})
+            nid = f"Semantic_{i}"
+            add_node(nid, doc[:40] + "...", 3, 8)
+            link_by_mentions(nid, doc, topic_names)
     except Exception as e:
         log_info(f"[KNOWLEDGE GRAPH] Error reading ChromaDB: {e}")
-            
+
     return {"nodes": nodes, "links": links}
 
 def generate_graph_html(output_path="memory_graph.html"):
@@ -94,8 +191,10 @@ def generate_graph_html(output_path="memory_graph.html"):
           <h2>Neural Memory Graph</h2>
           <div style="color: #4CAF50;">● Core Network</div>
           <div style="color: #ff00ff;">● Acquired Skills</div>
-          <div style="color: #00ffff;">● Session Timeline</div>
+          <div style="color: #00ffff;">● Compressed Memories</div>
           <div style="color: #ffff00;">● Semantic Memories</div>
+          <div style="color: #ff9800;">● Topics</div>
+          <div style="color: #2196f3;">● People</div>
       </div>
       <div id="3d-graph"></div>
       
@@ -106,8 +205,10 @@ def generate_graph_html(output_path="memory_graph.html"):
         const colorMap = {{
             0: '#4CAF50', // Core
             1: '#ff00ff', // Skills
-            2: '#00ffff', // Sessions
-            3: '#ffff00'  // Semantic
+            2: '#00ffff', // Compressed memories
+            3: '#ffff00', // Semantic
+            4: '#ff9800', // Topics
+            5: '#2196f3'  // People
         }};
         
         const Graph = ForceGraph3D()

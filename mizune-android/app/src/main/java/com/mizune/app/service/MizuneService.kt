@@ -54,8 +54,12 @@ class MizuneService : Service() {
         appPreferences = AppPreferences(this)
         createNotificationChannels()
         serviceScope.launch {
-            val serverUrl = appPreferences.serverUrl.first()
-            initializeWebSocket(serverUrl)
+            appPreferences.serverUrl.collect { newUrl ->
+                if (::webSocket.isInitialized) {
+                    webSocket.disconnect()
+                }
+                initializeWebSocket(newUrl)
+            }
         }
     }
 

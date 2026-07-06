@@ -257,6 +257,7 @@ def listen_for_wake_word(config: dict, on_wake_trigger_fn, broadcast_sync_fn):
         return None
 
     _wake_fail_count = 0
+    _mic_fail_count = 0
 
     wake_language = config.get("wake_language", "en-IN")
     wake_energy_threshold = int(config.get("wake_energy_threshold", 180))
@@ -298,6 +299,7 @@ def listen_for_wake_word(config: dict, on_wake_trigger_fn, broadcast_sync_fn):
                 )
 
             _wake_fail_count = 0  # Reset on successful audio capture
+            _mic_fail_count = 0
 
             try:
                 # ── BIOMETRIC FINGERPRINT MATCHING ──
@@ -402,8 +404,13 @@ def listen_for_wake_word(config: dict, on_wake_trigger_fn, broadcast_sync_fn):
         except OSError as e:
             if SHUTDOWN_EVENT.is_set():
                 break
-            log_info(f"[WAKE] Microphone error: {e} — retrying in 3s")
-            time.sleep(3)
+            _mic_fail_count += 1
+            if _mic_fail_count >= 5 and ("No Default Input Device" in str(e) or "Invalid input device" in str(e)):
+                log_info("[WAKE] No microphone found after 5 attempts — disabling wake word listener on this machine (headless?). Set voice_trigger_enabled: false to silence this at startup.")
+                break
+            wait = min(3 * _mic_fail_count, 60)
+            log_info(f"[WAKE] Microphone error: {e} — retrying in {wait}s")
+            time.sleep(wait)
         except Exception as e:
             if SHUTDOWN_EVENT.is_set():
                 break

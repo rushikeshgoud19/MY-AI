@@ -37,7 +37,8 @@ server_debug_utf8.log
 .chroma_db/
 .claude/
 .data/
-lumina/
+legacy/lumina/
+legacy/server_old.py
 package-lock.json
 tts_cache/
 dataset/
@@ -46,8 +47,11 @@ data_collector/
 *.db
 src-tauri/target/
 
-# Exclude old monolith server file
-server_old.py
+# Local archives (docker image tars etc.) — never commit
+_archive/
+
+# Graphify knowledge graph output (regenerate with: graphify update .)
+graphify-out/
 .wwebjs_auth/
 .wwebjs_cache/
 .wwebjs_auth_baileys/

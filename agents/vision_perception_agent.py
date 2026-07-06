@@ -152,7 +152,7 @@ Return ONLY valid JSON:
             except Exception as e:
                 self.log(f"Groq Vision init failed: {e}")
 
-    from traceroot import observe, update_current_span
+    from server.tracing import observe, update_current_span
     @observe(name="perception.process", type="agent")
     async def execute(self, task_input: str, context: Optional[Dict] = None) -> Any:
         """

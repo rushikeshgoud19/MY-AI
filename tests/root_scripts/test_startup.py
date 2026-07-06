@@ -4,7 +4,7 @@ logging.basicConfig(level=logging.INFO)
 
 try:
     print("1. Testing TokenJuice...")
-    from server.token_juice import token_juice
+    from server.tokenjuice import token_juice
     compressed = token_juice.compress("<p>Test</p> http://example.com/verylongpath?q=12345678901234567890123")
     print(f"TokenJuice output: {compressed}")
 

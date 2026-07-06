@@ -11,7 +11,7 @@ import httpx
 from typing import Dict, Any, List
 
 from google import genai
-from traceroot import observe, update_current_span
+from server.tracing import observe, update_current_span
 
 from agents.base_agent import BaseAgent
 

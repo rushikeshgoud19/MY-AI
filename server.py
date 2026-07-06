@@ -30,18 +30,9 @@ from server.tts import generate_tts
 from server.emotion import detect_emotion
 
 # Globals
-import traceroot
-from traceroot import observe
-from traceroot.instrumentation import Integration
+from server.tracing import observe, initialize_tracing
 
-TRACEROOT_API_KEY = os.getenv("TRACEROOT_API_KEY")
-if TRACEROOT_API_KEY:
-    integrations = [Integration.GOOGLE_GENAI, Integration.OPENAI]
-    
-    traceroot.initialize(
-        api_key=TRACEROOT_API_KEY,
-        integrations=integrations,
-    )
+if initialize_tracing():
     print("TraceRoot initialized")
 CFG = load_config()
 whatsapp_core_instance = None
@@ -52,6 +43,9 @@ async def lifespan(app: FastAPI):
     log_info("[SERVER] Starting background tasks...")
     
     ws_manager.set_main_loop(asyncio.get_running_loop())
+
+    from server.device_registry import device_registry
+    device_registry.set_loop(asyncio.get_running_loop())
     
     # Hook backend logs to stream to the Dashboard Kernel Stream
     from server.config import set_log_callback
@@ -307,7 +301,7 @@ async def sync_obsidian_memory(api_key: str = Depends(get_api_key)):
     except Exception as e:
         return JSONResponse({"status": "error", "message": f"Sync failed: {str(e)}"}, status_code=500)
 
-from traceroot import observe
+from server.tracing import observe
 @app.websocket("/ws/trace_test")
 @observe(name="websocket.trace_test", type="test")
 async def test_trace_propagation(websocket: WebSocket):
@@ -348,36 +342,43 @@ async def websocket_endpoint(websocket: WebSocket):
                         ws_manager.broadcast_sync({"type": "status", "text": "Thinking..."})
 
                         async def handle_chat():
-                            res = await asyncio.to_thread(process_command, text, CFG, ws_manager.broadcast_sync)
-                            if res:
-                                from server.emotion import detect_emotion
-                                emo_str = detect_emotion(res)
-                                
-                                # Convert emotion string to biometric scores
-                                v, a = 0.0, 0.5
-                                if emo_str in ["happy", "excited"]: v, a = 1.0, 0.8
-                                elif emo_str == "sad": v, a = -1.0, 0.2
-                                elif emo_str == "angry": v, a = -0.8, 0.9
-                                elif emo_str == "surprised": v, a = 0.5, 0.8
-                                elif emo_str == "blush": v, a = 0.8, 0.6
-                                elif emo_str == "sleepy": v, a = 0.0, 0.1
-                                
-                                # Send Biometrics to Dashboard so Slime Avatar reacts
-                                ws_manager.broadcast_sync({
-                                    "type": "state_update", 
-                                    "payload": {"valence": v, "arousal": a}
-                                })
-                                
-                                ws_manager.broadcast_sync({"type": "speak", "text": res})
-                                try:
-                                    from server.tts import generate_tts
-                                    from server.audio import play_audio_bytes
-                                    audio_bytes = await generate_tts(res, CFG)
-                                    if audio_bytes:
-                                        play_audio_bytes(audio_bytes)
-                                except Exception as e:
-                                    log_info(f"[WS] TTS generation error: {e}")
-                            ws_manager.broadcast_sync({"type": "status", "text": "Idle"})
+                            try:
+                                res = await asyncio.to_thread(process_command, text, CFG, ws_manager.broadcast_sync)
+                                if res:
+                                    from server.emotion import detect_emotion
+                                    emo_str = detect_emotion(res)
+                                    
+                                    # Convert emotion string to biometric scores
+                                    v, a = 0.0, 0.5
+                                    if emo_str in ["happy", "excited"]: v, a = 1.0, 0.8
+                                    elif emo_str == "sad": v, a = -1.0, 0.2
+                                    elif emo_str == "angry": v, a = -0.8, 0.9
+                                    elif emo_str == "surprised": v, a = 0.5, 0.8
+                                    elif emo_str == "blush": v, a = 0.8, 0.6
+                                    elif emo_str == "sleepy": v, a = 0.0, 0.1
+                                    
+                                    # Send Biometrics to Dashboard so Slime Avatar reacts
+                                    ws_manager.broadcast_sync({
+                                        "type": "state_update", 
+                                        "payload": {"valence": v, "arousal": a}
+                                    })
+                                    
+                                    ws_manager.broadcast_sync({"type": "speak", "text": res})
+                                    try:
+                                        from server.tts import generate_tts
+                                        from server.audio import play_audio_bytes
+                                        audio_bytes = await generate_tts(res, CFG)
+                                        if audio_bytes:
+                                            play_audio_bytes(audio_bytes)
+                                    except Exception as e:
+                                        log_info(f"[WS] TTS generation error: {e}")
+                            except Exception as e:
+                                import traceback
+                                traceback.print_exc()
+                                log_info(f"[WS] process_command error: {e}")
+                                ws_manager.broadcast_sync({"type": "speak", "text": f"Error: {e}"})
+                            finally:
+                                ws_manager.broadcast_sync({"type": "status", "text": "Idle"})
 
                         asyncio.create_task(handle_chat())
                 elif msg.get("type") == "command":
@@ -475,9 +476,23 @@ async def websocket_endpoint(websocket: WebSocket):
                         }))
                     except Exception as e:
                         log_info(f"[WS] Error fetching knowledge graph: {e}")
+                elif msg.get("type") == "register_device":
+                    from server.device_registry import device_registry
+                    device_registry.register(
+                        msg.get("device_name", "unnamed-device"),
+                        websocket,
+                        capabilities=msg.get("capabilities", []),
+                        platform=msg.get("platform", "unknown"),
+                    )
+                    await websocket.send_text(json.dumps({"type": "device_registered"}))
+                elif msg.get("type") == "device_result":
+                    from server.device_registry import device_registry
+                    device_registry.handle_result(msg.get("request_id", ""), msg.get("result"))
             except Exception as e:
                 log_info(f"[WS] Error processing message: {e}")
     except WebSocketDisconnect:
+        from server.device_registry import device_registry
+        device_registry.unregister_socket(websocket)
         ws_manager.disconnect(websocket)
 
 if __name__ == "__main__":

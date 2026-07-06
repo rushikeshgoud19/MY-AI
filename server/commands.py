@@ -8,7 +8,10 @@ import time
 import logging
 import re
 from urllib.parse import urlparse
-import pyautogui
+try:
+    import pyautogui
+except ImportError:
+    pyautogui = None
 
 __all__ = ["launch_app", "close_app", "whatsapp_automation", "take_note", "search_memory", "get_system_info", "COMMON_APPS"]
 

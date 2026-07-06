@@ -52,6 +52,7 @@ class MainActivity : ComponentActivity() {
     private var mizuneService: MizuneService? = null
     private lateinit var ttsPlayer: TtsPlayer
     private var pttManager: PushToTalkManager? = null
+    private var currentApiBaseUrl = ""
 
     // Compose State
     private var currentEmotion = mutableStateOf(SlimeEmotion.CALM)
@@ -130,7 +131,7 @@ class MainActivity : ComponentActivity() {
 
                 val previousEmotion = currentEmotion.value
                 currentEmotion.value = SlimeEmotion.SPEAKING
-                ttsPlayer.playTts(text) {
+                ttsPlayer.playTts(text, currentApiBaseUrl) {
                     runOnUiThread {
                         currentEmotion.value = previousEmotion
                     }
@@ -168,10 +169,9 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             appPreferences.serverUrl.collect { serverUrl ->
                 val apiBaseUrl = buildApiBaseUrl(serverUrl)
+                currentApiBaseUrl = apiBaseUrl
                 createOrRecreatePttManager(apiBaseUrl)
-                if (mizuneService != null) {
-                    mizuneService?.reconnectWithServer(serverUrl)
-                } else {
+                if (mizuneService == null) {
                     startAndBindService(serverUrl)
                 }
             }

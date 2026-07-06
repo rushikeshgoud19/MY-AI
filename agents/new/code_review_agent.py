@@ -35,7 +35,7 @@ class CodeReviewAgent:
     def __init__(self, config: Dict[str, Any]):
         self.config = config
 
-    from traceroot import observe
+    from server.tracing import observe
     @observe(name="critic.review", type="agent")
     def review_file(self, file_path: str) -> Dict[str, Any]:
         """Review a code file."""

@@ -80,7 +80,7 @@ fun SettingsScreen(
                     value = serverUrl,
                     onValueChange = { serverUrl = it },
                     label = { Text("Server URL") },
-                    placeholder = { Text("mizune.yourdomain.com") },
+                    placeholder = { Text("mizune.centralindia.cloudapp.azure.com") },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                     colors = OutlinedTextFieldDefaults.colors(

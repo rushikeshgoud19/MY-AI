@@ -10,10 +10,12 @@ import asyncio
 import threading
 import logging
 import shlex
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 from server.config import log_info
 from server.commands import COMMON_APPS, launch_app, close_app, whatsapp_automation, take_note
 from server.ai import get_ai_response
+from server.task_planner import is_multi_step_request, get_task_planner
 from server.agents import mizune_manager, save_turn
 from server.memory import memory
 from server.memory_tree import memory_tree_db
@@ -22,6 +24,10 @@ from server.vision import _acquire_vision_lock, _release_vision_lock, _analyze_s
 
 
 logger = logging.getLogger("mizune.processor")
+
+# Memory recall runs off-thread with a time budget so it never blocks a reply.
+# Not a context manager: shutdown would wait on slow recalls and defeat the timeout.
+_recall_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="mem-recall")
 
 # Session Store
 from server.session_store import SessionStore
@@ -71,7 +77,7 @@ def process_command(text: str, config: dict, broadcast_sync_fn, session_id: str 
     finally:
         lock.release()
 
-from traceroot import observe
+from server.tracing import observe
 
 @observe(name="Mizune.ProcessCommand", type="span")
 def _process_command_internal(text: str, config: dict, broadcast_sync_fn, session_id: str = 'main') -> str:
@@ -347,42 +353,69 @@ You are looking at Master through your webcam camera RIGHT NOW. Describe what yo
     # Get active context
     chronicle = global_session_store.get_recent(session_id, limit=config.get("memory_size", 30))
     
-    # Cross-session memory lookup
-    # OPTIMIZED: Only trigger heavy ChromaDB lookups for explicit memory requests, not common words like "what is"
-    triggers = ["remember", "yesterday", "did i", "did we", "have i", "have we"]
-    if any(t in lower_text for t in triggers) and len(lower_text) > 8:
-        query = lower_text
-        for word in triggers + ["do you know", "can you tell me", "what was"]:
-            query = query.replace(word, "")
-        query = query.strip()
-        if len(query) > 2:
-            past_context = ""
+    # Cross-session memory lookup — runs on EVERY substantive message so Mizune
+    # actually uses what she knows instead of starting fresh each time.
+    # Latency guard: recall runs in a worker thread with a hard time budget;
+    # if it can't answer in time, the reply proceeds without past context.
+    query = lower_text
+    for word in ["remember", "do you know", "can you tell me", "what was", "yesterday",
+                 "did i", "did we", "have i", "have we"]:
+        query = query.replace(word, "")
+    query = query.strip()
+
+    if len(query) > 2 and len(lower_text) > 8:
+        def _deep_recall(q: str) -> str:
+            ctx = ""
             # Search SQLite Chat History (Fast)
-            past = global_session_store.search_across_sessions(query, limit=2)
+            past = global_session_store.search_across_sessions(q, limit=2)
             if past:
-                past_context += "Past Chat Mentions:\n" + "\n".join([f"[{p['timestamp']}] {p['role']}: {p['content']}" for p in past]) + "\n\n"
-            
-            # Search ChromaDB Semantic Memory & Advanced Memory Tree (Slow - Now gated)
-            try:
-                from .memory_tree import memory_tree_db
-                tree_facts = memory_tree_db.recall(query, None, {}, limit=2)
-                if tree_facts:
-                    past_context += "Compressed Memory Graph Nodes:\n"
-                    for fact in tree_facts:
-                        if "topic_summary" in fact:
-                            past_context += f"- [TOPIC: {fact['entity']}] {fact['topic_summary']}\n"
-                        else:
-                            past_context += f"- {fact['content']}\n"
-                            
-                semantic_facts = memory.recall_longterm(query, n_results=2)
-                if semantic_facts:
-                    past_context += "Semantic Long-Term Memory Facts:\n" + "\n".join([f"- {fact}" for fact in semantic_facts]) + "\n"
-            except Exception as e:
-                log_info(f"[MEMORY] Advanced recall failed: {e}")
-                
-            if past_context.strip():
-                text_with_context = f"{text}\n\n[SYSTEM: Relevant Past Context regarding '{query}':\n{past_context.strip()}]"
-                chronicle[-1]["parts"][0]["text"] = text_with_context
+                ctx += "Past Chat Mentions:\n" + "\n".join([f"[{p['timestamp']}] {p['role']}: {p['content']}" for p in past]) + "\n\n"
+
+            # Search ChromaDB Semantic Memory & Advanced Memory Tree
+            from .memory_tree import memory_tree_db
+            tree_facts = memory_tree_db.recall(q, None, {}, limit=2)
+            if tree_facts:
+                ctx += "Compressed Memory Graph Nodes:\n"
+                for fact in tree_facts:
+                    if "topic_summary" in fact:
+                        ctx += f"- [TOPIC: {fact['entity']}] {fact['topic_summary']}\n"
+                    else:
+                        ctx += f"- {fact['content']}\n"
+
+            semantic_facts = memory.recall_longterm(q, n_results=2)
+            if semantic_facts:
+                ctx += "Semantic Long-Term Memory Facts:\n" + "\n".join([f"- {fact}" for fact in semantic_facts]) + "\n"
+            return ctx
+
+        past_context = ""
+        try:
+            future = _recall_pool.submit(_deep_recall, query)
+            past_context = future.result(timeout=config.get("memory_recall_budget_seconds", 1.2))
+        except FuturesTimeoutError:
+            log_info("[MEMORY] Recall exceeded time budget; replying without past context.")
+        except Exception as e:
+            log_info(f"[MEMORY] Advanced recall failed: {e}")
+
+        if past_context.strip():
+            text_with_context = f"{text}\n\n[SYSTEM: Relevant Past Context regarding '{query}':\n{past_context.strip()}]"
+            chronicle[-1]["parts"][0]["text"] = text_with_context
+
+    # Device/origin awareness: tell Mizune WHERE Master is messaging from and
+    # which remote devices are online, so "download this on my laptop" from the
+    # phone gets routed to the laptop node instead of the server.
+    try:
+        from server.device_registry import device_registry
+        device_ctx = device_registry.context_line(platform)
+        if device_ctx and chronicle:
+            chronicle[-1]["parts"][0]["text"] += f"\n\n[SYSTEM: {device_ctx}]"
+    except Exception as e:
+        log_info(f"[DEVICES] Context injection failed: {e}")
+
+    # Multi-step task planner path
+    if is_multi_step_request(text):
+        broadcast_sync_fn({"type": "status", "text": "Planning multi-step task..."})
+        planner = get_task_planner(config, broadcast_sync_fn)
+        return planner.execute(text)
 
     try:
         # Route through manager with emotional context

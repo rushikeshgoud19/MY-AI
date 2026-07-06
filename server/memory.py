@@ -12,7 +12,7 @@ except ImportError:
 from .config import log_info
 import uuid
 from .memory_tree import memory_tree_db
-from traceroot import observe, update_current_span
+from server.tracing import observe, update_current_span
 
 __all__ = ["MemorySystem"]
 

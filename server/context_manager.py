@@ -2,7 +2,7 @@ import json
 import logging
 import hashlib
 from typing import List, Dict, Any, Tuple
-from .token_juice import token_juice
+from .tokenjuice import token_juice
 from .config import log_info
 
 logger = logging.getLogger("mizune.context_manager")

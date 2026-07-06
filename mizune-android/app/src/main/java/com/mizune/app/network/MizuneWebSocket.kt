@@ -44,12 +44,15 @@ class MizuneWebSocket(
     }
 
     private fun buildWsUrl(): String {
-        val normalized = serverUrl.trim().trimEnd('/')
-        return when {
-            normalized.startsWith("wss://", ignoreCase = true) ||
-                    normalized.startsWith("ws://", ignoreCase = true) -> "$normalized/ws"
-            else -> "wss://$normalized/ws"
+        var normalized = serverUrl.trim().trimEnd('/')
+        if (normalized.startsWith("https://", ignoreCase = true)) {
+            normalized = normalized.replaceFirst("https://", "wss://", ignoreCase = true)
+        } else if (normalized.startsWith("http://", ignoreCase = true)) {
+            normalized = normalized.replaceFirst("http://", "ws://", ignoreCase = true)
+        } else if (!normalized.startsWith("ws://", ignoreCase = true) && !normalized.startsWith("wss://", ignoreCase = true)) {
+            normalized = "wss://$normalized"
         }
+        return "$normalized/ws"
     }
 
     fun connect() {

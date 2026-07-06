@@ -18,8 +18,11 @@ class SubconsciousEngine:
         self.trigger_callback = trigger_callback
         self.processing_lock = processing_lock
         
-        # Minimum heartbeat is 3 mins to avoid API bans
-        self.interval_minutes = max(3, config.get("proactive_interval_minutes", 5))
+        # Minimum heartbeat is 3 mins to avoid API bans.
+        # Default raised to 15: traces showed ticks were 90% of all LLM traffic
+        # (8.3k input tokens each, answered "[SKIP]"), starving user requests
+        # of Groq/Gemini quota and forcing them onto slow fallback providers.
+        self.interval_minutes = max(3, config.get("proactive_interval_minutes", 15))
         self._running = False
         
     def start(self):
@@ -41,39 +44,54 @@ class SubconsciousEngine:
                 
             self._tick()
             
-    def _build_situation_report(self) -> str:
-        """
-        Gathers basic stats to decide if waking up is necessary.
-        """
-        # In a real setup, this would ping auto_fetch for unread emails, check calendar, etc.
-        # For now, we inject time and request the LLM to decide.
-        report = []
-        report.append(f"Current Time: {time.strftime('%I:%M %p, %A, %B %d')}")
-        
-        # Look for pending memories or background tasks
-        from .memory_tree import memory_tree_db
-        pending = memory_tree_db.get_queue_depth()
-        if pending > 0:
-            report.append(f"System State: {pending} memory chunks pending consolidation.")
-            
-        return "\\n".join(report)
+    def _build_situation_report(self) -> list:
+        """Gather actionable items. Returns a LIST — empty means nothing needs the LLM."""
+        items = []
+
+        # Pending memory consolidation is handled by the memory worker on its own;
+        # it only matters here if the queue is badly backed up.
+        try:
+            from .memory_tree import memory_tree_db
+            pending = memory_tree_db.get_queue_depth()
+            if pending > 25:
+                items.append(f"System State: {pending} memory chunks pending consolidation (backlog).")
+        except Exception:
+            pass
+
+        # Scheduled tasks due soon
+        try:
+            from .processor import global_cron_manager
+            due = getattr(global_cron_manager, "peek_due_soon", lambda: [])()
+            if due:
+                items.append(f"Upcoming scheduled tasks: {due}")
+        except Exception:
+            pass
+
+        return items
 
     def _tick(self):
-        log_info("[SUBCONSCIOUS] Heartbeat tick...")
-        sitrep = self._build_situation_report()
-        
-        # We prompt the AI to evaluate the situation
+        # Deterministic gate: if nothing is actionable, DON'T wake the LLM at all.
+        # Traces showed each idle tick cost ~8,300 input tokens to produce "[SKIP]" —
+        # that burned ~90% of provider quota and slowed real user replies to a crawl.
+        items = self._build_situation_report()
+        if not items:
+            log_info("[SUBCONSCIOUS] Tick: nothing actionable, skipping LLM entirely.")
+            return
+
+        log_info(f"[SUBCONSCIOUS] Heartbeat tick with {len(items)} actionable item(s)...")
+        sitrep = "\n".join([f"Current Time: {time.strftime('%I:%M %p, %A, %B %d')}"] + items)
+
         prompt = (
-            f"[SYSTEM SUBCONSCIOUS TICK]\\n"
-            f"You are running in the background. Master is not explicitly talking to you.\\n"
-            f"SITUATION REPORT:\\n{sitrep}\\n\\n"
-            f"DECISION MATRIX:\\n"
-            f"1. If nothing requires attention, reply exactly with [SKIP].\\n"
-            f"2. If you need to perform a silent background task (like using a tool to check emails or weather), reply with [ACT] and use the tool.\\n"
-            f"3. If there is highly important information, a finished task, or an urgent notification (e.g. meeting in 5 mins), reply with [ESCALATE] and speak to Master directly! Only do this if it's actually important to their work or a very engaging conversation point.\\n\\n"
+            f"[SYSTEM SUBCONSCIOUS TICK]\n"
+            f"You are running in the background. Master is not explicitly talking to you.\n"
+            f"SITUATION REPORT:\n{sitrep}\n\n"
+            f"DECISION MATRIX:\n"
+            f"1. If nothing requires attention, reply exactly with [SKIP].\n"
+            f"2. If you need to perform a silent background task (like using a tool to check emails or weather), reply with [ACT] and use the tool.\n"
+            f"3. If there is highly important information, a finished task, or an urgent notification (e.g. meeting in 5 mins), reply with [ESCALATE] and speak to Master directly! Only do this if it's actually important to their work or a very engaging conversation point.\n\n"
             f"If you ACT or ESCALATE, you MUST fulfill the action immediately. If unsure or if it's low priority, [SKIP]."
         )
-        
+
         try:
             # We override the output so that if she returns SKIP, the processor drops it.
             # Processor already handles [SLEEP], we'll add [SKIP] to it in processor.py.

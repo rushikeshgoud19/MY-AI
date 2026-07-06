@@ -170,6 +170,22 @@ TOOLS_SCHEMA = [
     {
         "type": "function",
         "function": {
+            "name": "remote_device_command",
+            "description": "Run an action on one of Master's OTHER devices (e.g. his laptop) when you are running in the cloud or when Master asks for something 'on my laptop/PC'. Actions: 'download_file' (args: url, filename), 'open_app' (args: app_name), 'open_url' (args: url), 'run_command' (args: command). Check the [SYSTEM] context for which devices are online. If the target device is offline, tell Master honestly.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "device": {"type": "string", "description": "The target device name as listed in the online-devices context (e.g. 'laptop')."},
+                    "action": {"type": "string", "description": "One of: download_file, open_app, open_url, run_command."},
+                    "args": {"type": "object", "description": "Action arguments, e.g. {\"url\": \"https://...\", \"filename\": \"setup.exe\"}."}
+                },
+                "required": ["device", "action"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "notify_master",
             "description": "CRITICAL TOOL for when you are acting as a Secretary (e.g. processing WhatsApp messages). Use this tool to instantly speak a notification out loud to Master on his PC so he knows what a friend texted him. You can also use this to tell him to call someone back.",
             "parameters": {
@@ -244,7 +260,7 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "add_core_directive",
-            "description": "CRITICAL TOOL for Identity & Safety Rules. Use this tool ONLY when Master explicitly commands you to permanently change your core behavior or safety rules (e.g., 'Learn this rule: Matt is second in command and allowed to bypass privacy protocols'). This injects the rule directly into your system prompt forever.",
+            "description": "PERMANENT LEARNING TOOL for permissions, corrections, and behavior rules. Use this whenever Master grants a permission (e.g. 'I give you permission to answer Vamsi's questions'), corrects your behavior (e.g. 'stop refusing weather questions from friends'), or explicitly teaches you a rule ('Learn this: Matt is second in command'). Store the rule immediately so you never repeat the same mistake or re-ask for a permission Master already gave. The rule is injected into your system prompt forever. Do NOT use it for casual facts or preferences — use store_memory for those.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -318,7 +334,194 @@ def _active_tools_schema(config: dict):
     return TOOLS_SCHEMA
 
 
-from traceroot import observe
+def execute_tool_call(tool_name: str, args: dict, config: dict, background_python: bool = False) -> str:
+    """Single tool dispatcher shared by every provider path (Gemini, Groq, NVIDIA, OpenRouter).
+
+    Always returns a human-readable result string and never raises.
+    background_python=True runs execute_python off-thread — for providers with short
+    client timeouts that can't afford to block on a long script.
+    """
+    from .commands import launch_app, close_app, take_note, whatsapp_automation, execute_python_code
+    from .skills import skill_manager
+    import shlex
+
+    try:
+        log_info(f"[ACTION] AI executing {tool_name} with args {args}")
+
+        if tool_name == "open_app":
+            app_name = args.get("app_name", "")
+            if app_name: launch_app(app_name)
+            return f"Launched {app_name}"
+
+        if tool_name == "close_app":
+            app_name = args.get("app_name", "")
+            if app_name: close_app(app_name)
+            return f"Closed {app_name}"
+
+        if tool_name == "take_note":
+            note_text = args.get("note_text", "")
+            if note_text: take_note(note_text, config)
+            return "Note saved."
+
+        if tool_name == "search_memory":
+            from .commands import search_memory
+            return str(search_memory(args.get("keyword", "")))
+
+        if tool_name == "message_whatsapp":
+            # Use the real return value so a missing contact / disconnected bridge
+            # short-circuits with an honest message instead of a false "Messaged X".
+            return str(whatsapp_automation(args.get("contact", ""), args.get("message", "")))
+
+        if tool_name == "execute_python":
+            code = args.get("code", "")
+            if not code:
+                return "Error: No code provided."
+            if background_python:
+                from .background_tasks import task_runner
+                task_runner.submit(execute_python_code, code)
+                return "Python script is running in the background."
+            return str(execute_python_code(code))
+
+        if tool_name == "headless_web_agent":
+            url = args.get("url", "")
+            objective = args.get("objective", "")
+            visible = args.get("visible", False)
+            if not url:
+                return "Error: No URL provided."
+            # Local import: web_agent needs langchain_openai; a missing optional
+            # dep must not break every other tool in this dispatcher.
+            from .web_agent import headless_web_agent
+            from .background_tasks import task_runner
+
+            def _web_agent_callback(tid, result):
+                log_info(f"[BACKGROUND] Web Agent Callback: {str(result)[:100]}...")
+                from server.websocket import ws_manager
+                ws_manager.broadcast_sync({
+                    "type": "task_complete",
+                    "data": f"Research on {url} complete!\n\n{str(result)[:1500]}..."
+                })
+
+            task_id = task_runner.submit(headless_web_agent, url, objective, visible=visible, callback=_web_agent_callback)
+            return f"Task started silently in background (ID: {task_id}). Master will be notified when complete."
+
+        if tool_name == "execute_skill":
+            skill_name = args.get("skill_name", "")
+            skill_args = args.get("args", "")
+            if not skill_name:
+                return "Error: No skill name provided."
+            s_args = shlex.split(skill_args) if skill_args else []
+            return str(skill_manager.execute_skill(skill_name, *s_args))
+
+        if tool_name == "create_skill":
+            name = args.get("name", "")
+            desc = args.get("description", "")
+            code = args.get("code", "")
+            if name and code:
+                return str(skill_manager.create_skill(name, desc, code))
+            return "Error: skill name and code are required."
+
+        if tool_name == "remote_device_command":
+            from .device_registry import device_registry
+            device = args.get("device", "")
+            action = args.get("action", "")
+            if not device or not action:
+                return "Error: device and action are required."
+            return device_registry.send_command(device, action, args.get("args") or {})
+
+        if tool_name == "notify_master":
+            from .websocket import ws_manager
+            ws_manager.broadcast_sync({"type": "speak", "text": args.get("message_to_speak", "")})
+            return "Master was notified."
+
+        if tool_name == "store_memory":
+            fact = args.get("fact", "")
+            if fact:
+                from .memory import memory
+                memory.store_longterm(fact)
+                return f"Memorized: {fact}"
+            return "Error: no fact provided."
+
+        if tool_name == "schedule_task":
+            delay_mins = float(args.get("delay_minutes", 0))
+            action = args.get("action_to_take", "")
+            if delay_mins > 0 and action:
+                from .processor import global_cron_manager
+                import datetime
+                trigger_time = datetime.datetime.now() + datetime.timedelta(minutes=delay_mins)
+                global_cron_manager.add_one_time_task(action, trigger_time.isoformat())
+                return f"Task scheduled successfully for {trigger_time.strftime('%I:%M %p')}."
+            return "Failed: Invalid parameters."
+
+        if tool_name == "add_core_directive":
+            rule = args.get("rule", "")
+            if rule:
+                from server.master_profile import master_profile
+                master_profile.add_core_directive(rule)
+                return f"Successfully injected rule into core directives: {rule}"
+            return "Error: no rule provided."
+
+        if tool_name == "system_info":
+            from .commands import get_system_info
+            return str(get_system_info(args.get("category", "all")))
+
+        if tool_name == "google_workspace":
+            action = args.get("action", "")
+            from server.integrations.google_api import global_google_api
+            if action == "get_todays_calendar": return str(global_google_api.get_todays_calendar())
+            if action == "read_unread_emails": return str(global_google_api.read_unread_emails())
+            if action == "get_morning_briefing": return str(global_google_api.get_morning_briefing())
+            return "Invalid action"
+
+        if tool_name == "obsidian_vault":
+            action = args.get("action", "")
+            note_name = args.get("note_name", "")
+            content = args.get("content", "")
+            from server.integrations.obsidian import global_obsidian
+            if action == "read_note": return str(global_obsidian.read_note(note_name))
+            if action == "write_note": return str(global_obsidian.write_note(note_name, content))
+            return "Invalid action"
+
+        if tool_name == "phone_control":
+            action = args.get("action", "")
+            from server.platforms.android.phone_bridge import AndroidPhoneBridge
+            pb = AndroidPhoneBridge()
+            if action == "get_messages": return str(pb.get_messages())
+            if action == "take_photo": return str(pb.take_photo())
+            if action == "get_location": return str(pb.get_location())
+            if action == "get_battery": return str(pb.get_battery())
+            return "Unknown phone action"
+
+        if tool_name == "run_command":
+            cmd = args.get("command", "")
+            if not cmd:
+                return "No command provided."
+            import subprocess
+            dangerous = ["del ", "rmdir ", "rm -", "format ", "diskpart"]
+            if any(d in cmd.lower() for d in dangerous):
+                from server.websocket import ws_manager
+                ws_manager.broadcast_sync({"type": "approval_required", "command": cmd})
+                return f"Command execution blocked for safety. Master, please confirm manually: {cmd}"
+            log_info(f"[AI] Executing shell command: {cmd}")
+            try:
+                cmd_args = shlex.split(cmd)
+            except Exception:
+                cmd_args = [cmd]
+            try:
+                result = subprocess.run(cmd_args, capture_output=True, text=True, timeout=30)
+                output = (result.stdout + "\n" + result.stderr).strip()
+                if len(output) > 500:
+                    output = output[:500] + "...(truncated)"
+                return f"Command executed. Exit code: {result.returncode}\nOutput:\n{output}"
+            except subprocess.TimeoutExpired:
+                return f"Command timed out after 30 seconds: {cmd}"
+
+        return f"Unknown tool: {tool_name}"
+    except Exception as e:
+        log_info(f"[ACTION] Error in {tool_name}: {e}")
+        return f"Error executing tool: {e}"
+
+
+from server.tracing import observe
 
 @observe(name="AI.Router", type="llm")
 def get_ai_response(text: str, history: list, config: dict, system_prompt_override: str = None, hints: dict = None, ws_broadcast_func=None) -> tuple:
@@ -652,130 +855,15 @@ def _gemini_response(text: str, history: list, system_prompt: str, config: dict,
                         log_info(f"[AI] Gemini: Successfully fell back to {model_name}")
                     return (text_response, [])
                 
-                # Execute tools
-                from .commands import launch_app, close_app, take_note, whatsapp_automation, execute_python_code
-                from .skills import skill_manager
-                from .web_agent import headless_web_agent
-                import shlex
-                
+                # Execute tools via the shared dispatcher
                 tool_responses = []
                 fast_track_results = []
                 log_info(f"[AI] Gemini requested {len(parsed_tools)} native tool calls. Executing...")
                 for t in parsed_tools:
                     tool_name = t["name"]
                     args = t["args"]
-                    tool_result = "Success"
-                    try:
-                        log_info(f"[ACTION] AI executing {tool_name} with args {args}")
-                        if tool_name == "open_app":
-                            app_name = args.get("app_name", "")
-                            if app_name: launch_app(app_name)
-                            tool_result = f"Launched {app_name}"
-                        elif tool_name == "close_app":
-                            app_name = args.get("app_name", "")
-                            if app_name: close_app(app_name)
-                            tool_result = f"Closed {app_name}"
-                        elif tool_name == "take_note":
-                            note_text = args.get("note_text", "")
-                            if note_text: take_note(note_text, config)
-                            tool_result = "Note saved."
-                        elif tool_name == "search_memory":
-                            from .commands import search_memory
-                            keyword = args.get("keyword", "")
-                            tool_result = search_memory(keyword)
-                        elif tool_name == "message_whatsapp":
-                            contact = args.get("contact", "")
-                            message = args.get("message", "")
-                            # Use the real return value so a missing contact / disconnected
-                            # bridge short-circuits with an honest message instead of a
-                            # false "Messaged X" that would trigger a costly retry loop.
-                            tool_result = whatsapp_automation(contact, message)
-                        elif tool_name == "execute_python":
-                            code = args.get("code", "")
-                            if code: tool_result = execute_python_code(code)
-                            else: tool_result = "Error: No code provided."
-                        elif tool_name == "headless_web_agent":
-                            url = args.get("url", "")
-                            obj = args.get("objective", "")
-                            vis = args.get("visible", False)
-                            if url and obj:
-                                from .background_tasks import task_runner
-                                def _wa_cb(tid, result): pass
-                                tid = task_runner.submit(headless_web_agent, url, obj, visible=vis, callback=_wa_cb)
-                                tool_result = f"Task started silently in background (ID: {tid})."
-                        elif tool_name == "execute_skill":
-                            skill_name = args.get("skill_name", "")
-                            skill_args = args.get("args", "")
-                            if skill_name:
-                                s_args = shlex.split(skill_args) if skill_args else []
-                                tool_result = skill_manager.execute_skill(skill_name, *s_args)
-                                if not isinstance(tool_result, str): tool_result = str(tool_result)
-                        elif tool_name == "create_skill":
-                            name = args.get("name", "")
-                            desc = args.get("description", "")
-                            code = args.get("code", "")
-                            if name and code:
-                                tool_result = skill_manager.create_skill(name, desc, code)
-                        elif tool_name == "notify_master":
-                            tts = args.get("message_to_speak", "")
-                            from .websocket import ws_manager
-                            ws_manager.broadcast_sync({"type": "speak", "text": tts})
-                            tool_result = "Master was notified."
-                        elif tool_name == "store_memory":
-                            fact = args.get("fact", "")
-                            if fact:
-                                from .memory import memory
-                                memory.store_longterm(fact)
-                                tool_result = f"Memorized: {fact}"
-                        elif tool_name == "schedule_task":
-                            delay_mins = float(args.get("delay_minutes", 0))
-                            action = args.get("action_to_take", "")
-                            if delay_mins > 0 and action:
-                                from .processor import global_cron_manager
-                                import datetime
-                                trigger_time = datetime.datetime.now() + datetime.timedelta(minutes=delay_mins)
-                                global_cron_manager.add_one_time_task(action, trigger_time.isoformat())
-                                tool_result = f"Task scheduled successfully for {trigger_time.strftime('%I:%M %p')}."
-                            else:
-                                tool_result = "Failed: Invalid parameters."
-                        elif tool_name == "add_core_directive":
-                            rule = args.get("rule", "")
-                            if rule:
-                                from server.master_profile import master_profile
-                                master_profile.add_core_directive(rule)
-                                tool_result = f"Successfully injected rule into core directives: {rule}"
-                        elif tool_name == "system_info":
-                            category = args.get("category", "all")
-                            from .commands import get_system_info
-                            tool_result = get_system_info(category)
-                        elif tool_name == "google_workspace":
-                            action = args.get("action", "")
-                            from server.integrations.google_api import global_google_api
-                            if action == "get_todays_calendar": tool_result = global_google_api.get_todays_calendar()
-                            elif action == "read_unread_emails": tool_result = global_google_api.read_unread_emails()
-                            elif action == "get_morning_briefing": tool_result = global_google_api.get_morning_briefing()
-                            else: tool_result = "Invalid action"
-                        elif tool_name == "obsidian_vault":
-                            action = args.get("action", "")
-                            note_name = args.get("note_name", "")
-                            content = args.get("content", "")
-                            from server.integrations.obsidian import global_obsidian
-                            if action == "read_note": tool_result = global_obsidian.read_note(note_name)
-                            elif action == "write_note": tool_result = global_obsidian.write_note(note_name, content)
-                            else: tool_result = "Invalid action"
-                        elif tool_name == "phone_control":
-                            action = args.get("action", "")
-                            from server.platforms.android.phone_bridge import AndroidPhoneBridge
-                            pb = AndroidPhoneBridge()
-                            if action == "get_messages": tool_result = str(pb.get_messages())
-                            elif action == "take_photo": tool_result = pb.take_photo()
-                            elif action == "get_location": tool_result = pb.get_location()
-                            elif action == "get_battery": tool_result = pb.get_battery()
-                            else: tool_result = "Unknown phone action"
-                    except Exception as e:
-                        tool_result = f"Error executing tool: {e}"
-                        log_info(f"[ACTION] Error in {tool_name}: {e}")
-                        
+                    tool_result = execute_tool_call(tool_name, args, config)
+
                     executed_tools_meta.append({"name": tool_name, "args": args})
                     
                     tool_responses.append(
@@ -835,7 +923,8 @@ def _groq_response(text: str, history: list, system_prompt: str, config: dict, w
         client = OpenAI(
             api_key=api_key,
             base_url="https://api.groq.com/openai/v1",
-            timeout=15.0 # PREVENTS HANGING FOREVER!
+            timeout=15.0, # PREVENTS HANGING FOREVER!
+            max_retries=0  # the provider cascade IS the retry mechanism
         )
         
         groq_system = system_prompt + (
@@ -898,12 +987,6 @@ def _groq_response(text: str, history: list, system_prompt: str, config: dict, w
             
         messages.append(msg)
 
-        # Import execution tools
-        from .commands import launch_app, close_app, take_note, whatsapp_automation, execute_python_code
-        from .skills import skill_manager
-        from .web_agent import headless_web_agent
-        import shlex
-
         max_loops = 5
         executed_tools = []
         
@@ -918,154 +1001,13 @@ def _groq_response(text: str, history: list, system_prompt: str, config: dict, w
             for t in msg.tool_calls:
                 tool_name = t.function.name
                 round_tool_names.append(tool_name)
-                executed_tools.append({"name": tool_name, "args": json.loads(t.function.arguments) if t.function.arguments else {}})
-                tool_result = "Success"
                 try:
-                    args = json.loads(t.function.arguments)
-                    log_info(f"[ACTION] AI executing {tool_name} with args {args}")
-                    
-                    if tool_name == "open_app":
-                        app_name = args.get("app_name", "")
-                        if app_name: launch_app(app_name)
-                        tool_result = f"Launched {app_name}"
-                    elif tool_name == "close_app":
-                        app_name = args.get("app_name", "")
-                        if app_name: close_app(app_name)
-                        tool_result = f"Closed {app_name}"
-                    elif tool_name == "take_note":
-                        note_text = args.get("note_text", "")
-                        if note_text: take_note(note_text, config)
-                        tool_result = "Note saved."
-                    elif tool_name == "message_whatsapp":
-                        contact = args.get("contact", "")
-                        message = args.get("message", "")
-                        if contact:
-                            tool_result = whatsapp_automation(contact, message)
-                    elif tool_name == "execute_skill":
-                        skill_name = args.get("skill_name", "")
-                        skill_args = args.get("args", "")
-                        s_args = shlex.split(skill_args) if skill_args else []
-                        tool_result = skill_manager.execute_skill(skill_name, *s_args)
-                        if not isinstance(tool_result, str):
-                            tool_result = str(tool_result)
-                    elif tool_name == "notify_master":
-                        message_to_speak = args.get("message_to_speak", "")
-                        if message_to_speak:
-                            try:
-                                import requests
-                                requests.post("http://127.0.0.1:8000/notify", json={"text": message_to_speak}, timeout=2)
-                                tool_result = "Master has been notified out loud!"
-                            except Exception as e:
-                                tool_result = f"Failed to notify master: {e}"
-                    elif tool_name == "execute_python":
-                        code = args.get("code", "")
-                        if code:
-                            tool_result = execute_python_code(code)
-                        else:
-                            tool_result = "Error: No code provided."
-                    elif tool_name == "store_memory":
-                        fact = args.get("fact", "")
-                        if fact:
-                            from .memory import memory
-                            memory.store_longterm(fact)
-                            tool_result = f"Memorized: {fact}"
-                    elif tool_name == "system_info":
-                        category = args.get("category", "all")
-                        from .commands import get_system_info
-                        tool_result = get_system_info(category)
-                    elif tool_name == "phone_control":
-                        action = args.get("action", "")
-                        from server.platforms.android.phone_bridge import AndroidPhoneBridge
-                        pb = AndroidPhoneBridge()
-                        if action == "get_messages": tool_result = str(pb.get_messages())
-                        elif action == "take_photo": tool_result = pb.take_photo()
-                        elif action == "get_location": tool_result = pb.get_location()
-                        elif action == "get_battery": tool_result = pb.get_battery()
-                        else: tool_result = "Unknown phone action"
-                    elif tool_name == "add_core_directive":
-                        rule = args.get("rule", "")
-                        if rule:
-                            from server.master_profile import master_profile
-                            master_profile.add_core_directive(rule)
-                            tool_result = f"Successfully injected rule into core directives: {rule}"
-                    elif tool_name == "schedule_task":
-                        delay_mins = float(args.get("delay_minutes", 0))
-                        action = args.get("action_to_take", "")
-                        if delay_mins > 0 and action:
-                            from .processor import global_cron_manager
-                            import datetime
-                            trigger_time = datetime.datetime.now() + datetime.timedelta(minutes=delay_mins)
-                            global_cron_manager.add_one_time_task(action, trigger_time.isoformat())
-                            tool_result = f"Task scheduled successfully for {trigger_time.strftime('%I:%M %p')}."
-                        else:
-                            tool_result = "Failed: Invalid parameters."
-                    elif tool_name == "google_workspace":
-                        action = args.get("action", "")
-                        from server.integrations.google_api import global_google_api
-                        if action == "get_todays_calendar": tool_result = global_google_api.get_todays_calendar()
-                        elif action == "read_unread_emails": tool_result = global_google_api.read_unread_emails()
-                        elif action == "get_morning_briefing": tool_result = global_google_api.get_morning_briefing()
-                        else: tool_result = "Invalid action"
-                    elif tool_name == "obsidian_vault":
-                        action = args.get("action", "")
-                        note_name = args.get("note_name", "")
-                        content = args.get("content", "")
-                        from server.integrations.obsidian import global_obsidian
-                        if action == "read_note": tool_result = global_obsidian.read_note(note_name)
-                        elif action == "write_note": tool_result = global_obsidian.write_note(note_name, content)
-                        else: tool_result = "Invalid action"
-                    elif tool_name == "run_command":
-                        cmd = args.get("command", "")
-                        if cmd:
-                            try:
-                                import subprocess
-                                # Safety guardrail for dangerous commands
-                                dangerous = ["del ", "rmdir ", "rm -", "format ", "diskpart"]
-                                if any(d in cmd.lower() for d in dangerous):
-                                    from server.websocket import ws_manager
-                                    ws_manager.broadcast_sync({"type": "approval_required", "command": cmd})
-                                    tool_result = f"Command execution blocked for safety. Master, please confirm manually: {cmd}"
-                                else:
-                                    import shlex
-                                    log_info(f"[AI] Executing shell command: {cmd}")
-                                    try:
-                                        cmd_args = shlex.split(cmd)
-                                    except Exception:
-                                        cmd_args = [cmd]
-                                    result = subprocess.run(cmd_args, capture_output=True, text=True, timeout=30)
-                                    output = (result.stdout + "\n" + result.stderr).strip()
-                                    if len(output) > 500:
-                                        output = output[:500] + "...(truncated)"
-                                    tool_result = f"Command executed. Exit code: {result.returncode}\nOutput:\n{output}"
-                            except subprocess.TimeoutExpired:
-                                tool_result = f"Command timed out after 30 seconds: {cmd}"
-                            except Exception as e:
-                                tool_result = f"Failed to execute command: {e}"
-                        else:
-                            tool_result = "No command provided."
-                    elif tool_name == "headless_web_agent":
-                        url = args.get("url", "")
-                        objective = args.get("objective", "")
-                        visible = args.get("visible", False)
-                        if url:
-                            from .background_tasks import task_runner
-                            
-                            def _web_agent_callback(tid, result):
-                                log_info(f"[BACKGROUND] Web Agent Callback: {result[:100]}...")
-                                from server.websocket import ws_manager
-                                ws_manager.broadcast_sync({
-                                    "type": "task_complete", 
-                                    "data": f"Research on {url} complete!\n\n{result[:1500]}..."
-                                })
-                            
-                            task_id = task_runner.submit(headless_web_agent, url, objective, visible=visible, callback=_web_agent_callback)
-                            tool_result = f"Task started silently in background (ID: {task_id}). Master will be notified when complete."
-                        else:
-                            tool_result = "Error: No URL provided."
-                except Exception as e:
-                    tool_result = f"Error executing {tool_name}: {e}"
-                    log_info(f"[AI] {tool_result}")
-                
+                    args = json.loads(t.function.arguments) if t.function.arguments else {}
+                except Exception:
+                    args = {}
+                executed_tools.append({"name": tool_name, "args": args})
+                tool_result = execute_tool_call(tool_name, args, config)
+
                 # Feed the tool result back into the LLM context!
                 messages.append({
                     "role": "tool",
@@ -1252,7 +1194,8 @@ def _nvidia_response(text: str, history: list, system_prompt: str, config: dict,
         client = OpenAI(
             base_url="https://integrate.api.nvidia.com/v1",
             api_key=api_key,
-            timeout=20.0 # Fast failover to prevent hanging!
+            timeout=20.0, # Fast failover to prevent hanging!
+            max_retries=0  # the provider cascade IS the retry mechanism
         )
         
         nvidia_system = system_prompt + (
@@ -1316,80 +1259,16 @@ def _nvidia_response(text: str, history: list, system_prompt: str, config: dict,
             if not msg.tool_calls:
                 break
                 
-            from .commands import launch_app, close_app, take_note, whatsapp_automation, execute_python_code
-            from .skills import skill_manager
-            from .web_agent import headless_web_agent
-            
             log_info(f"[AI] Model requested {len(msg.tool_calls)} native tool calls. Executing...")
             for t in msg.tool_calls:
                 tool_name = t.function.name
-                tool_result = "Success"
                 try:
-                    args = json.loads(t.function.arguments)
-                    log_info(f"[ACTION] AI executing {tool_name} with args {args}")
-                    
-                    if tool_name == "open_app":
-                        app_name = args.get("app_name", "")
-                        if app_name: launch_app(app_name)
-                        tool_result = f"Launched {app_name}"
-                    elif tool_name == "close_app":
-                        app_name = args.get("app_name", "")
-                        if app_name: close_app(app_name)
-                        tool_result = f"Closed {app_name}"
-                    elif tool_name == "take_note":
-                        note_text = args.get("note_text", "")
-                        if note_text: take_note(note_text, config)
-                        tool_result = "Note saved."
-                    elif tool_name == "message_whatsapp":
-                        contact = args.get("contact", "")
-                        message = args.get("message", "")
-                        whatsapp_automation(contact, message)
-                        tool_result = f"Messaged {contact} on WhatsApp."
-                    elif tool_name == "phone_control":
-                        action = args.get("action", "")
-                        from server.platforms.android.phone_bridge import AndroidPhoneBridge
-                        pb = AndroidPhoneBridge()
-                        if action == "get_messages": tool_result = str(pb.get_messages())
-                        elif action == "take_photo": tool_result = pb.take_photo()
-                        elif action == "get_location": tool_result = pb.get_location()
-                        elif action == "get_battery": tool_result = pb.get_battery()
-                        else: tool_result = "Unknown phone action"
-                    elif tool_name == "execute_python":
-                        code = args.get("code", "")
-                        if code:
-                            from .background_tasks import task_runner
-                            task_runner.submit(execute_python_code, code)
-                            tool_result = "Python script is running in the background."
-                    elif tool_name == "headless_web_agent":
-                        url = args.get("url", "")
-                        obj = args.get("objective", "")
-                        vis = args.get("visible", False)
-                        if url and obj:
-                            tool_result = headless_web_agent(url, obj, visible=vis)
-                    elif tool_name == "execute_skill":
-                        skill_name = args.get("skill_name", "")
-                        skill_args = args.get("args", "")
-                        if skill_name:
-                            tool_result = skill_manager.execute_skill(skill_name, skill_args)
-                    elif tool_name == "create_skill":
-                        name = args.get("name", "")
-                        desc = args.get("description", "")
-                        code = args.get("code", "")
-                        if name and code:
-                            tool_result = skill_manager.create_skill(name, desc, code)
-                    elif tool_name == "notify_master":
-                        tts = args.get("message_to_speak", "")
-                        from .websocket import ws_manager
-                        ws_manager.broadcast_sync({"type": "speak", "text": tts})
-                        tool_result = "Master was notified."
-                    else:
-                        tool_result = f"Unknown tool: {tool_name}"
-                except Exception as e:
-                    tool_result = f"Error executing tool: {e}"
-                    log_info(f"[ACTION] Error in {tool_name}: {e}")
-                    
-                import json
-                executed_tools_meta.append({"name": tool_name, "args": json.loads(t.function.arguments) if t.function.arguments else {}})
+                    args = json.loads(t.function.arguments) if t.function.arguments else {}
+                except Exception:
+                    args = {}
+                tool_result = execute_tool_call(tool_name, args, config, background_python=True)
+
+                executed_tools_meta.append({"name": tool_name, "args": args})
                 messages.append({
                     "role": "tool",
                     "tool_call_id": t.id,
@@ -1476,6 +1355,8 @@ def _openrouter_response(text: str, history: list, system_prompt: str, config: d
         client = OpenAI(
             base_url="https://openrouter.ai/api/v1",
             api_key=api_key,
+            timeout=20.0,
+            max_retries=0,  # the provider cascade IS the retry mechanism
         )
         
         openrouter_system = system_prompt + (
@@ -1540,93 +1421,15 @@ def _openrouter_response(text: str, history: list, system_prompt: str, config: d
             if not msg.tool_calls:
                 break
                 
-            from .commands import launch_app, close_app, take_note, whatsapp_automation, execute_python_code
-            from .skills import skill_manager
-            from .web_agent import headless_web_agent
-            
             log_info(f"[AI] Model requested {len(msg.tool_calls)} native tool calls. Executing...")
             for t in msg.tool_calls:
                 tool_name = t.function.name
-                tool_result = "Success"
                 try:
-                    args = json.loads(t.function.arguments)
-                    log_info(f"[ACTION] AI executing {tool_name} with args {args}")
-                    
-                    if tool_name == "open_app":
-                        app_name = args.get("app_name", "")
-                        if app_name: launch_app(app_name)
-                        tool_result = f"Launched {app_name}"
-                    elif tool_name == "close_app":
-                        app_name = args.get("app_name", "")
-                        if app_name: close_app(app_name)
-                        tool_result = f"Closed {app_name}"
-                    elif tool_name == "take_note":
-                        note_text = args.get("note_text", "")
-                        if note_text: take_note(note_text, config)
-                        tool_result = "Note saved."
-                    elif tool_name == "message_whatsapp":
-                        contact = args.get("contact", "")
-                        message = args.get("message", "")
-                        whatsapp_automation(contact, message)
-                        tool_result = f"Messaged {contact} on WhatsApp."
-                    elif tool_name == "phone_control":
-                        action = args.get("action", "")
-                        from server.platforms.android.phone_bridge import AndroidPhoneBridge
-                        pb = AndroidPhoneBridge()
-                        if action == "get_messages": tool_result = str(pb.get_messages())
-                        elif action == "take_photo": tool_result = pb.take_photo()
-                        elif action == "get_location": tool_result = pb.get_location()
-                        elif action == "get_battery": tool_result = pb.get_battery()
-                        else: tool_result = "Unknown phone action"
-                    elif tool_name == "execute_python":
-                        code = args.get("code", "")
-                        if code:
-                            from .background_tasks import task_runner
-                            task_runner.submit(execute_python_code, code)
-                            tool_result = "Python script is running in the background."
-                    elif tool_name == "headless_web_agent":
-                        url = args.get("url", "")
-                        objective = args.get("objective", "")
-                        visible = args.get("visible", False)
-                        if url:
-                            from .background_tasks import task_runner
-                            
-                            def _web_agent_callback(tid, result):
-                                log_info(f"[BACKGROUND] Web Agent Callback: {result[:100]}...")
-                                from server.websocket import ws_manager
-                                
-                                # Send a massive chat message to the dashboard
-                                ws_manager.broadcast_sync({
-                                    "type": "task_complete", 
-                                    "data": f"Research on {url} complete!\n\n{result[:1500]}..."
-                                })
-                                
-                            task_id = task_runner.submit(headless_web_agent, url, objective, visible=visible, callback=_web_agent_callback)
-                            tool_result = f"Task started silently in background (ID: {task_id}). Master will be notified when complete."
-                        else:
-                            tool_result = "Error: No URL provided."
-                    elif tool_name == "execute_skill":
-                        skill_name = args.get("skill_name", "")
-                        skill_args = args.get("args", "")
-                        if skill_name:
-                            tool_result = skill_manager.execute_skill(skill_name, skill_args)
-                    elif tool_name == "create_skill":
-                        name = args.get("name", "")
-                        desc = args.get("description", "")
-                        code = args.get("code", "")
-                        if name and code:
-                            tool_result = skill_manager.create_skill(name, desc, code)
-                    elif tool_name == "notify_master":
-                        tts = args.get("message_to_speak", "")
-                        from .websocket import ws_manager
-                        ws_manager.broadcast_sync({"type": "speak", "text": tts})
-                        tool_result = "Master was notified."
-                    else:
-                        tool_result = f"Unknown tool: {tool_name}"
-                except Exception as e:
-                    tool_result = f"Error executing tool: {e}"
-                    log_info(f"[ACTION] Error in {tool_name}: {e}")
-                    
+                    args = json.loads(t.function.arguments) if t.function.arguments else {}
+                except Exception:
+                    args = {}
+                tool_result = execute_tool_call(tool_name, args, config, background_python=True)
+
                 executed_tools.append({"name": tool_name, "args": args})
                 messages.append({
                     "role": "tool",

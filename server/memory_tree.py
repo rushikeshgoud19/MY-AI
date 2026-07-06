@@ -45,7 +45,7 @@ class MemoryTreeDB:
                     id INTEGER PRIMARY KEY,
                     timestamp REAL DEFAULT (strftime('%s', 'now')),
                     session_id TEXT,
-                    source TEXT CHECK(source IN ('chat','vision','tool','system','screen','voice','whatsapp','telegram','discord')),
+                    source TEXT CHECK(source IN ('chat','vision','tool','system','screen','voice','whatsapp','telegram','discord','summary')),
                     content TEXT,
                     content_hash TEXT UNIQUE,
                     embedding BLOB,  -- 768-dim fp32, only for chat/tool
@@ -275,9 +275,46 @@ class MemoryTreeDB:
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_hypotheses_status ON evolution_hypotheses(status, level)')
 
             self.db.commit()
+            self._migrate_episodic_summary_source()
             log_info("[MEMORY CORE] Complete Self-Evolution Schema Initialized.")
         except Exception as e:
             log_info(f"[MEMORY CORE] Error initializing SQLite: {e}")
+
+    def _migrate_episodic_summary_source(self):
+        """Older DBs have a CHECK on episodic.source that rejects 'summary' rows.
+        Rebuild the table once so the seal pipeline can store summaries."""
+        try:
+            cursor = self.db.cursor()
+            row = cursor.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='episodic'"
+            ).fetchone()
+            if not row or "'summary'" in row[0]:
+                return
+            cursor.execute("ALTER TABLE episodic RENAME TO episodic_old")
+            cursor.execute('''
+                CREATE TABLE episodic (
+                    id INTEGER PRIMARY KEY,
+                    timestamp REAL DEFAULT (strftime('%s', 'now')),
+                    session_id TEXT,
+                    source TEXT CHECK(source IN ('chat','vision','tool','system','screen','voice','whatsapp','telegram','discord','summary')),
+                    content TEXT,
+                    content_hash TEXT UNIQUE,
+                    embedding BLOB,
+                    metadata JSON,
+                    platform TEXT,
+                    status TEXT CHECK(status IN ('pending','admitted','buffered','sealed','dropped')) DEFAULT 'pending'
+                )
+            ''')
+            cursor.execute("INSERT INTO episodic SELECT * FROM episodic_old")
+            cursor.execute("DROP TABLE episodic_old")
+            self.db.commit()
+            log_info("[MEMORY CORE] Migrated episodic table to allow summary rows.")
+        except Exception as e:
+            log_info(f"[MEMORY CORE] episodic migration failed: {e}")
+            try:
+                self.db.rollback()
+            except Exception:
+                pass
 
     def insert_chunk(self, chunk_id: str, source_id: str, content: str, token_count: int = 0, metadata: dict = None):
         """Compatibility method for older memory modules."""
@@ -414,22 +451,26 @@ class MemoryTreeDB:
         except Exception as e:
             logger.error(f"[MEMORY CORE] Error updating chunk state: {e}")
 
-    def insert_summary(self, session_id: str, content: str):
-        if not self.db: return
+    def insert_summary(self, session_id: str, content: str, level: int = 1, tree_type: str = "session"):
+        """Store a compressed summary row. Returns the episodic rowid, or None on failure."""
+        if not self.db: return None
         try:
             import hashlib
             import json
             content_hash = hashlib.sha256(content.encode()).hexdigest()
             cursor = self.db.cursor()
             cursor.execute('''
-                INSERT INTO episodic (session_id, source, content, content_hash, status)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (session_id, "summary", content, content_hash, "sealed"))
+                INSERT INTO episodic (session_id, source, content, content_hash, metadata, status)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (session_id, "summary", content, content_hash,
+                  json.dumps({"level": level, "tree_type": tree_type}), "sealed"))
             episodic_id = cursor.lastrowid
             cursor.execute('INSERT INTO episodic_fts (rowid, content) VALUES (?, ?)', (episodic_id, content))
             self.db.commit()
+            return episodic_id
         except Exception as e:
             logger.error(f"[MEMORY CORE] Error inserting summary: {e}")
+            return None
 
     def get_queue_depth(self) -> int:
         if not self.db: return 0

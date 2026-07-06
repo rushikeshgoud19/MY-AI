@@ -75,8 +75,8 @@ class ManagerAgent(BaseAgent):
             if hasattr(w, 'stop'):
                 w.stop()
 
-    from traceroot import observe, update_current_span
-    from traceroot import observe
+    from server.tracing import observe, update_current_span
+    from server.tracing import observe
     @observe(name="orchestrator.dispatch", type="agent")
     async def execute(self, text: str, context: Optional[Dict] = None) -> Any:
         """
