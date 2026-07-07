@@ -791,10 +791,12 @@ def get_ai_response(text: str, history: list, config: dict, system_prompt_overri
                 raise e
             continue
 
-    # Exhausted the whole cascade
+    # Exhausted the whole cascade. NEVER surface a raw provider error as Mizune's
+    # reply (users were literally hearing "OpenRouter returned an empty response").
+    # Log the real error, speak an in-character line instead.
     if last_err:
-        raise last_err
-    return ("I'm sorry Master, all my AI providers are unavailable right now.", [])
+        log_info(f"[AI] All providers failed. Last error: {last_err}")
+    return ("Maa, Master, my brain is a little tangled right now~ Give me a moment and ask me again, okay?", [])
 
 def _gemini_response(text: str, history: list, system_prompt: str, config: dict, ws_broadcast_func=None) -> tuple:
     """Fetch response from Google Gemini with fallback models. Returns (text, tool_calls)."""
