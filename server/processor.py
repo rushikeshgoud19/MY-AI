@@ -79,7 +79,8 @@ def process_command(text: str, config: dict, broadcast_sync_fn, session_id: str 
 
 from server.tracing import observe
 
-@observe(name="Mizune.ProcessCommand", type="span")
+# capture_input=False: the `config` arg holds live API keys — never send it to TraceRoot.
+@observe(name="Mizune.ProcessCommand", type="span", capture_input=False)
 def _process_command_internal(text: str, config: dict, broadcast_sync_fn, session_id: str = 'main') -> str:
     # Initialize session and load emotion state
     platform = "whatsapp" if "whatsapp:" in session_id else "desktop"
@@ -351,7 +352,7 @@ You are looking at Master through your webcam camera RIGHT NOW. Describe what yo
         except: pass
     
     # Get active context
-    chronicle = global_session_store.get_recent(session_id, limit=config.get("memory_size", 30))
+    chronicle = global_session_store.get_recent(session_id, limit=config.get("memory_size", 10))
     
     # Cross-session memory lookup — runs on EVERY substantive message so Mizune
     # actually uses what she knows instead of starting fresh each time.
@@ -556,7 +557,11 @@ You are looking at Master through your webcam camera RIGHT NOW. Describe what yo
         _is_master_now = True # if not camera_agent else camera_agent.is_master_present
         if _is_master_now and tool_calls:
             log_info(f"[PROCESSOR] Received {len(tool_calls)} native tool calls.")
-            
+
+            # Outcome-seal fix (0.2 Part 2): capture FINAL tool results so the memory sealer
+            # seals what actually happened, not just Mizune's intention (written at line ~545).
+            tool_outcomes = []
+
             # Deduplication: If we are going to message on WhatsApp, skip generic "open_app" for WhatsApp or Browser to avoid opening 3 tabs
             has_wa_msg = any(t.get("name") == "message_whatsapp" for t in tool_calls)
             
@@ -694,6 +699,7 @@ You are looking at Master through your webcam camera RIGHT NOW. Describe what yo
                                 result = subprocess.run(["python", ".temp_exec.py"], capture_output=True, text=True, timeout=30)
                                 if result.returncode == 0:
                                     log_info(f"[PROCESSOR] Python script succeeded:\n{result.stdout[:200]}")
+                                    tool_outcomes.append(f"execute_python SUCCEEDED: {(result.stdout or '').strip()[:150]}")
                                     break  # Success!
                                 else:
                                     err = result.stderr or result.stdout
@@ -711,12 +717,24 @@ You are looking at Master through your webcam camera RIGHT NOW. Describe what yo
                                             break
                                     else:
                                         log_info("[PROCESSOR] Max retries reached for python execution.")
+                                        tool_outcomes.append(f"execute_python FAILED after retries: {(err or '').strip()[:150]}")
                             except Exception as e:
                                 log_info(f"[PROCESSOR] Execution error: {e}")
+                                tool_outcomes.append(f"execute_python ERROR: {e}")
                                 break
                 except Exception as e:
                     log_info(f"[PROCESSOR] Error executing tool {name}: {e}")
-                
+                    tool_outcomes.append(f"{name}: ERROR ({e})")
+
+            # Seal the FINAL tool outcomes into memory so the summarizer records what actually
+            # happened (fixes stale "failed" memories like the Blender case). Role "system" maps
+            # to a harmless user-side note in the next prompt (ai.py: non-"model" -> "user").
+            if tool_outcomes:
+                try:
+                    memory.add_to_history("system", "[TOOL RESULTS] " + " | ".join(tool_outcomes))
+                except Exception as _e:
+                    log_info(f"[PROCESSOR] Failed to seal tool outcomes: {_e}")
+
         clean_res = re.sub(r"\[ACTION:.*?\]", "", clean_res, flags=re.IGNORECASE).strip()
         clean_res = re.sub(r"\[EMOTION:.*?\]", "", clean_res, flags=re.IGNORECASE).strip()
         

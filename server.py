@@ -369,7 +369,20 @@ async def websocket_endpoint(websocket: WebSocket):
                                         from server.audio import play_audio_bytes
                                         audio_bytes = await generate_tts(res, CFG)
                                         if audio_bytes:
-                                            play_audio_bytes(audio_bytes)
+                                            # Send Mizune's REAL edge-tts voice to the browser so it
+                                            # plays her actual voice instead of the robotic browser one.
+                                            import base64
+                                            ws_manager.broadcast_sync({
+                                                "type": "audio",
+                                                "format": "mp3",
+                                                "b64": base64.b64encode(audio_bytes).decode("utf-8"),
+                                            })
+                                            # Also play locally (only audible when running on a machine
+                                            # with speakers; harmless no-op/err on the headless VM).
+                                            try:
+                                                await asyncio.to_thread(play_audio_bytes, audio_bytes)
+                                            except Exception:
+                                                pass
                                     except Exception as e:
                                         log_info(f"[WS] TTS generation error: {e}")
                             except Exception as e:

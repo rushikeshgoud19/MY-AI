@@ -139,7 +139,7 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "headless_web_agent",
-            "description": "Launch a background browser to navigate websites and scrape data without moving the user's mouse. Set visible to true if the user wants to watch.",
+            "description": "Launch a background browser to navigate websites and scrape data (set visible=true to show it).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -155,7 +155,7 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "create_skill",
-            "description": "CRITICAL TOOL for Self-Learning (Skill Distillation). When you successfully write a complex python script or learn how to do something new, use this tool to permanently save it as a reusable skill plugin. Do NOT ask for permission, just save it so you can use 'execute_skill' next time.",
+            "description": "Permanently save a successful python script or learned behavior as a reusable skill plugin without asking permission.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -171,7 +171,7 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "remote_device_command",
-            "description": "Run an action on one of Master's OTHER devices (e.g. his laptop) when running in the cloud or when Master asks for something 'on my laptop/PC'. Actions: 'install_app' (args: app_name) — installs a program by NAME via the device's package manager (winget on Windows); USE THIS whenever Master says 'download/install <app>' like Blender, Chrome, VS Code — do NOT guess download URLs. 'download_file' (args: url, filename) — only for a specific file when Master gives a direct link. 'open_app' (args: app_name), 'open_url' (args: url), 'run_command' (args: command). Check the [SYSTEM] context for which devices are online; if the target device is offline, tell Master honestly.",
+            "description": "Execute actions (install_app, download_file, open_app, open_url, run_command) on Master's other online devices.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -187,7 +187,7 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "notify_master",
-            "description": "CRITICAL TOOL for when you are acting as a Secretary (e.g. processing WhatsApp messages). Use this tool to instantly speak a notification out loud to Master on his PC so he knows what a friend texted him. You can also use this to tell him to call someone back.",
+            "description": "Instantly speak a notification out loud to Master's PC (e.g., to relay a WhatsApp message).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -201,7 +201,7 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "schedule_task",
-            "description": "Use this tool when Master asks you to remind him or execute a task in the future. VERY IMPORTANT: If Master asks to be reminded on WhatsApp, you MUST include 'VIA_WHATSAPP' in the action_to_take description!",
+            "description": "Schedule a future reminder or task (include 'VIA_WHATSAPP' in action_to_take if requested on WhatsApp).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -260,7 +260,7 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "add_core_directive",
-            "description": "PERMANENT LEARNING TOOL for permissions, corrections, and behavior rules. Use this whenever Master grants a permission (e.g. 'I give you permission to answer Vamsi's questions'), corrects your behavior (e.g. 'stop refusing weather questions from friends'), or explicitly teaches you a rule ('Learn this: Matt is second in command'). Store the rule immediately so you never repeat the same mistake or re-ask for a permission Master already gave. The rule is injected into your system prompt forever. Do NOT use it for casual facts or preferences — use store_memory for those.",
+            "description": "Permanently store behavior rules, corrections, and granted permissions into your system prompt forever.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -332,6 +332,24 @@ def _active_tools_schema(config: dict):
     except Exception:
         pass
     return TOOLS_SCHEMA
+
+
+import re as _re
+
+def _clean_final_text(text: str) -> str:
+    """Strip tool-call/JSON/XML artefacts and dangling braces from a model reply.
+    Applied identically to every provider return path."""
+    text = _re.sub(r'<function=.*?</function>', '', text, flags=_re.DOTALL)
+    text = _re.sub(r'\[function=[^\]]+\]\{.*?\}', '', text, flags=_re.DOTALL)
+    text = _re.sub(r'<tool.*?/tool>', '', text, flags=_re.DOTALL)
+    text = _re.sub(r'<[^>]+>', '', text)
+    text = _re.sub(r'\{.*?"type".*?"function".*?\}', '', text, flags=_re.DOTALL)
+    text = _re.sub(r'\{.*?"name".*?"parameters".*?\}', '', text, flags=_re.DOTALL)
+    text = text.strip()
+    # Strip a dangling unmatched leading `{` or trailing `}` left after JSON removal
+    text = _re.sub(r'^\{\s*', '', text)
+    text = _re.sub(r'\s*\}$', '', text)
+    return text.strip()
 
 
 import threading as _dedup_threading
@@ -572,7 +590,8 @@ def _execute_tool_call_impl(tool_name: str, args: dict, config: dict, background
 
 from server.tracing import observe
 
-@observe(name="AI.Router", type="llm")
+# capture_input=False: `config` holds live API keys — keep them out of TraceRoot.
+@observe(name="AI.Router", type="llm", capture_input=False)
 def get_ai_response(text: str, history: list, config: dict, system_prompt_override: str = None, hints: dict = None, ws_broadcast_func=None) -> tuple:
     """Router function to send prompt to the optimal LLM. Returns (text_response, tool_calls_list)."""
     from server.tokenjuice import TokenJuice
@@ -974,7 +993,7 @@ def _groq_response(text: str, history: list, system_prompt: str, config: dict, w
         client = OpenAI(
             api_key=api_key,
             base_url="https://api.groq.com/openai/v1",
-            timeout=15.0, # PREVENTS HANGING FOREVER!
+            timeout=10.0, # fast failover — the cascade is the retry mechanism
             max_retries=0  # the provider cascade IS the retry mechanism
         )
         
@@ -1108,17 +1127,9 @@ def _groq_response(text: str, history: list, system_prompt: str, config: dict, w
 
         text_response = msg.content or "Done, Master!"
         
-        # Clean up any residual hallucinated XML tags from LLaMA 3 so she doesn't speak them aloud
+        # Clean up artefacts via shared helper
         import re
-        text_response = re.sub(r'<function=.*?</function>', '', text_response, flags=re.DOTALL)
-        text_response = re.sub(r'\[function=[^\]]+\]\{.*?\}', '', text_response, flags=re.DOTALL)
-        text_response = re.sub(r'<tool.*?/tool>', '', text_response, flags=re.DOTALL)
-        text_response = re.sub(r'<[^>]+>', '', text_response) # catch-all for remaining rogue tags
-        
-        # LLaMA 3 sometimes leaks JSON tool calls directly into the text response when using Groq
-        text_response = re.sub(r'\{.*?\"type\".*?\"function\".*?\}', '', text_response, flags=re.DOTALL)
-        text_response = re.sub(r'\{.*?\"name\".*?\"parameters\".*?\}', '', text_response, flags=re.DOTALL)
-        text_response = text_response.strip()
+        text_response = _clean_final_text(text_response)
         
         if executed_tools:
             from .trajectory_logger import trajectory_logger
@@ -1190,10 +1201,7 @@ def _ollama_response(text: str, history: list, system_prompt: str, config: dict)
             
         # Clean up any residual hallucinated XML tags from LLaMA 3 so she doesn't speak them aloud
         import re
-        text_response = re.sub(r'<function=.*?</function>', '', text_response, flags=re.DOTALL)
-        text_response = re.sub(r'<tool.*?/tool>', '', text_response, flags=re.DOTALL)
-        text_response = re.sub(r'<[^>]+>', '', text_response) # catch-all for remaining rogue HTML/XML tags
-        text_response = text_response.strip()
+        text_response = _clean_final_text(text_response)
 
         return (text_response, parsed_tools)
     except Exception as e:
@@ -1209,7 +1217,7 @@ def _openai_response(text: str, history: list, system_prompt: str, config: dict)
         
     try:
         from openai import OpenAI
-        client = OpenAI(api_key=api_key, timeout=20.0)
+        client = OpenAI(api_key=api_key, timeout=10.0)
         
         messages = [{"role": "system", "content": system_prompt}]
         for turn in history:
@@ -1245,7 +1253,7 @@ def _nvidia_response(text: str, history: list, system_prompt: str, config: dict,
         client = OpenAI(
             base_url="https://integrate.api.nvidia.com/v1",
             api_key=api_key,
-            timeout=20.0, # Fast failover to prevent hanging!
+            timeout=10.0, # Fast failover to prevent hanging!
             max_retries=0  # the provider cascade IS the retry mechanism
         )
         
@@ -1283,7 +1291,7 @@ def _nvidia_response(text: str, history: list, system_prompt: str, config: dict,
                 max_tokens=512,
                 tools=_active_tools_schema(config),
                 tool_choice=t_choice,
-                timeout=20.0
+                timeout=10.0
             )
             
             msg = response.choices[0].message
@@ -1330,16 +1338,8 @@ def _nvidia_response(text: str, history: list, system_prompt: str, config: dict,
             # After executing tools in NVIDIA NIM, force it to summarize the result as text in the next loop!
             t_choice = "none" # Disables tools for the next iteration so it HAS to speak!
                 
-        final_text = msg.content or ""
-        import re
-        final_text = re.sub(r'<function=.*?</function>', '', final_text, flags=re.DOTALL)
-        final_text = re.sub(r'\[function=[^\]]+\]\{.*?\}', '', final_text, flags=re.DOTALL)
-        final_text = re.sub(r'<tool.*?/tool>', '', final_text, flags=re.DOTALL)
-        final_text = re.sub(r'<[^>]+>', '', final_text)
-        final_text = re.sub(r'\{.*?\"type\".*?\"function\".*?\}', '', final_text, flags=re.DOTALL)
-        final_text = re.sub(r'\{.*?\"name\".*?\"parameters\".*?\}', '', final_text, flags=re.DOTALL)
-        final_text = final_text.strip()
-        
+        final_text = _clean_final_text(msg.content or "")
+
         if executed_tools_meta:
             from .trajectory_logger import trajectory_logger
             trajectory_logger.log_trajectory(text, history, executed_tools_meta, final_text)
@@ -1362,7 +1362,7 @@ def _anthropic_response(text: str, history: list, system_prompt: str, config: di
         
     try:
         from anthropic import Anthropic
-        client = Anthropic(api_key=api_key, timeout=20.0)
+        client = Anthropic(api_key=api_key, timeout=10.0)
         
         messages = []
         for turn in history:
@@ -1406,7 +1406,7 @@ def _openrouter_response(text: str, history: list, system_prompt: str, config: d
         client = OpenAI(
             base_url="https://openrouter.ai/api/v1",
             api_key=api_key,
-            timeout=20.0,
+            timeout=10.0,
             max_retries=0,  # the provider cascade IS the retry mechanism
         )
         
@@ -1438,7 +1438,7 @@ def _openrouter_response(text: str, history: list, system_prompt: str, config: d
                 max_tokens=512,
                 tools=_active_tools_schema(config),
                 tool_choice="auto",
-                timeout=15.0,
+                timeout=10.0,
                 extra_headers={
                     "HTTP-Referer": "https://github.com/rushikeshgoud19/MY-AI",
                     "X-Title": "Mizune AI Desktop"
@@ -1489,16 +1489,8 @@ def _openrouter_response(text: str, history: list, system_prompt: str, config: d
                     "content": str(tool_result)
                 })
                 
-        final_text = msg.content or ""
-        import re
-        final_text = re.sub(r'<function=.*?</function>', '', final_text, flags=re.DOTALL)
-        final_text = re.sub(r'\[function=[^\]]+\]\{.*?\}', '', final_text, flags=re.DOTALL)
-        final_text = re.sub(r'<tool.*?/tool>', '', final_text, flags=re.DOTALL)
-        final_text = re.sub(r'<[^>]+>', '', final_text)
-        final_text = re.sub(r'\{.*?\"type\".*?\"function\".*?\}', '', final_text, flags=re.DOTALL)
-        final_text = re.sub(r'\{.*?\"name\".*?\"parameters\".*?\}', '', final_text, flags=re.DOTALL)
-        final_text = final_text.strip()
-        
+        final_text = _clean_final_text(msg.content or "")
+
         return (final_text, executed_tools)
         
     except ImportError:

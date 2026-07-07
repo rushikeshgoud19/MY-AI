@@ -75,12 +75,30 @@ async function connectWS() {
       const clean = cleanReply(m.text);
       $('#cap-mizune').textContent = clean;
       setState('speaking');
-      speak(clean);
+      // Prefer Mizune's REAL voice (server sends {type:'audio'} right after).
+      // Fall back to the browser voice only if no audio arrives shortly.
+      clearTimeout(_speakFallback);
+      _speakFallback = setTimeout(() => speak(clean), 1800);
       clearTimeout(setState._t);
       setState._t = setTimeout(() => { if (voiceOn && state === 'speaking') setState(muted ? 'muted' : 'listening'); },
         Math.min(20000, 1500 + clean.length * 55));
     }
+    if (m.type === 'audio' && m.b64) {
+      clearTimeout(_speakFallback);          // real voice arrived — cancel browser fallback
+      if ('speechSynthesis' in window) speechSynthesis.cancel();
+      playRealVoice(m.b64, m.format || 'mp3');
+    }
   };
+}
+let _speakFallback = null, _realAudio = null;
+function playRealVoice(b64, fmt) {
+  if (muted) return;
+  try {
+    if (_realAudio) { _realAudio.pause(); _realAudio = null; }
+    _realAudio = new Audio(`data:audio/${fmt === 'mp3' ? 'mpeg' : fmt};base64,${b64}`);
+    _realAudio.onended = () => { if (voiceOn && state === 'speaking') setState(muted ? 'muted' : 'listening'); };
+    _realAudio.play().catch(() => {});
+  } catch {}
 }
 connectWS();
 
