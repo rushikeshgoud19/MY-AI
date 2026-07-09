@@ -40,6 +40,19 @@ class MessageUrgency(Enum):
     HIGH = 3        # "Tell Rushi", "important", "urgent"
     CRITICAL = 4    # "Emergency", "hospital", "accident", family-only keywords
 
+def _normalize_ts(ts):
+    """Baileys sends timestamps as Long dicts {low, high, unsigned}; coerce to epoch seconds.
+    Accepts an int/float (used as-is) or a Long dict, else falls back to now()."""
+    import time as _t
+    if isinstance(ts, (int, float)):
+        return float(ts)
+    if isinstance(ts, dict) and isinstance(ts.get('low'), int):
+        high = ts.get('high', 0) if isinstance(ts.get('high'), int) else 0
+        val = (high << 32) + (ts['low'] & 0xFFFFFFFF)
+        if val > 0:
+            return float(val)
+    return _t.time()
+
 @dataclass
 class WhatsAppMessage:
     message_id: str
@@ -522,7 +535,7 @@ class MizuneWhatsAppCore:
     async def process_incoming_message(self, data: Dict):
         msg = WhatsAppMessage(
             message_id=data['message_id'],
-            timestamp=data['timestamp'],
+            timestamp=_normalize_ts(data.get('timestamp')),
             chat_jid=data['chat_jid'],
             chat_type=data['chat_type'],
             sender_jid=data['sender_jid'],
