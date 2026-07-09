@@ -642,15 +642,26 @@ class MizuneWhatsAppCore:
         text_lower = msg.text.lower().strip()
         wake_words = ["mizune", "mizu"]
         has_wake_word = any(text_lower.startswith(w) for w in wake_words)
-        
+
+        # LOOP GUARD: never react to empty messages or to Mizune's OWN outgoing
+        # messages (they echo back as is_self and start with the "✨ Mizune" prefix).
+        # Without this she replies to her own replies forever.
+        if not text_lower:
+            return False
+        stripped = msg.text.strip()
+        if stripped.startswith("✨ Mizune") or stripped.startswith("✨Mizune"):
+            return False
+
         if not msg.is_self and "mio" in text_lower:
             sender = (msg.sender_name or "").lower()
             allowed_mio = ["rushi", "rushikesh", "matt", "mathew", "mat"]
             if sender not in allowed_mio:
                 return False
-                
+
+        # is_self = sent from Mizune's own linked number. Only respond if explicitly
+        # woken ("mizune ..."), so her own echoes / your own stray messages don't loop.
         if msg.is_self:
-            return True
+            return has_wake_word
             
         is_allowed = (msg.sender_phone in self.allowed_users) or \
                      (msg.sender_name in self.allowed_users) or \
