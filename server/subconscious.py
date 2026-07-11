@@ -24,6 +24,11 @@ class SubconsciousEngine:
         # of Groq/Gemini quota and forcing them onto slow fallback providers.
         self.interval_minutes = max(3, config.get("proactive_interval_minutes", 15))
         self._running = False
+        # Usefulness gate (P.2): don't re-ping about the SAME situation within the
+        # cooldown, and stay quiet during Master's night unless it looks urgent.
+        self._last_sitrep_hash = None
+        self._last_sitrep_time = 0.0
+        self.repeat_cooldown_s = int(config.get("proactive_repeat_cooldown_minutes", 120)) * 60
         
     def start(self):
         if not self.config.get("proactive_enabled", True):
@@ -78,6 +83,29 @@ class SubconsciousEngine:
             log_info("[SUBCONSCIOUS] Tick: nothing actionable, skipping LLM entirely.")
             return
 
+        # ── Usefulness gate (P.2) ──
+        # Novelty: identical situation as the last handled tick → suppress (no repeat pings).
+        import hashlib
+        sitrep_hash = hashlib.md5("|".join(sorted(items)).encode()).hexdigest()
+        now = time.time()
+        if sitrep_hash == self._last_sitrep_hash and (now - self._last_sitrep_time) < self.repeat_cooldown_s:
+            log_info("[SUBCONSCIOUS] Tick: same situation as last tick (cooldown active), suppressing.")
+            return
+
+        # Timing: quiet hours in Master's timezone (IST, UTC+5:30) 23:00-08:00 —
+        # only wake the LLM if an item looks genuinely urgent.
+        import datetime
+        ist = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=5, minutes=30)))
+        if (ist.hour >= 23 or ist.hour < 8):
+            blob = " ".join(items).lower()
+            if not any(kw in blob for kw in ("urgent", "meeting", "due", "emergency", "critical", "alarm")):
+                log_info("[SUBCONSCIOUS] Tick: quiet hours (IST) and nothing urgent, suppressing.")
+                return
+
+        # Record BEFORE invoking the LLM so even an [ACT] outcome counts as handled.
+        self._last_sitrep_hash = sitrep_hash
+        self._last_sitrep_time = now
+
         log_info(f"[SUBCONSCIOUS] Heartbeat tick with {len(items)} actionable item(s)...")
         sitrep = "\n".join([f"Current Time: {time.strftime('%I:%M %p, %A, %B %d')}"] + items)
 
@@ -88,7 +116,9 @@ class SubconsciousEngine:
             f"DECISION MATRIX:\n"
             f"1. If nothing requires attention, reply exactly with [SKIP].\n"
             f"2. If you need to perform a silent background task (like using a tool to check emails or weather), reply with [ACT] and use the tool.\n"
-            f"3. If there is highly important information, a finished task, or an urgent notification (e.g. meeting in 5 mins), reply with [ESCALATE] and speak to Master directly! Only do this if it's actually important to their work or a very engaging conversation point.\n\n"
+            f"3. If there is highly important information, a finished task, or an urgent notification (e.g. meeting in 5 mins), reply with [ESCALATE] and speak to Master directly!\n\n"
+            f"USEFULNESS BAR for [ESCALATE]: the message must be TIMELY (matters right now), NOVEL (you haven't told Master this already), and ACTIONABLE (Master can/should do something). "
+            f"If Master would not thank you for the interruption, it fails the bar — [SKIP]. "
             f"If you ACT or ESCALATE, you MUST fulfill the action immediately. If unsure or if it's low priority, [SKIP]."
         )
 

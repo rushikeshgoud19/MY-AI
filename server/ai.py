@@ -396,6 +396,18 @@ def execute_tool_call(tool_name: str, args: dict, config: dict, background_pytho
     if dedup_key is not None and not str(result).startswith("Error"):
         with _recent_tool_lock:
             _recent_tool_calls[dedup_key] = (time.time(), result)
+
+    # Outcome seal (0.2 Part 2, all paths): record the FINAL result of side-effect
+    # tools into memory so the sealer stores what actually happened — not Mizune's
+    # pre-execution intention. (The processor loop has its own seal; this covers
+    # the ai.py ReAct paths, which is where most tools actually execute.)
+    if tool_name in _SIDE_EFFECT_TOOLS:
+        try:
+            from .memory import memory as _mem
+            _mem.add_to_history("system", f"[TOOL RESULTS] {tool_name}: {str(result)[:150]}")
+        except Exception:
+            pass
+
     return result
 
 

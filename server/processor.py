@@ -398,7 +398,14 @@ You are looking at Master through your webcam camera RIGHT NOW. Describe what yo
             log_info(f"[MEMORY] Advanced recall failed: {e}")
 
         if past_context.strip():
-            text_with_context = f"{text}\n\n[SYSTEM: Relevant Past Context regarding '{query}':\n{past_context.strip()}]"
+            # Cap recall context at ~300 tokens (~1200 chars) so personalization
+            # never undoes the prompt diet (Phase E). Keep the head — recall
+            # sources emit most-relevant-first.
+            recall_block = past_context.strip()
+            max_chars = int(config.get("recall_context_max_chars", 1200))
+            if len(recall_block) > max_chars:
+                recall_block = recall_block[:max_chars].rsplit("\n", 1)[0] + "\n[...recall truncated]"
+            text_with_context = f"{text}\n\n[SYSTEM: Relevant Past Context regarding '{query}':\n{recall_block}]"
             chronicle[-1]["parts"][0]["text"] = text_with_context
 
     # Device/origin awareness: tell Mizune WHERE Master is messaging from and
