@@ -525,8 +525,9 @@ def _execute_tool_call_impl(tool_name: str, args: dict, config: dict, background
             action = args.get("action_to_take", "")
             if delay_mins > 0 and action:
                 from .processor import global_cron_manager
+                from .config import mizune_now
                 import datetime
-                trigger_time = datetime.datetime.now() + datetime.timedelta(minutes=delay_mins)
+                trigger_time = mizune_now() + datetime.timedelta(minutes=delay_mins)
                 global_cron_manager.add_one_time_task(action, trigger_time.isoformat())
                 return f"Task scheduled successfully for {trigger_time.strftime('%I:%M %p')}."
             return "Failed: Invalid parameters."

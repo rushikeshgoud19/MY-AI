@@ -479,11 +479,13 @@ You are looking at Master through your webcam camera RIGHT NOW. Describe what yo
             except: pass
             return res
 
-        # ── Built-in Time/Date ──
+        # ── Built-in Time/Date (Master's timezone, NOT the UTC server clock) ──
         if re.search(r"\b(what(?:'s| is)(?: the)? (?:time|current time)|time is it|tell me the time)\b", lower_text):
-            return f"It's {time.strftime('%I:%M %p')}, Master!"
+            from server.config import mizune_now
+            return f"It's {mizune_now().strftime('%I:%M %p')}, Master!"
         elif re.search(r"\b(what(?:'s| is)(?: the)? (?:date|today(?:'s)? date|day)|what day is it)\b", lower_text):
-            return f"Today is {time.strftime('%A, %B %d, %Y')}, Master!"
+            from server.config import mizune_now
+            return f"Today is {mizune_now().strftime('%A, %B %d, %Y')}, Master!"
 
         # ── System Commands ──
         if re.search(r"\b(lock|lock screen|lock pc)\b", lower_text):
@@ -609,7 +611,8 @@ You are looking at Master through your webcam camera RIGHT NOW. Describe what yo
                         action = args.get("action_to_take", "")
                         if delay_mins > 0 and action:
                             import datetime
-                            trigger_time = datetime.datetime.now() + datetime.timedelta(minutes=delay_mins)
+                            from server.config import mizune_now
+                            trigger_time = mizune_now() + datetime.timedelta(minutes=delay_mins)
                             global_cron_manager.add_one_time_task(action, trigger_time.isoformat())
                             log_info(f"[PROCESSOR] Scheduled task: {action} at {trigger_time}")
                             

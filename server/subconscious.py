@@ -92,10 +92,10 @@ class SubconsciousEngine:
             log_info("[SUBCONSCIOUS] Tick: same situation as last tick (cooldown active), suppressing.")
             return
 
-        # Timing: quiet hours in Master's timezone (IST, UTC+5:30) 23:00-08:00 —
+        # Timing: quiet hours in Master's timezone 23:00-08:00 —
         # only wake the LLM if an item looks genuinely urgent.
-        import datetime
-        ist = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=5, minutes=30)))
+        from .config import mizune_now
+        ist = mizune_now()
         if (ist.hour >= 23 or ist.hour < 8):
             blob = " ".join(items).lower()
             if not any(kw in blob for kw in ("urgent", "meeting", "due", "emergency", "critical", "alarm")):
@@ -107,7 +107,7 @@ class SubconsciousEngine:
         self._last_sitrep_time = now
 
         log_info(f"[SUBCONSCIOUS] Heartbeat tick with {len(items)} actionable item(s)...")
-        sitrep = "\n".join([f"Current Time: {time.strftime('%I:%M %p, %A, %B %d')}"] + items)
+        sitrep = "\n".join([f"Current Time: {mizune_now().strftime('%I:%M %p, %A, %B %d')}"] + items)
 
         prompt = (
             f"[SYSTEM SUBCONSCIOUS TICK]\n"

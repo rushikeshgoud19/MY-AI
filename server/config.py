@@ -3,7 +3,36 @@ import json
 import logging
 from logging.handlers import RotatingFileHandler
 
-__all__ = ["CONFIG_PATH", "DEFAULT_CONFIG", "load_config", "_validate_config", "log_info", "is_cloud_mode"]
+__all__ = ["CONFIG_PATH", "DEFAULT_CONFIG", "load_config", "_validate_config", "log_info", "is_cloud_mode",
+           "mizune_tz", "mizune_now"]
+
+# ── Canonical clock ─────────────────────────────────────────────────────
+# The VM runs in UTC but Master lives in IST; every user-facing time must go
+# through these helpers or reminders/answers drift by 5h30m.
+_TZ_CACHE = None
+
+def mizune_tz():
+    """Master's timezone (config key 'timezone', default Asia/Kolkata)."""
+    global _TZ_CACHE
+    if _TZ_CACHE is None:
+        import datetime as _dt
+        name = "Asia/Kolkata"
+        try:
+            name = load_config().get("timezone", name)
+        except Exception:
+            pass
+        try:
+            import zoneinfo
+            _TZ_CACHE = zoneinfo.ZoneInfo(name)
+        except Exception:
+            # IST has no DST, so a fixed offset fallback is exact.
+            _TZ_CACHE = _dt.timezone(_dt.timedelta(hours=5, minutes=30))
+    return _TZ_CACHE
+
+def mizune_now():
+    """Timezone-aware 'now' in Master's timezone. Use for ALL user-facing time."""
+    import datetime as _dt
+    return _dt.datetime.now(mizune_tz())
 
 # Set up logging for the module
 logger = logging.getLogger("mizune")
