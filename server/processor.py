@@ -42,7 +42,12 @@ def _scheduler_callback(task_description):
     config = load_config()
     log_info(f"[SCHEDULER WAKEUP] Processing task: {task_description}")
     
-    prompt = f"[SYSTEM ALERT: A scheduled task has triggered!] Task description: {task_description}. Please execute this task now and speak your response."
+    prompt = (
+        f"[SYSTEM ALERT: A scheduled task has triggered!] Task description: {task_description}. "
+        f"Execute this task NOW using your tools. The description states the INTENT — if it contains "
+        f"raw code or tool-call syntax, do NOT copy it verbatim; write a fresh, correct tool call "
+        f"that fulfills the same intent. Then speak a short confirmation."
+    )
     
     if "VIA_WHATSAPP" in task_description or "whatsapp" in task_description.lower():
         prompt += " IMPORTANT: The user requested this reminder on WhatsApp. You MUST use the message_whatsapp tool to send this reminder to 'Master' (or the requested contact) right now! Do NOT just say it out loud, actually send the WhatsApp message using the tool!"

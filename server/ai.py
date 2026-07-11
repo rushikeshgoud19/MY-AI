@@ -662,6 +662,9 @@ def get_ai_response(text: str, history: list, config: dict, system_prompt_overri
             "change Windows registry, update drivers, or access admin-level system settings. "
             "If Master asks you to do something outside your capabilities, be HONEST and say "
             "'I can't do that directly, but I could try writing a Python script to...' instead of pretending you can.\n"
+            "SCHEDULING HONESTY: never SAY a task/reminder was scheduled unless you actually CALLED the "
+            "schedule_task tool in this turn. A text reply alone schedules NOTHING — if you didn't call "
+            "the tool, call it now instead of claiming success.\n"
         )
         try:
             from .skills import skill_manager
