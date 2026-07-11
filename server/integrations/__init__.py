@@ -221,7 +221,7 @@ class IntegrationsManager:
                     lines = [f"GitHub Notifications ({len(notifs)} new):"]
                     for n in notifs[:5]:
                         lines.append(f"- {n.get('subject', {}).get('title')} in {n.get('repository', {}).get('full_name')}")
-                    return "\\n".join(lines)
+                    return "\n".join(lines)
 
             elif provider == "spotify":
                 res = client.get("https://api.spotify.com/v1/me/player/currently-playing")

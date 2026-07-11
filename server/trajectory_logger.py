@@ -45,7 +45,7 @@ class TrajectoryLogger:
         filepath = self._get_log_filepath()
         try:
             with open(filepath, 'a', encoding='utf-8') as f:
-                f.write(json.dumps(trajectory) + "\\n")
+                f.write(json.dumps(trajectory) + "\n")
             log_info(f"[TRAJECTORY] Exported multi-step execution graph (Length: {len(tools_called)})")
         except Exception as e:
             log_info(f"[TRAJECTORY] Error writing to log: {e}")

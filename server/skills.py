@@ -112,7 +112,7 @@ class SkillManager:
             new_version = 1
         
         # Add metadata header
-        full_code = f'"""\\nDescription: {description}\\nVersion: {new_version}\\n"""\\n\\n{code}'
+        full_code = f'"""\nDescription: {description}\nVersion: {new_version}\n"""\n\n{code}'
         
         try:
             with open(filepath, 'w', encoding='utf-8') as f:
@@ -176,6 +176,6 @@ class SkillManager:
             stats = f"(v{meta.get('version', 1)} | {meta.get('use_count', 0)} uses | {success_rate}% success)"
             desc_list.append(f"- **{name}** {stats}: {desc}")
                 
-        return "\\n".join(desc_list) if desc_list else "No skills loaded."
+        return "\n".join(desc_list) if desc_list else "No skills loaded."
 
 skill_manager = SkillManager()
