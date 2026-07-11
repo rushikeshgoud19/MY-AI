@@ -41,7 +41,19 @@ def _scheduler_callback(task_description):
     from server.config import load_config
     config = load_config()
     log_info(f"[SCHEDULER WAKEUP] Processing task: {task_description}")
-    
+
+    # Deterministic path: if the stored action is literal python (she schedules
+    # `execute_python code="..."`), run it directly through the guarded tool
+    # dispatcher. Re-emitting code through the LLM truncates it — models fumble
+    # quotes-in-JSON — so scheduled code must never round-trip through the model.
+    m = re.match(r'\s*execute_python\s+code="(.*)"\s*$', task_description, re.DOTALL)
+    if m and "whatsapp" not in task_description.lower():
+        from server.ai import execute_tool_call
+        result = execute_tool_call("execute_python", {"code": m.group(1)}, config)
+        log_info(f"[SCHEDULER] Direct-executed stored python: {str(result)[:150]}")
+        ws_manager.broadcast_sync({"type": "speak", "text": "Scheduled task done, Master!"})
+        return
+
     prompt = (
         f"[SYSTEM ALERT: A scheduled task has triggered!] Task description: {task_description}. "
         f"Execute this task NOW using your tools. The description states the INTENT — if it contains "
