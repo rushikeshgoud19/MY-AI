@@ -14,6 +14,7 @@ import logging
 from typing import Any, Optional, Dict, List
 
 from agents.base_agent import BaseAgent
+from server.tracing import observe, update_current_span
 
 # LLM imports
 try:
@@ -132,7 +133,7 @@ Use the same JSON format as before. Start from the current screen state."""
             except Exception as e:
                 self.log(f"Planner LLM init failed: {e}")
 
-    from traceroot import observe, update_current_span
+    from server.tracing import observe, update_current_span
     @observe(name="task_planner.plan", type="agent")
     async def execute(self, task_input: str, context: Optional[Dict] = None) -> Any:
         """
@@ -160,7 +161,7 @@ Use the same JSON format as before. Start from the current screen state."""
             screen_context = context.get("screen_context", "Unknown") if context else "Unknown"
             return await self.create_plan(task_input, screen_context)
 
-    from traceroot import observe
+    from server.tracing import observe
     @observe(name="TaskPlanner.create_plan", type="agent")
     async def create_plan(self, goal: str, screen_context: str = "Desktop") -> Dict:
         """Create a structured execution plan from a high-level goal."""

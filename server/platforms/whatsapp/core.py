@@ -40,6 +40,19 @@ class MessageUrgency(Enum):
     HIGH = 3        # "Tell Rushi", "important", "urgent"
     CRITICAL = 4    # "Emergency", "hospital", "accident", family-only keywords
 
+def _normalize_ts(ts):
+    """Baileys sends timestamps as Long dicts {low, high, unsigned}; coerce to epoch seconds.
+    Accepts an int/float (used as-is) or a Long dict, else falls back to now()."""
+    import time as _t
+    if isinstance(ts, (int, float)):
+        return float(ts)
+    if isinstance(ts, dict) and isinstance(ts.get('low'), int):
+        high = ts.get('high', 0) if isinstance(ts.get('high'), int) else 0
+        val = (high << 32) + (ts['low'] & 0xFFFFFFFF)
+        if val > 0:
+            return float(val)
+    return _t.time()
+
 @dataclass
 class WhatsAppMessage:
     message_id: str
@@ -478,8 +491,12 @@ class MizuneWhatsAppCore:
         self.dashboard = DashboardBroadcaster()
         self.voice = VoiceAlertPipeline(self.config, self.dashboard)
         
-        # We don't want strict mentions in DMs anymore for VIPs, but we still respect wake words
         self.require_mention = config.get('whatsapp', {}).get('require_mention', True)
+        self.allowed_users = config.get('whatsapp_allowed_users', [])
+        
+        self._debounce_buffers = {}
+        self._debounce_timers = {}
+        self._rate_limits = {}
     
     async def start(self):
         self.loop = asyncio.get_running_loop()
@@ -518,7 +535,7 @@ class MizuneWhatsAppCore:
     async def process_incoming_message(self, data: Dict):
         msg = WhatsAppMessage(
             message_id=data['message_id'],
-            timestamp=data['timestamp'],
+            timestamp=_normalize_ts(data.get('timestamp')),
             chat_jid=data['chat_jid'],
             chat_type=data['chat_type'],
             sender_jid=data['sender_jid'],
@@ -532,15 +549,88 @@ class MizuneWhatsAppCore:
             media=data.get('media')
         )
         
+        import time
+        now = time.time()
+        
+        # 1.2 Rate Limit
+        user_history = self._rate_limits.get(msg.sender_phone, [])
+        user_history = [t for t in user_history if now - t < 60.0]
+        user_history.append(now)
+        self._rate_limits[msg.sender_phone] = user_history
+        if len(user_history) > 15:
+            log_info(f"[Core] Rate limiting {msg.sender_phone}")
+            return
+            
+        # 1.2 Debounce
+        key = msg.sender_phone
+        if key not in self._debounce_buffers:
+            self._debounce_buffers[key] = []
+        self._debounce_buffers[key].append(msg)
+        
+        if key in self._debounce_timers:
+            self._debounce_timers[key].cancel()
+            
+        self._debounce_timers[key] = self.loop.call_later(5.0, self._process_coalesced, key)
+
+    def _process_coalesced(self, key: str):
+        if key in self._debounce_timers:
+            del self._debounce_timers[key]
+            
+        msgs = self._debounce_buffers.pop(key, [])
+        if not msgs:
+            return
+            
+        # Combine texts and media
+        combined_text = "\n".join([m.text for m in msgs if m.text])
+        main_msg = msgs[-1] # use latest for timestamp
+        main_msg.text = combined_text
+        main_msg.is_mentioned = any(m.is_mentioned for m in msgs)
+        
+        # Combine media by keeping the first valid media found in the coalesce window
+        for m in msgs:
+            if m.media:
+                main_msg.media = m.media
+                break
+                
+        asyncio.create_task(self._dispatch_to_brain(main_msg))
+
+    async def _dispatch_to_brain(self, msg: WhatsAppMessage):
+        # 1.5 Incoming voice notes: OGG → STT
+        msg.was_voice = False
+        if msg.media and msg.media.get('type') == 'voice':
+            msg.was_voice = True
+            try:
+                import base64
+                import tempfile
+                import os
+                from server.server_stt import _transcribe_groq, _transcribe_local, TRANSCRIPTION_BACKEND
+                audio_bytes = base64.b64decode(msg.media['buffer'])
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".ogg") as tmp:
+                    tmp.write(audio_bytes)
+                    tmp_path = tmp.name
+                    
+                def do_transcribe():
+                    if TRANSCRIPTION_BACKEND == "groq":
+                        return _transcribe_groq(tmp_path)
+                    else:
+                        return _transcribe_local(tmp_path)
+                        
+                res = await asyncio.to_thread(do_transcribe)
+                if res and res.get("text"):
+                    # Append transcribed text to the existing text
+                    stt_text = res['text']
+                    msg.text = f"[VOICE NOTE] {stt_text}\n{msg.text}".strip()
+                os.remove(tmp_path)
+            except Exception as e:
+                log_info(f"[Core] STT failed: {e}")
+
         contact = self.guard.get_or_create_contact(msg.sender_phone, msg.sender_name)
         msg = self.importance.analyze(msg, contact)
         self.memory.ingest_message(msg, contact)
         
-        # Voice Alerts for Critical Messages
         if msg.should_alert_user:
             await self.voice.trigger_alert(msg, contact)
             
-        # Auth & Filtering Logic (replacing old whatsapp_adapter.py)
         if not self._should_reply(msg, contact):
             return
             
@@ -552,49 +642,92 @@ class MizuneWhatsAppCore:
         else:
             prompt_text = f"[WHATSAPP MESSAGE FROM {msg.sender_name}]: {msg.text}\n(SYSTEM: Reply directly in plain text to this WhatsApp message.)"
             
-        async def background_process():
-            try:
-                response = await asyncio.to_thread(process_command, prompt_text, self.config, lambda x: None, session_id)
-                if response:
-                    await self.send_message(msg.chat_jid, response)
-            except Exception as e:
-                log_info(f"[Core] Error in LLM process: {e}")
-                
-        asyncio.create_task(background_process())
+        try:
+            response = await asyncio.to_thread(process_command, prompt_text, self.config, lambda x: None, session_id)
+            if response:
+                # WhatsApp is text-only (user decision 2026-07-08): reply as a text message.
+                # Voice lives in the Agentic OS Mizune tab, not on WhatsApp.
+                await self.send_message(msg.chat_jid, response)
+        except Exception as e:
+            log_info(f"[Core] Error in LLM process: {e}")
 
     def _should_reply(self, msg: WhatsAppMessage, contact: ContactProfile) -> bool:
         text_lower = msg.text.lower().strip()
         wake_words = ["mizune", "mizu"]
         has_wake_word = any(text_lower.startswith(w) for w in wake_words)
-        
-        # Always enforce wake word or explicit @mention for AI responses
-        if self.require_mention and not (msg.is_mentioned or has_wake_word):
+
+        # LOOP GUARD: never react to empty messages or to Mizune's OWN outgoing
+        # messages (they echo back as is_self and start with the "✨ Mizune" prefix).
+        # Without this she replies to her own replies forever.
+        if not text_lower:
             return False
-            
-        # MIO RULE: If anyone other than Matt/Master uses the name "Mio", ignore the message completely!
+        stripped = msg.text.strip()
+        if stripped.startswith("✨ Mizune") or stripped.startswith("✨Mizune"):
+            return False
+
         if not msg.is_self and "mio" in text_lower:
             sender = (msg.sender_name or "").lower()
             allowed_mio = ["rushi", "rushikesh", "matt", "mathew", "mat"]
             if sender not in allowed_mio:
-                return False  # Silently drop
-                
-        # If it's the user's own message and it HAS a wake word, reply
+                return False
+
+        # is_self = sent from Mizune's own linked number. Only respond if explicitly
+        # woken ("mizune ..."), so her own echoes / your own stray messages don't loop.
         if msg.is_self:
-            return True
+            return has_wake_word
             
+        is_allowed = (msg.sender_phone in self.allowed_users) or \
+                     (msg.sender_name in self.allowed_users) or \
+                     (contact.tier in [ContactTier.VIP, ContactTier.FAMILY])
+                     
+        # 1.4 Group chat mention-only mode
         if msg.chat_type == 'group':
-            return True
-            
+            if not (msg.is_mentioned or has_wake_word):
+                return False
+        else:
+            # 1.3 Gate who Mizune responds to + wake prefix
+            if not is_allowed and not has_wake_word:
+                return False
+                
         return True
 
     async def send_message(self, to_jid: str, text: str):
         if self.bridge_ws:
-            payload = {
-                "type": "send_message",
-                "to_jid": to_jid,
-                "text": f"✨ Mizune\n{text}"
-            }
-            await self.bridge_ws.send(json.dumps(payload))
+            max_len = 4000
+            if len(text) <= max_len:
+                chunks = [text]
+            else:
+                chunks = []
+                paragraphs = text.split('\n')
+                current_chunk = ""
+                for p in paragraphs:
+                    # If a single paragraph is still > max_len, we just aggressively slice it
+                    if len(p) > max_len:
+                        if current_chunk:
+                            chunks.append(current_chunk)
+                            current_chunk = ""
+                        for i in range(0, len(p), max_len):
+                            chunks.append(p[i:i+max_len])
+                        continue
+                    
+                    if len(current_chunk) + len(p) + 1 > max_len:
+                        if current_chunk:
+                            chunks.append(current_chunk)
+                        current_chunk = p
+                    else:
+                        current_chunk = current_chunk + "\n" + p if current_chunk else p
+                if current_chunk:
+                    chunks.append(current_chunk)
+            
+            for i, chunk in enumerate(chunks):
+                payload = {
+                    "type": "send_message",
+                    "to_jid": to_jid,
+                    "text": (f"✨ Mizune\n{chunk}" if i == 0 else chunk)
+                }
+                await self.bridge_ws.send(json.dumps(payload))
+                if i < len(chunks) - 1:
+                    await asyncio.sleep(1.0)
 
 _bridge_process = None
 _core_instance = None
@@ -609,14 +742,14 @@ def start_whatsapp_core(config):
         
         log_info("[WHATSAPP] Clearing orphaned bridge processes on port 9876...")
         try:
-            if is_windows:
-                res = subprocess.run('netstat -ano | findstr :9876', shell=True, capture_output=True, text=True)
-                for line in res.stdout.strip().split('\n'):
-                    if 'LISTENING' in line:
-                        pid = line.strip().split()[-1]
-                        subprocess.run(f'taskkill /F /PID {pid}', shell=True, capture_output=True)
-            else:
-                subprocess.run('fuser -k 9876/tcp', shell=True, capture_output=True)
+            import psutil
+            for conn in psutil.net_connections(kind='tcp'):
+                if conn.laddr.port == 9876 and conn.status == psutil.CONN_LISTEN:
+                    try:
+                        proc = psutil.Process(conn.pid)
+                        proc.terminate()
+                    except Exception:
+                        pass
         except Exception:
             pass
 
@@ -664,35 +797,27 @@ def stop_whatsapp_core():
 
 def send_whatsapp_message(text: str, to: str = None) -> bool:
     if _core_instance and _core_instance.bridge_ws:
-        payload = {
-            "type": "send_message",
-            "text": f"✨ Mizune\n{text}"
-        }
-        # Baileys expects a JID. For now, if no 'to' is provided, we send to self.
-        # This mirrors the old logic where `to` could be a name, but baileys needs a JID.
-        # In a future update, we will resolve names to JIDs via the ContactTierGuard DB.
         if to:
             import re
             digits_only = re.sub(r'\D', '', to)
             if digits_only:
-                payload["to_jid"] = f"{digits_only}@s.whatsapp.net"
+                to_jid = f"{digits_only}@s.whatsapp.net"
             else:
-                payload["to_jid"] = to
+                to_jid = to
         else:
-            # If no target, try to find user's own number or default to a dummy
-            payload["to_jid"] = "me" # Baileys handles 'me' differently or fails, but we'll try
+            to_jid = "me"
 
         import asyncio
         if hasattr(_core_instance, 'loop') and _core_instance.loop:
             asyncio.run_coroutine_threadsafe(
-                _core_instance.bridge_ws.send(json.dumps(payload)), 
+                _core_instance.send_message(to_jid, text), 
                 _core_instance.loop
             )
             return True
         else:
             try:
                 loop = asyncio.get_running_loop()
-                loop.create_task(_core_instance.bridge_ws.send(json.dumps(payload)))
+                loop.create_task(_core_instance.send_message(to_jid, text))
                 return True
             except RuntimeError:
                 return False

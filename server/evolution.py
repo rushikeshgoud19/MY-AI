@@ -144,7 +144,7 @@ Do you approve this Architecture Patch?"""
             res = show_popup()
             result_container.append(res)
             
-        t = threading.Thread(target=ui_thread)
+        t = threading.Thread(target=ui_thread, daemon=True)
         t.start()
         
         while t.is_alive():

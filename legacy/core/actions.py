@@ -119,7 +119,7 @@ def lock_pc() -> str:
     """Lock the PC."""
     log_info("[ACTION] Locking PC")
     try:
-        subprocess.Popen("rundll32.exe user32.dll,LockWorkStation", shell=True)
+        subprocess.Popen(["rundll32.exe", "user32.dll,LockWorkStation"])
     except Exception as e:
         log_info(f"[ACTION] Lock failed: {e}")
         return "Couldn't lock the PC, Master!"
@@ -130,7 +130,7 @@ def sleep_pc() -> str:
     """Put PC to sleep."""
     log_info("[ACTION] Sleeping PC")
     try:
-        subprocess.Popen("rundll32.exe powrprof.dll,SetSuspendState 0,1,0", shell=True)
+        subprocess.Popen(["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"])
     except Exception as e:
         log_info(f"[ACTION] Sleep failed: {e}")
         return "Couldn't sleep the PC, Master!"

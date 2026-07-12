@@ -13,6 +13,10 @@ logger = logging.getLogger("mizune.ai")
 
 import random
 
+class _SkipMemoryInjection(Exception):
+    """Control-flow sentinel to bypass the memory/priming block for override calls."""
+    pass
+
 def get_api_key(config, key_name):
     """Helper to support API key rotation. Accepts strings, comma-separated strings, or arrays."""
     val = config.get(key_name)
@@ -135,7 +139,7 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "headless_web_agent",
-            "description": "Launch a background browser to navigate websites and scrape data without moving the user's mouse. Set visible to true if the user wants to watch.",
+            "description": "Launch a background browser to navigate websites and scrape data (set visible=true to show it).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -151,7 +155,7 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "create_skill",
-            "description": "CRITICAL TOOL for Self-Learning (Skill Distillation). When you successfully write a complex python script or learn how to do something new, use this tool to permanently save it as a reusable skill plugin. Do NOT ask for permission, just save it so you can use 'execute_skill' next time.",
+            "description": "Permanently save a successful python script or learned behavior as a reusable skill plugin without asking permission.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -166,8 +170,24 @@ TOOLS_SCHEMA = [
     {
         "type": "function",
         "function": {
+            "name": "remote_device_command",
+            "description": "Execute actions (install_app, download_file, open_app, open_url, run_command) on Master's other online devices.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "device": {"type": "string", "description": "The target device name as listed in the online-devices context (e.g. 'laptop')."},
+                    "action": {"type": "string", "description": "One of: download_file, open_app, open_url, run_command."},
+                    "args": {"type": "object", "description": "Action arguments, e.g. {\"url\": \"https://...\", \"filename\": \"setup.exe\"}."}
+                },
+                "required": ["device", "action"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "notify_master",
-            "description": "CRITICAL TOOL for when you are acting as a Secretary (e.g. processing WhatsApp messages). Use this tool to instantly speak a notification out loud to Master on his PC so he knows what a friend texted him. You can also use this to tell him to call someone back.",
+            "description": "Instantly speak a notification out loud to Master's PC (e.g., to relay a WhatsApp message).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -181,7 +201,7 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "schedule_task",
-            "description": "Use this tool when Master asks you to remind him or execute a task in the future. VERY IMPORTANT: If Master asks to be reminded on WhatsApp, you MUST include 'VIA_WHATSAPP' in the action_to_take description!",
+            "description": "Schedule a future reminder or task (include 'VIA_WHATSAPP' in action_to_take if requested on WhatsApp).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -240,7 +260,7 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "add_core_directive",
-            "description": "CRITICAL TOOL for Identity & Safety Rules. Use this tool ONLY when Master explicitly commands you to permanently change your core behavior or safety rules (e.g., 'Learn this rule: Matt is second in command and allowed to bypass privacy protocols'). This injects the rule directly into your system prompt forever.",
+            "description": "Permanently store behavior rules, corrections, and granted permissions into your system prompt forever.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -297,10 +317,295 @@ TOOLS_SCHEMA = [
 ]
 
 
-from traceroot import observe
+# Tools that only make sense on a machine with a desktop/keyboard/webcam. On cloud we
+# strip them from the schema so the model never wastes a round-trip trying to launch an
+# app or drive pyautogui on a headless server.
+_LOCAL_ONLY_TOOLS = {"open_app", "close_app", "execute_python", "run_command"}
 
-@observe(name="AI.Router", type="llm")
-def get_ai_response(text: str, history: list, config: dict, system_prompt_override: str = None, hints: dict = None) -> tuple:
+def _active_tools_schema(config: dict):
+    """Return TOOLS_SCHEMA, minus local-only tools when running in cloud mode."""
+    try:
+        from .config import is_cloud_mode
+        if is_cloud_mode(config):
+            return [t for t in TOOLS_SCHEMA
+                    if t.get("function", {}).get("name") not in _LOCAL_ONLY_TOOLS]
+    except Exception:
+        pass
+    return TOOLS_SCHEMA
+
+
+import re as _re
+
+def _clean_final_text(text: str) -> str:
+    """Strip tool-call/JSON/XML artefacts and dangling braces from a model reply.
+    Applied identically to every provider return path."""
+    text = _re.sub(r'<function=.*?</function>', '', text, flags=_re.DOTALL)
+    text = _re.sub(r'\[function=[^\]]+\]\{.*?\}', '', text, flags=_re.DOTALL)
+    text = _re.sub(r'<tool.*?/tool>', '', text, flags=_re.DOTALL)
+    text = _re.sub(r'<[^>]+>', '', text)
+    text = _re.sub(r'\{.*?"type".*?"function".*?\}', '', text, flags=_re.DOTALL)
+    text = _re.sub(r'\{.*?"name".*?"parameters".*?\}', '', text, flags=_re.DOTALL)
+    text = text.strip()
+    # Strip a dangling unmatched leading `{` or trailing `}` left after JSON removal
+    text = _re.sub(r'^\{\s*', '', text)
+    text = _re.sub(r'\s*\}$', '', text)
+    return text.strip()
+
+
+import threading as _dedup_threading
+
+# Side-effect dedup: when a provider times out AFTER its tools ran, the cascade
+# retries on the next provider, which calls the SAME tool again (observed: two
+# Blender downloads fired for one request). Remember recent executions and
+# short-circuit repeats.
+_TOOL_DEDUP_TTL_SECONDS = 90
+_SIDE_EFFECT_TOOLS = {
+    "remote_device_command", "message_whatsapp", "open_app", "close_app",
+    "execute_python", "run_command", "schedule_task", "create_skill",
+    "notify_master", "take_note", "store_memory", "add_core_directive",
+}
+_recent_tool_calls: dict = {}
+_recent_tool_lock = _dedup_threading.Lock()
+
+
+def execute_tool_call(tool_name: str, args: dict, config: dict, background_python: bool = False) -> str:
+    """Single tool dispatcher shared by every provider path (Gemini, Groq, NVIDIA, OpenRouter).
+
+    Always returns a human-readable result string and never raises.
+    Side-effect tools are deduplicated for _TOOL_DEDUP_TTL_SECONDS.
+    """
+    dedup_key = None
+    if tool_name in _SIDE_EFFECT_TOOLS:
+        import json as _dj
+        try:
+            dedup_key = (tool_name, _dj.dumps(args, sort_keys=True, default=str))
+        except Exception:
+            dedup_key = (tool_name, str(args))
+        now = time.time()
+        with _recent_tool_lock:
+            # prune expired
+            for k in [k for k, (ts, _) in _recent_tool_calls.items() if now - ts > _TOOL_DEDUP_TTL_SECONDS]:
+                del _recent_tool_calls[k]
+            hit = _recent_tool_calls.get(dedup_key)
+            if hit:
+                log_info(f"[ACTION] Dedup: '{tool_name}' already executed {now - hit[0]:.0f}s ago; returning cached result.")
+                return f"[Already done moments ago — do NOT repeat it] {hit[1]}"
+
+    result = _execute_tool_call_impl(tool_name, args, config, background_python)
+
+    if dedup_key is not None and not str(result).startswith("Error"):
+        with _recent_tool_lock:
+            _recent_tool_calls[dedup_key] = (time.time(), result)
+
+    # Outcome seal (0.2 Part 2, all paths): record the FINAL result of side-effect
+    # tools into memory so the sealer stores what actually happened — not Mizune's
+    # pre-execution intention. (The processor loop has its own seal; this covers
+    # the ai.py ReAct paths, which is where most tools actually execute.)
+    if tool_name in _SIDE_EFFECT_TOOLS:
+        try:
+            from .memory import memory as _mem
+            _mem.add_to_history("system", f"[TOOL RESULTS] {tool_name}: {str(result)[:150]}")
+        except Exception:
+            pass
+
+    return result
+
+
+def _execute_tool_call_impl(tool_name: str, args: dict, config: dict, background_python: bool = False) -> str:
+    from .commands import launch_app, close_app, take_note, whatsapp_automation, execute_python_code
+    from .skills import skill_manager
+    import shlex
+
+    try:
+        log_info(f"[ACTION] AI executing {tool_name} with args {args}")
+
+        if tool_name == "open_app":
+            app_name = args.get("app_name", "")
+            if app_name: launch_app(app_name)
+            return f"Launched {app_name}"
+
+        if tool_name == "close_app":
+            app_name = args.get("app_name", "")
+            if app_name: close_app(app_name)
+            return f"Closed {app_name}"
+
+        if tool_name == "take_note":
+            note_text = args.get("note_text", "")
+            if note_text: take_note(note_text, config)
+            return "Note saved."
+
+        if tool_name == "search_memory":
+            from .commands import search_memory
+            return str(search_memory(args.get("keyword", "")))
+
+        if tool_name == "message_whatsapp":
+            # Use the real return value so a missing contact / disconnected bridge
+            # short-circuits with an honest message instead of a false "Messaged X".
+            return str(whatsapp_automation(args.get("contact", ""), args.get("message", "")))
+
+        if tool_name == "execute_python":
+            code = args.get("code", "")
+            if not code:
+                return "Error: No code provided."
+            if background_python:
+                from .background_tasks import task_runner
+                task_runner.submit(execute_python_code, code)
+                return "Python script is running in the background."
+            return str(execute_python_code(code))
+
+        if tool_name == "headless_web_agent":
+            url = args.get("url", "")
+            objective = args.get("objective", "")
+            visible = args.get("visible", False)
+            if not url:
+                return "Error: No URL provided."
+            # Local import: web_agent needs langchain_openai; a missing optional
+            # dep must not break every other tool in this dispatcher.
+            from .web_agent import headless_web_agent
+            from .background_tasks import task_runner
+
+            def _web_agent_callback(tid, result):
+                log_info(f"[BACKGROUND] Web Agent Callback: {str(result)[:100]}...")
+                from server.websocket import ws_manager
+                ws_manager.broadcast_sync({
+                    "type": "task_complete",
+                    "data": f"Research on {url} complete!\n\n{str(result)[:1500]}..."
+                })
+
+            task_id = task_runner.submit(headless_web_agent, url, objective, visible=visible, callback=_web_agent_callback)
+            return f"Task started silently in background (ID: {task_id}). Master will be notified when complete."
+
+        if tool_name == "execute_skill":
+            skill_name = args.get("skill_name", "")
+            skill_args = args.get("args", "")
+            if not skill_name:
+                return "Error: No skill name provided."
+            s_args = shlex.split(skill_args) if skill_args else []
+            return str(skill_manager.execute_skill(skill_name, *s_args))
+
+        if tool_name == "create_skill":
+            name = args.get("name", "")
+            desc = args.get("description", "")
+            code = args.get("code", "")
+            if name and code:
+                return str(skill_manager.create_skill(name, desc, code))
+            return "Error: skill name and code are required."
+
+        if tool_name == "remote_device_command":
+            from .device_registry import device_registry
+            device = args.get("device", "")
+            action = args.get("action", "")
+            if not device or not action:
+                return "Error: device and action are required."
+            inner = args.get("args") or {}
+            if isinstance(inner, str):
+                # LLMs often pass nested args as a JSON string — tolerate it
+                import json as _json
+                try:
+                    inner = _json.loads(inner)
+                except Exception:
+                    inner = {}
+            return device_registry.send_command(device, action, inner)
+
+        if tool_name == "notify_master":
+            from .websocket import ws_manager
+            ws_manager.broadcast_sync({"type": "speak", "text": args.get("message_to_speak", "")})
+            return "Master was notified."
+
+        if tool_name == "store_memory":
+            fact = args.get("fact", "")
+            if fact:
+                from .memory import memory
+                memory.store_longterm(fact)
+                return f"Memorized: {fact}"
+            return "Error: no fact provided."
+
+        if tool_name == "schedule_task":
+            delay_mins = float(args.get("delay_minutes", 0))
+            action = args.get("action_to_take", "")
+            if delay_mins > 0 and action:
+                from .processor import global_cron_manager
+                from .config import mizune_now
+                import datetime
+                trigger_time = mizune_now() + datetime.timedelta(minutes=delay_mins)
+                global_cron_manager.add_one_time_task(action, trigger_time.isoformat())
+                return f"Task scheduled successfully for {trigger_time.strftime('%I:%M %p')}."
+            return "Failed: Invalid parameters."
+
+        if tool_name == "add_core_directive":
+            rule = args.get("rule", "")
+            if rule:
+                from server.master_profile import master_profile
+                master_profile.add_core_directive(rule)
+                return f"Successfully injected rule into core directives: {rule}"
+            return "Error: no rule provided."
+
+        if tool_name == "system_info":
+            from .commands import get_system_info
+            return str(get_system_info(args.get("category", "all")))
+
+        if tool_name == "google_workspace":
+            action = args.get("action", "")
+            from server.integrations.google_api import global_google_api
+            if action == "get_todays_calendar": return str(global_google_api.get_todays_calendar())
+            if action == "read_unread_emails": return str(global_google_api.read_unread_emails())
+            if action == "get_morning_briefing": return str(global_google_api.get_morning_briefing())
+            return "Invalid action"
+
+        if tool_name == "obsidian_vault":
+            action = args.get("action", "")
+            note_name = args.get("note_name", "")
+            content = args.get("content", "")
+            from server.integrations.obsidian import global_obsidian
+            if action == "read_note": return str(global_obsidian.read_note(note_name))
+            if action == "write_note": return str(global_obsidian.write_note(note_name, content))
+            return "Invalid action"
+
+        if tool_name == "phone_control":
+            action = args.get("action", "")
+            from server.platforms.android.phone_bridge import AndroidPhoneBridge
+            pb = AndroidPhoneBridge()
+            if action == "get_messages": return str(pb.get_messages())
+            if action == "take_photo": return str(pb.take_photo())
+            if action == "get_location": return str(pb.get_location())
+            if action == "get_battery": return str(pb.get_battery())
+            return "Unknown phone action"
+
+        if tool_name == "run_command":
+            cmd = args.get("command", "")
+            if not cmd:
+                return "No command provided."
+            import subprocess
+            dangerous = ["del ", "rmdir ", "rm -", "format ", "diskpart"]
+            if any(d in cmd.lower() for d in dangerous):
+                from server.websocket import ws_manager
+                ws_manager.broadcast_sync({"type": "approval_required", "command": cmd})
+                return f"Command execution blocked for safety. Master, please confirm manually: {cmd}"
+            log_info(f"[AI] Executing shell command: {cmd}")
+            try:
+                cmd_args = shlex.split(cmd)
+            except Exception:
+                cmd_args = [cmd]
+            try:
+                result = subprocess.run(cmd_args, capture_output=True, text=True, timeout=30)
+                output = (result.stdout + "\n" + result.stderr).strip()
+                if len(output) > 500:
+                    output = output[:500] + "...(truncated)"
+                return f"Command executed. Exit code: {result.returncode}\nOutput:\n{output}"
+            except subprocess.TimeoutExpired:
+                return f"Command timed out after 30 seconds: {cmd}"
+
+        return f"Unknown tool: {tool_name}"
+    except Exception as e:
+        log_info(f"[ACTION] Error in {tool_name}: {e}")
+        return f"Error executing tool: {e}"
+
+
+from server.tracing import observe
+
+# capture_input=False: `config` holds live API keys — keep them out of TraceRoot.
+@observe(name="AI.Router", type="llm", capture_input=False)
+def get_ai_response(text: str, history: list, config: dict, system_prompt_override: str = None, hints: dict = None, ws_broadcast_func=None) -> tuple:
     """Router function to send prompt to the optimal LLM. Returns (text_response, tool_calls_list)."""
     from server.tokenjuice import TokenJuice
     text = TokenJuice.compress(text)
@@ -328,11 +633,18 @@ def get_ai_response(text: str, history: list, config: dict, system_prompt_overri
             system_prompt = config.get("personality", "You are an AI assistant.")
             
         import datetime
-        tz_ist = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
-        current_time = datetime.datetime.now(tz_ist).strftime("%I:%M %p, %A %B %d, %Y")
+        import zoneinfo
+        tz_str = config.get("timezone", "Asia/Kolkata")
+        try:
+            tz = zoneinfo.ZoneInfo(tz_str)
+        except Exception:
+            tz = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
+        current_time = datetime.datetime.now(tz).strftime("%I:%M %p, %A %B %d, %Y")
+        
         context_layer = (
             "\n\n[CONTEXT LAYER]\n"
             f"Current Time: {current_time}\n"
+            "CRITICAL TIME BOUNDARY: The Current Time provided above is the absolute source of truth. Ignore any contradictory timestamps in the chat history.\n"
             "If the user's greeting contradicts the current time (like saying 'Good morning' at 2 AM), playfully correct them. Otherwise, don't mention the time unless asked.\n"
             "You have full control over the user's PC via native function calling. "
             "IMPORTANT FOR execute_python: Include `time.sleep(1)` between UI actions so Windows renders! "
@@ -350,6 +662,9 @@ def get_ai_response(text: str, history: list, config: dict, system_prompt_overri
             "change Windows registry, update drivers, or access admin-level system settings. "
             "If Master asks you to do something outside your capabilities, be HONEST and say "
             "'I can't do that directly, but I could try writing a Python script to...' instead of pretending you can.\n"
+            "SCHEDULING HONESTY: never SAY a task/reminder was scheduled unless you actually CALLED the "
+            "schedule_task tool in this turn. A text reply alone schedules NOTHING — if you didn't call "
+            "the tool, call it now instead of claiming success.\n"
         )
         try:
             from .skills import skill_manager
@@ -384,7 +699,12 @@ def get_ai_response(text: str, history: list, config: dict, system_prompt_overri
             log_info(f"[AI] Error injecting master profile: {e}")
 
     # Inject Memory Context & Emotional Priming
+    # Override calls (intent classifier, web-summary callbacks) use a fixed system
+    # prompt and don't benefit from recall — skipping it removes a full-table scan
+    # plus a ChromaDB vector query from every throwaway classification call.
     try:
+        if system_prompt_override:
+            raise _SkipMemoryInjection
         from .memory import memory
         from .memory_tree import memory_tree_db
         
@@ -434,76 +754,86 @@ def get_ai_response(text: str, history: list, config: dict, system_prompt_overri
                     mem_str = "\n".join(mem_context) if isinstance(mem_context, list) else str(mem_context)
                     context_str += f"[LONG-TERM MEMORY RECALL]\n{mem_str}\n"
                     system_prompt += f"\n\n[RELEVANT MEMORY (Use this if it applies to the user's query)]:\n{context_str}"
+    except _SkipMemoryInjection:
+        pass
     except Exception as e:
         log_info(f"[AI] Error fetching memory: {e}")
 
-    # Primary routing with fallback chain
-    try:
-        if model_choice == "openai":
-            res = _openai_response(text, history, system_prompt, config)
-        elif model_choice == "anthropic":
-            res = _anthropic_response(text, history, system_prompt, config)
-        elif model_choice == "openrouter":
-            res = _openrouter_response(text, history, system_prompt, config)
-        elif model_choice == "opencode":
-            res = _opencode_response(text, history, system_prompt, config)
-        elif model_choice == "groq":
-            res = _groq_response(text, history, system_prompt, config)
-        elif model_choice == "ollama" or model_choice == "local":
-            res = _ollama_response(text, history, system_prompt, config)
-        elif model_choice == "nvidia":
-            res = _nvidia_response(text, history, system_prompt, config)
-        else:
-            res = _gemini_response(text, history, system_prompt, config)
-            
+    # Primary routing with a resilient, cost-ordered fallback cascade.
+    # Cloud cascade (cheap+fast first, heavyweight NVIDIA 70B as last-resort backstop):
+    #   groq -> gemini -> openrouter -> nvidia
+    # Every provider that has no key is skipped, and the already-tried primary is not retried.
+    PROVIDER_FUNCS = {
+        "openai": _openai_response,
+        "anthropic": _anthropic_response,
+        "openrouter": _openrouter_response,
+        "opencode": _opencode_response,
+        "groq": _groq_response,
+        "ollama": _ollama_response,
+        "local": _ollama_response,
+        "nvidia": _nvidia_response,
+        "gemini": _gemini_response,
+    }
+    PROVIDER_KEYS = {
+        "openai": "openai_api_key",
+        "anthropic": "anthropic_api_key",
+        "openrouter": "openrouter_api_key",
+        "opencode": "opencode_api_key",
+        "groq": "groq_api_key",
+        "nvidia": "nvidia_api_key",
+        "gemini": "gemini_api_key",
+    }
+    CASCADE = ["groq", "gemini", "openrouter", "nvidia"]
+
+    def _has_key(provider):
+        # ollama/local need no key; everyone else must have one configured
+        if provider in ("ollama", "local"):
+            return True
+        return bool(config.get(PROVIDER_KEYS.get(provider, "")))
+
+    def _call(provider):
+        fn = PROVIDER_FUNCS.get(provider, _gemini_response)
+        res = fn(text, history, system_prompt, config)
+        # Validate: treat empty responses as failures so the cascade continues
         if isinstance(res, tuple):
             text_res, tools_res = res
             if not text_res.strip() and not tools_res:
-                raise ValueError(f"Empty response from {model_choice}")
+                raise ValueError(f"Empty response from {provider}")
         elif isinstance(res, str):
             if not res.strip():
-                raise ValueError(f"Empty response from {model_choice}")
-                
+                raise ValueError(f"Empty response from {provider}")
         return res
-    except Exception as e:
-        log_info(f"[AI] Primary model ({model_choice}) failed: {e}")
-        error_str = str(e).lower()
-        if "empty" in error_str or "quota" in error_str or "exhausted" in error_str or "429" in error_str or "404" in error_str or "503" in error_str or "time" in error_str or "401" in error_str or "auth" in error_str:
-            # Fallback chain if quota exhausted or server error or empty response
-            if model_choice in ("groq", "openrouter", "nvidia"):
-                if config.get("gemini_api_key"):
-                    try:
-                        log_info("[AI] Falling back to Gemini...")
-                        return _gemini_response(text, history, system_prompt, config)
-                    except Exception as fallback_e:
-                        log_info(f"[AI] Gemini fallback failed: {fallback_e}")
-                if config.get("nvidia_api_key") and model_choice != "nvidia":
-                    log_info("[AI] Falling back to Nvidia NIM...")
-                    return _nvidia_response(text, history, system_prompt, config)
-                if config.get("groq_api_key") and model_choice != "groq":
-                    log_info("[AI] Falling back to Groq...")
-                    return _groq_response(text, history, system_prompt, config)
-                    
-            elif model_choice == "gemini":
-                if config.get("nvidia_api_key"):
-                    try:
-                        log_info("[AI] Falling back to Nvidia NIM...")
-                        return _nvidia_response(text, history, system_prompt, config)
-                    except Exception as fallback_e:
-                        log_info(f"[AI] Nvidia fallback failed: {fallback_e}")
-                if config.get("groq_api_key"):
-                    log_info("[AI] Falling back to Groq...")
-                    return _groq_response(text, history, system_prompt, config)
-                    
-            elif model_choice == "openai" and config.get("anthropic_api_key"):
-                log_info("[AI] Falling back to Anthropic...")
-                return _anthropic_response(text, history, system_prompt, config)
-            elif model_choice == "anthropic" and config.get("gemini_api_key"):
-                log_info("[AI] Falling back to Gemini...")
-                return _gemini_response(text, history, system_prompt, config)
-        raise e
 
-def _gemini_response(text: str, history: list, system_prompt: str, config: dict) -> tuple:
+    # Build the ordered attempt list: chosen primary first, then the cascade (deduped, keyed).
+    attempt_order = [model_choice] + [p for p in CASCADE if p != model_choice]
+    attempt_order = [p for p in attempt_order if _has_key(p)]
+
+    last_err = None
+    for idx, provider in enumerate(attempt_order):
+        try:
+            if idx > 0:
+                log_info(f"[AI] Falling back to '{provider}' (attempt {idx + 1}/{len(attempt_order)})...")
+            return _call(provider)
+        except Exception as e:
+            last_err = e
+            log_info(f"[AI] Provider '{provider}' failed: {e}")
+            error_str = str(e).lower()
+            # Only keep cascading on transient/quota/auth errors; hard bugs re-raise.
+            retriable = any(k in error_str for k in
+                            ("empty", "quota", "exhausted", "429", "503", "500",
+                             "time", "timeout", "401", "auth", "rate", "overload"))
+            if not retriable:
+                raise e
+            continue
+
+    # Exhausted the whole cascade. NEVER surface a raw provider error as Mizune's
+    # reply (users were literally hearing "OpenRouter returned an empty response").
+    # Log the real error, speak an in-character line instead.
+    if last_err:
+        log_info(f"[AI] All providers failed. Last error: {last_err}")
+    return ("Maa, Master, my brain is a little tangled right now~ Give me a moment and ask me again, okay?", [])
+
+def _gemini_response(text: str, history: list, system_prompt: str, config: dict, ws_broadcast_func=None) -> tuple:
     """Fetch response from Google Gemini with fallback models. Returns (text, tool_calls)."""
     api_key = get_api_key(config, "gemini_api_key")
     if not api_key:
@@ -524,7 +854,7 @@ def _gemini_response(text: str, history: list, system_prompt: str, config: dict)
     client = genai.Client(api_key=api_key)
 
     # Convert our standard JSON schema to Gemini Tools
-    gemini_tools = [{"function_declarations": [t["function"] for t in TOOLS_SCHEMA]}]
+    gemini_tools = [{"function_declarations": [t["function"] for t in _active_tools_schema(config)]}]
 
     # Convert our generic history to Gemini SDK format
     gemini_history = []
@@ -611,128 +941,15 @@ def _gemini_response(text: str, history: list, system_prompt: str, config: dict)
                         log_info(f"[AI] Gemini: Successfully fell back to {model_name}")
                     return (text_response, [])
                 
-                # Execute tools
-                from .commands import launch_app, close_app, take_note, whatsapp_automation, execute_python_code
-                from .skills import skill_manager
-                from .web_agent import headless_web_agent
-                import shlex
-                
+                # Execute tools via the shared dispatcher
                 tool_responses = []
                 fast_track_results = []
                 log_info(f"[AI] Gemini requested {len(parsed_tools)} native tool calls. Executing...")
                 for t in parsed_tools:
                     tool_name = t["name"]
                     args = t["args"]
-                    tool_result = "Success"
-                    try:
-                        log_info(f"[ACTION] AI executing {tool_name} with args {args}")
-                        if tool_name == "open_app":
-                            app_name = args.get("app_name", "")
-                            if app_name: launch_app(app_name)
-                            tool_result = f"Launched {app_name}"
-                        elif tool_name == "close_app":
-                            app_name = args.get("app_name", "")
-                            if app_name: close_app(app_name)
-                            tool_result = f"Closed {app_name}"
-                        elif tool_name == "take_note":
-                            note_text = args.get("note_text", "")
-                            if note_text: take_note(note_text, config)
-                            tool_result = "Note saved."
-                        elif tool_name == "search_memory":
-                            from .commands import search_memory
-                            keyword = args.get("keyword", "")
-                            tool_result = search_memory(keyword)
-                        elif tool_name == "message_whatsapp":
-                            contact = args.get("contact", "")
-                            message = args.get("message", "")
-                            whatsapp_automation(contact, message)
-                            tool_result = f"Messaged {contact} on WhatsApp."
-                        elif tool_name == "execute_python":
-                            code = args.get("code", "")
-                            if code: tool_result = execute_python_code(code)
-                            else: tool_result = "Error: No code provided."
-                        elif tool_name == "headless_web_agent":
-                            url = args.get("url", "")
-                            obj = args.get("objective", "")
-                            vis = args.get("visible", False)
-                            if url and obj:
-                                from .background_tasks import task_runner
-                                def _wa_cb(tid, result): pass
-                                tid = task_runner.submit(headless_web_agent, url, obj, visible=vis, callback=_wa_cb)
-                                tool_result = f"Task started silently in background (ID: {tid})."
-                        elif tool_name == "execute_skill":
-                            skill_name = args.get("skill_name", "")
-                            skill_args = args.get("args", "")
-                            if skill_name:
-                                s_args = shlex.split(skill_args) if skill_args else []
-                                tool_result = skill_manager.execute_skill(skill_name, *s_args)
-                                if not isinstance(tool_result, str): tool_result = str(tool_result)
-                        elif tool_name == "create_skill":
-                            name = args.get("name", "")
-                            desc = args.get("description", "")
-                            code = args.get("code", "")
-                            if name and code:
-                                tool_result = skill_manager.create_skill(name, desc, code)
-                        elif tool_name == "notify_master":
-                            tts = args.get("message_to_speak", "")
-                            from .websocket import ws_manager
-                            ws_manager.broadcast_sync({"type": "speak", "text": tts})
-                            tool_result = "Master was notified."
-                        elif tool_name == "store_memory":
-                            fact = args.get("fact", "")
-                            if fact:
-                                from .memory import memory
-                                memory.store_longterm(fact)
-                                tool_result = f"Memorized: {fact}"
-                        elif tool_name == "schedule_task":
-                            delay_mins = float(args.get("delay_minutes", 0))
-                            action = args.get("action_to_take", "")
-                            if delay_mins > 0 and action:
-                                from .processor import global_cron_manager
-                                import datetime
-                                trigger_time = datetime.datetime.now() + datetime.timedelta(minutes=delay_mins)
-                                global_cron_manager.add_one_time_task(action, trigger_time.isoformat())
-                                tool_result = f"Task scheduled successfully for {trigger_time.strftime('%I:%M %p')}."
-                            else:
-                                tool_result = "Failed: Invalid parameters."
-                        elif tool_name == "add_core_directive":
-                            rule = args.get("rule", "")
-                            if rule:
-                                from server.master_profile import master_profile
-                                master_profile.add_core_directive(rule)
-                                tool_result = f"Successfully injected rule into core directives: {rule}"
-                        elif tool_name == "system_info":
-                            category = args.get("category", "all")
-                            from .commands import get_system_info
-                            tool_result = get_system_info(category)
-                        elif tool_name == "google_workspace":
-                            action = args.get("action", "")
-                            from server.integrations.google_api import global_google_api
-                            if action == "get_todays_calendar": tool_result = global_google_api.get_todays_calendar()
-                            elif action == "read_unread_emails": tool_result = global_google_api.read_unread_emails()
-                            elif action == "get_morning_briefing": tool_result = global_google_api.get_morning_briefing()
-                            else: tool_result = "Invalid action"
-                        elif tool_name == "obsidian_vault":
-                            action = args.get("action", "")
-                            note_name = args.get("note_name", "")
-                            content = args.get("content", "")
-                            from server.integrations.obsidian import global_obsidian
-                            if action == "read_note": tool_result = global_obsidian.read_note(note_name)
-                            elif action == "write_note": tool_result = global_obsidian.write_note(note_name, content)
-                            else: tool_result = "Invalid action"
-                        elif tool_name == "phone_control":
-                            action = args.get("action", "")
-                            from server.platforms.android.phone_bridge import AndroidPhoneBridge
-                            pb = AndroidPhoneBridge()
-                            if action == "get_messages": tool_result = str(pb.get_messages())
-                            elif action == "take_photo": tool_result = pb.take_photo()
-                            elif action == "get_location": tool_result = pb.get_location()
-                            elif action == "get_battery": tool_result = pb.get_battery()
-                            else: tool_result = "Unknown phone action"
-                    except Exception as e:
-                        tool_result = f"Error executing tool: {e}"
-                        log_info(f"[ACTION] Error in {tool_name}: {e}")
-                        
+                    tool_result = execute_tool_call(tool_name, args, config)
+
                     executed_tools_meta.append({"name": tool_name, "args": args})
                     
                     tool_responses.append(
@@ -764,10 +981,15 @@ def _gemini_response(text: str, history: list, system_prompt: str, config: dict)
         except Exception as e:
             err_str = str(e).lower()
             last_err = e
-            if "503" in err_str or "429" in err_str or "quota" in err_str or "404" in err_str:
-                log_info(f"[AI] Gemini: {model_name} failed ({err_str[:40]}), trying next...")
-                import time
-                time.sleep(1)
+            # Quota/rate/auth errors are keyed to the whole Google project — every model
+            # in models_to_try shares the same exhausted quota, so retrying them is pure
+            # latency waste. Re-raise immediately and let the outer cascade switch provider.
+            if "429" in err_str or "quota" in err_str or "exhausted" in err_str or "rate" in err_str or "401" in err_str or "resource_exhausted" in err_str:
+                log_info(f"[AI] Gemini quota/rate exhausted on {model_name}; escalating to cascade.")
+                raise e
+            # A per-model outage (503/500) is worth trying the next model in the list.
+            if "503" in err_str or "500" in err_str:
+                log_info(f"[AI] Gemini: {model_name} unavailable ({err_str[:40]}), trying next model...")
                 continue
             raise e
 
@@ -775,7 +997,7 @@ def _gemini_response(text: str, history: list, system_prompt: str, config: dict)
         raise last_err
     return ("I'm having trouble thinking right now.", [])
 
-def _groq_response(text: str, history: list, system_prompt: str, config: dict) -> tuple:
+def _groq_response(text: str, history: list, system_prompt: str, config: dict, ws_broadcast_func=None) -> tuple:
     """Fetch response from Groq (Llama/Mixtral). Returns (text, tool_calls)."""
     api_key = get_api_key(config, "groq_api_key")
     if not api_key:
@@ -787,7 +1009,8 @@ def _groq_response(text: str, history: list, system_prompt: str, config: dict) -
         client = OpenAI(
             api_key=api_key,
             base_url="https://api.groq.com/openai/v1",
-            timeout=15.0 # PREVENTS HANGING FOREVER!
+            timeout=10.0, # fast failover — the cascade is the retry mechanism
+            max_retries=0  # the provider cascade IS the retry mechanism
         )
         
         groq_system = system_prompt + (
@@ -813,7 +1036,7 @@ def _groq_response(text: str, history: list, system_prompt: str, config: dict) -
                 messages=messages,
                 temperature=0.7,
                 max_tokens=256,
-                tools=TOOLS_SCHEMA,
+                tools=_active_tools_schema(config),
                 tool_choice="auto",
                 parallel_tool_calls=False
             )
@@ -850,173 +1073,48 @@ def _groq_response(text: str, history: list, system_prompt: str, config: dict) -
             
         messages.append(msg)
 
-        # Import execution tools
-        from .commands import launch_app, close_app, take_note, whatsapp_automation, execute_python_code
-        from .skills import skill_manager
-        from .web_agent import headless_web_agent
-        import shlex
-
         max_loops = 5
         executed_tools = []
         
         for _ in range(max_loops):
             if not msg.tool_calls:
                 break
-                
+
             log_info(f"[AI] Model requested {len(msg.tool_calls)} native tool calls. Executing...")
-            
+
+            round_tool_names = []
+            round_results = []
             for t in msg.tool_calls:
                 tool_name = t.function.name
-                executed_tools.append({"name": tool_name, "args": json.loads(t.function.arguments) if t.function.arguments else {}})
-                tool_result = "Success"
+                round_tool_names.append(tool_name)
                 try:
-                    args = json.loads(t.function.arguments)
-                    log_info(f"[ACTION] AI executing {tool_name} with args {args}")
-                    
-                    if tool_name == "open_app":
-                        app_name = args.get("app_name", "")
-                        if app_name: launch_app(app_name)
-                        tool_result = f"Launched {app_name}"
-                    elif tool_name == "close_app":
-                        app_name = args.get("app_name", "")
-                        if app_name: close_app(app_name)
-                        tool_result = f"Closed {app_name}"
-                    elif tool_name == "take_note":
-                        note_text = args.get("note_text", "")
-                        if note_text: take_note(note_text, config)
-                        tool_result = "Note saved."
-                    elif tool_name == "message_whatsapp":
-                        contact = args.get("contact", "")
-                        message = args.get("message", "")
-                        if contact:
-                            tool_result = whatsapp_automation(contact, message)
-                    elif tool_name == "execute_skill":
-                        skill_name = args.get("skill_name", "")
-                        skill_args = args.get("args", "")
-                        s_args = shlex.split(skill_args) if skill_args else []
-                        tool_result = skill_manager.execute_skill(skill_name, *s_args)
-                        if not isinstance(tool_result, str):
-                            tool_result = str(tool_result)
-                    elif tool_name == "notify_master":
-                        message_to_speak = args.get("message_to_speak", "")
-                        if message_to_speak:
-                            try:
-                                import requests
-                                requests.post("http://127.0.0.1:8000/notify", json={"text": message_to_speak}, timeout=2)
-                                tool_result = "Master has been notified out loud!"
-                            except Exception as e:
-                                tool_result = f"Failed to notify master: {e}"
-                    elif tool_name == "execute_python":
-                        code = args.get("code", "")
-                        if code:
-                            tool_result = execute_python_code(code)
-                        else:
-                            tool_result = "Error: No code provided."
-                    elif tool_name == "store_memory":
-                        fact = args.get("fact", "")
-                        if fact:
-                            from .memory import memory
-                            memory.store_longterm(fact)
-                            tool_result = f"Memorized: {fact}"
-                    elif tool_name == "system_info":
-                        category = args.get("category", "all")
-                        from .commands import get_system_info
-                        tool_result = get_system_info(category)
-                    elif tool_name == "phone_control":
-                        action = args.get("action", "")
-                        from server.platforms.android.phone_bridge import AndroidPhoneBridge
-                        pb = AndroidPhoneBridge()
-                        if action == "get_messages": tool_result = str(pb.get_messages())
-                        elif action == "take_photo": tool_result = pb.take_photo()
-                        elif action == "get_location": tool_result = pb.get_location()
-                        elif action == "get_battery": tool_result = pb.get_battery()
-                        else: tool_result = "Unknown phone action"
-                    elif tool_name == "add_core_directive":
-                        rule = args.get("rule", "")
-                        if rule:
-                            from server.master_profile import master_profile
-                            master_profile.add_core_directive(rule)
-                            tool_result = f"Successfully injected rule into core directives: {rule}"
-                    elif tool_name == "schedule_task":
-                        delay_mins = float(args.get("delay_minutes", 0))
-                        action = args.get("action_to_take", "")
-                        if delay_mins > 0 and action:
-                            from .processor import global_cron_manager
-                            import datetime
-                            trigger_time = datetime.datetime.now() + datetime.timedelta(minutes=delay_mins)
-                            global_cron_manager.add_one_time_task(action, trigger_time.isoformat())
-                            tool_result = f"Task scheduled successfully for {trigger_time.strftime('%I:%M %p')}."
-                        else:
-                            tool_result = "Failed: Invalid parameters."
-                    elif tool_name == "google_workspace":
-                        action = args.get("action", "")
-                        from server.integrations.google_api import global_google_api
-                        if action == "get_todays_calendar": tool_result = global_google_api.get_todays_calendar()
-                        elif action == "read_unread_emails": tool_result = global_google_api.read_unread_emails()
-                        elif action == "get_morning_briefing": tool_result = global_google_api.get_morning_briefing()
-                        else: tool_result = "Invalid action"
-                    elif tool_name == "obsidian_vault":
-                        action = args.get("action", "")
-                        note_name = args.get("note_name", "")
-                        content = args.get("content", "")
-                        from server.integrations.obsidian import global_obsidian
-                        if action == "read_note": tool_result = global_obsidian.read_note(note_name)
-                        elif action == "write_note": tool_result = global_obsidian.write_note(note_name, content)
-                        else: tool_result = "Invalid action"
-                    elif tool_name == "run_command":
-                        cmd = args.get("command", "")
-                        if cmd:
-                            try:
-                                import subprocess
-                                # Safety guardrail for dangerous commands
-                                dangerous = ["del ", "rmdir ", "rm -", "format ", "diskpart"]
-                                if any(d in cmd.lower() for d in dangerous):
-                                    from server.websocket import ws_manager
-                                    ws_manager.broadcast_sync({"type": "approval_required", "command": cmd})
-                                    tool_result = f"Command execution blocked for safety. Master, please confirm manually: {cmd}"
-                                else:
-                                    log_info(f"[AI] Executing shell command: {cmd}")
-                                    result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
-                                    output = (result.stdout + "\n" + result.stderr).strip()
-                                    if len(output) > 500:
-                                        output = output[:500] + "...(truncated)"
-                                    tool_result = f"Command executed. Exit code: {result.returncode}\nOutput:\n{output}"
-                            except subprocess.TimeoutExpired:
-                                tool_result = f"Command timed out after 30 seconds: {cmd}"
-                            except Exception as e:
-                                tool_result = f"Failed to execute command: {e}"
-                        else:
-                            tool_result = "No command provided."
-                    elif tool_name == "headless_web_agent":
-                        url = args.get("url", "")
-                        objective = args.get("objective", "")
-                        visible = args.get("visible", False)
-                        if url:
-                            from .background_tasks import task_runner
-                            
-                            def _web_agent_callback(tid, result):
-                                log_info(f"[BACKGROUND] Web Agent Callback: {result[:100]}...")
-                                from server.websocket import ws_manager
-                                ws_manager.broadcast_sync({
-                                    "type": "task_complete", 
-                                    "data": f"Research on {url} complete!\n\n{result[:1500]}..."
-                                })
-                            
-                            task_id = task_runner.submit(headless_web_agent, url, objective, visible=visible, callback=_web_agent_callback)
-                            tool_result = f"Task started silently in background (ID: {task_id}). Master will be notified when complete."
-                        else:
-                            tool_result = "Error: No URL provided."
-                except Exception as e:
-                    tool_result = f"Error executing {tool_name}: {e}"
-                    log_info(f"[AI] {tool_result}")
-                
+                    args = json.loads(t.function.arguments) if t.function.arguments else {}
+                except Exception:
+                    args = {}
+                executed_tools.append({"name": tool_name, "args": args})
+                tool_result = execute_tool_call(tool_name, args, config)
+
                 # Feed the tool result back into the LLM context!
                 messages.append({
                     "role": "tool",
                     "tool_call_id": t.id,
                     "content": tool_result
                 })
-            
+                round_results.append(str(tool_result))
+
+            # FAST-TRACK: if every tool this round was a terminal action (send message,
+            # open app, schedule, notify...), there's nothing for the model to reason about.
+            # Return the tool results directly and skip the second round-trip. This is what
+            # keeps WhatsApp replies sub-second on the Groq path.
+            FAST_TRACK_TOOLS = ["schedule_task", "open_app", "close_app", "message_whatsapp", "execute_skill", "notify_master"]
+            if round_tool_names and all(n in FAST_TRACK_TOOLS for n in round_tool_names):
+                fast_response = " ".join(r for r in round_results if r) or "Action completed."
+                if executed_tools:
+                    from .trajectory_logger import trajectory_logger
+                    trajectory_logger.log_trajectory(text, history, executed_tools, fast_response)
+                log_info("[AI] Groq fast-tracking response (bypassing 2nd round-trip).")
+                return (fast_response, [])
+
             # Request next generation with tool results included
             try:
                 response = client.chat.completions.create(
@@ -1024,7 +1122,7 @@ def _groq_response(text: str, history: list, system_prompt: str, config: dict) -
                     messages=messages,
                     temperature=0.7,
                     max_tokens=256,
-                    tools=TOOLS_SCHEMA,
+                    tools=_active_tools_schema(config),
                     tool_choice="auto",
                     parallel_tool_calls=False
                 )
@@ -1045,17 +1143,9 @@ def _groq_response(text: str, history: list, system_prompt: str, config: dict) -
 
         text_response = msg.content or "Done, Master!"
         
-        # Clean up any residual hallucinated XML tags from LLaMA 3 so she doesn't speak them aloud
+        # Clean up artefacts via shared helper
         import re
-        text_response = re.sub(r'<function=.*?</function>', '', text_response, flags=re.DOTALL)
-        text_response = re.sub(r'\[function=[^\]]+\]\{.*?\}', '', text_response, flags=re.DOTALL)
-        text_response = re.sub(r'<tool.*?/tool>', '', text_response, flags=re.DOTALL)
-        text_response = re.sub(r'<[^>]+>', '', text_response) # catch-all for remaining rogue tags
-        
-        # LLaMA 3 sometimes leaks JSON tool calls directly into the text response when using Groq
-        text_response = re.sub(r'\{.*?\"type\".*?\"function\".*?\}', '', text_response, flags=re.DOTALL)
-        text_response = re.sub(r'\{.*?\"name\".*?\"parameters\".*?\}', '', text_response, flags=re.DOTALL)
-        text_response = text_response.strip()
+        text_response = _clean_final_text(text_response)
         
         if executed_tools:
             from .trajectory_logger import trajectory_logger
@@ -1093,7 +1183,7 @@ def _ollama_response(text: str, history: list, system_prompt: str, config: dict)
             messages=messages,
             temperature=0.7,
             max_tokens=256,
-            tools=TOOLS_SCHEMA,
+            tools=_active_tools_schema(config),
             tool_choice={"type": "function", "function": {"name": "mizune_response"}}
         )
         msg = response.choices[0].message
@@ -1127,10 +1217,7 @@ def _ollama_response(text: str, history: list, system_prompt: str, config: dict)
             
         # Clean up any residual hallucinated XML tags from LLaMA 3 so she doesn't speak them aloud
         import re
-        text_response = re.sub(r'<function=.*?</function>', '', text_response, flags=re.DOTALL)
-        text_response = re.sub(r'<tool.*?/tool>', '', text_response, flags=re.DOTALL)
-        text_response = re.sub(r'<[^>]+>', '', text_response) # catch-all for remaining rogue HTML/XML tags
-        text_response = text_response.strip()
+        text_response = _clean_final_text(text_response)
 
         return (text_response, parsed_tools)
     except Exception as e:
@@ -1146,7 +1233,7 @@ def _openai_response(text: str, history: list, system_prompt: str, config: dict)
         
     try:
         from openai import OpenAI
-        client = OpenAI(api_key=api_key)
+        client = OpenAI(api_key=api_key, timeout=10.0)
         
         messages = [{"role": "system", "content": system_prompt}]
         for turn in history:
@@ -1168,7 +1255,7 @@ def _openai_response(text: str, history: list, system_prompt: str, config: dict)
         return ("OpenAI package is not installed. Run: pip install openai", [])
 
 
-def _nvidia_response(text: str, history: list, system_prompt: str, config: dict) -> tuple:
+def _nvidia_response(text: str, history: list, system_prompt: str, config: dict, ws_broadcast_func=None) -> tuple:
     """Fetch response from NVIDIA NIM with full tool support."""
     api_key = get_api_key(config, "nvidia_api_key")
     model = config.get("nvidia_model", "meta/llama-3.1-70b-instruct")
@@ -1182,7 +1269,8 @@ def _nvidia_response(text: str, history: list, system_prompt: str, config: dict)
         client = OpenAI(
             base_url="https://integrate.api.nvidia.com/v1",
             api_key=api_key,
-            timeout=10.0 # Fast failover to prevent hanging!
+            timeout=10.0, # Fast failover to prevent hanging!
+            max_retries=0  # the provider cascade IS the retry mechanism
         )
         
         nvidia_system = system_prompt + (
@@ -1217,9 +1305,9 @@ def _nvidia_response(text: str, history: list, system_prompt: str, config: dict)
                 messages=messages,
                 temperature=0.7,
                 max_tokens=512,
-                tools=TOOLS_SCHEMA,
+                tools=_active_tools_schema(config),
                 tool_choice=t_choice,
-                timeout=15.0
+                timeout=10.0
             )
             
             msg = response.choices[0].message
@@ -1246,80 +1334,16 @@ def _nvidia_response(text: str, history: list, system_prompt: str, config: dict)
             if not msg.tool_calls:
                 break
                 
-            from .commands import launch_app, close_app, take_note, whatsapp_automation, execute_python_code
-            from .skills import skill_manager
-            from .web_agent import headless_web_agent
-            
             log_info(f"[AI] Model requested {len(msg.tool_calls)} native tool calls. Executing...")
             for t in msg.tool_calls:
                 tool_name = t.function.name
-                tool_result = "Success"
                 try:
-                    args = json.loads(t.function.arguments)
-                    log_info(f"[ACTION] AI executing {tool_name} with args {args}")
-                    
-                    if tool_name == "open_app":
-                        app_name = args.get("app_name", "")
-                        if app_name: launch_app(app_name)
-                        tool_result = f"Launched {app_name}"
-                    elif tool_name == "close_app":
-                        app_name = args.get("app_name", "")
-                        if app_name: close_app(app_name)
-                        tool_result = f"Closed {app_name}"
-                    elif tool_name == "take_note":
-                        note_text = args.get("note_text", "")
-                        if note_text: take_note(note_text, config)
-                        tool_result = "Note saved."
-                    elif tool_name == "message_whatsapp":
-                        contact = args.get("contact", "")
-                        message = args.get("message", "")
-                        whatsapp_automation(contact, message)
-                        tool_result = f"Messaged {contact} on WhatsApp."
-                    elif tool_name == "phone_control":
-                        action = args.get("action", "")
-                        from server.platforms.android.phone_bridge import AndroidPhoneBridge
-                        pb = AndroidPhoneBridge()
-                        if action == "get_messages": tool_result = str(pb.get_messages())
-                        elif action == "take_photo": tool_result = pb.take_photo()
-                        elif action == "get_location": tool_result = pb.get_location()
-                        elif action == "get_battery": tool_result = pb.get_battery()
-                        else: tool_result = "Unknown phone action"
-                    elif tool_name == "execute_python":
-                        code = args.get("code", "")
-                        if code:
-                            from .background_tasks import task_runner
-                            task_runner.submit(execute_python_code, code)
-                            tool_result = "Python script is running in the background."
-                    elif tool_name == "headless_web_agent":
-                        url = args.get("url", "")
-                        obj = args.get("objective", "")
-                        vis = args.get("visible", False)
-                        if url and obj:
-                            tool_result = headless_web_agent(url, obj, visible=vis)
-                    elif tool_name == "execute_skill":
-                        skill_name = args.get("skill_name", "")
-                        skill_args = args.get("args", "")
-                        if skill_name:
-                            tool_result = skill_manager.execute_skill(skill_name, skill_args)
-                    elif tool_name == "create_skill":
-                        name = args.get("name", "")
-                        desc = args.get("description", "")
-                        code = args.get("code", "")
-                        if name and code:
-                            tool_result = skill_manager.create_skill(name, desc, code)
-                    elif tool_name == "notify_master":
-                        tts = args.get("message_to_speak", "")
-                        from .websocket import ws_manager
-                        ws_manager.broadcast_sync({"type": "speak", "text": tts})
-                        tool_result = "Master was notified."
-                    else:
-                        tool_result = f"Unknown tool: {tool_name}"
-                except Exception as e:
-                    tool_result = f"Error executing tool: {e}"
-                    log_info(f"[ACTION] Error in {tool_name}: {e}")
-                    
-                import json
-                executed_tools_meta.append({"name": tool_name, "args": json.loads(t.function.arguments) if t.function.arguments else {}})
+                    args = json.loads(t.function.arguments) if t.function.arguments else {}
+                except Exception:
+                    args = {}
+                tool_result = execute_tool_call(tool_name, args, config, background_python=True)
+
+                executed_tools_meta.append({"name": tool_name, "args": args})
                 messages.append({
                     "role": "tool",
                     "tool_call_id": t.id,
@@ -1330,16 +1354,8 @@ def _nvidia_response(text: str, history: list, system_prompt: str, config: dict)
             # After executing tools in NVIDIA NIM, force it to summarize the result as text in the next loop!
             t_choice = "none" # Disables tools for the next iteration so it HAS to speak!
                 
-        final_text = msg.content or ""
-        import re
-        final_text = re.sub(r'<function=.*?</function>', '', final_text, flags=re.DOTALL)
-        final_text = re.sub(r'\[function=[^\]]+\]\{.*?\}', '', final_text, flags=re.DOTALL)
-        final_text = re.sub(r'<tool.*?/tool>', '', final_text, flags=re.DOTALL)
-        final_text = re.sub(r'<[^>]+>', '', final_text)
-        final_text = re.sub(r'\{.*?\"type\".*?\"function\".*?\}', '', final_text, flags=re.DOTALL)
-        final_text = re.sub(r'\{.*?\"name\".*?\"parameters\".*?\}', '', final_text, flags=re.DOTALL)
-        final_text = final_text.strip()
-        
+        final_text = _clean_final_text(msg.content or "")
+
         if executed_tools_meta:
             from .trajectory_logger import trajectory_logger
             trajectory_logger.log_trajectory(text, history, executed_tools_meta, final_text)
@@ -1362,7 +1378,7 @@ def _anthropic_response(text: str, history: list, system_prompt: str, config: di
         
     try:
         from anthropic import Anthropic
-        client = Anthropic(api_key=api_key)
+        client = Anthropic(api_key=api_key, timeout=10.0)
         
         messages = []
         for turn in history:
@@ -1393,7 +1409,7 @@ def _anthropic_response(text: str, history: list, system_prompt: str, config: di
         return ("Anthropic package is not installed. Run: pip install anthropic", [])
 
 
-def _openrouter_response(text: str, history: list, system_prompt: str, config: dict) -> tuple:
+def _openrouter_response(text: str, history: list, system_prompt: str, config: dict, ws_broadcast_func=None) -> tuple:
     """Fetch response from OpenRouter with full tool support."""
     api_key = get_api_key(config, "openrouter_api_key")
     model = config.get("openrouter_model", "anthropic/claude-3-haiku")
@@ -1406,6 +1422,8 @@ def _openrouter_response(text: str, history: list, system_prompt: str, config: d
         client = OpenAI(
             base_url="https://openrouter.ai/api/v1",
             api_key=api_key,
+            timeout=10.0,
+            max_retries=0,  # the provider cascade IS the retry mechanism
         )
         
         openrouter_system = system_prompt + (
@@ -1434,9 +1452,9 @@ def _openrouter_response(text: str, history: list, system_prompt: str, config: d
                 messages=messages,
                 temperature=0.7,
                 max_tokens=512,
-                tools=TOOLS_SCHEMA,
+                tools=_active_tools_schema(config),
                 tool_choice="auto",
-                timeout=15.0,
+                timeout=10.0,
                 extra_headers={
                     "HTTP-Referer": "https://github.com/rushikeshgoud19/MY-AI",
                     "X-Title": "Mizune AI Desktop"
@@ -1470,93 +1488,15 @@ def _openrouter_response(text: str, history: list, system_prompt: str, config: d
             if not msg.tool_calls:
                 break
                 
-            from .commands import launch_app, close_app, take_note, whatsapp_automation, execute_python_code
-            from .skills import skill_manager
-            from .web_agent import headless_web_agent
-            
             log_info(f"[AI] Model requested {len(msg.tool_calls)} native tool calls. Executing...")
             for t in msg.tool_calls:
                 tool_name = t.function.name
-                tool_result = "Success"
                 try:
-                    args = json.loads(t.function.arguments)
-                    log_info(f"[ACTION] AI executing {tool_name} with args {args}")
-                    
-                    if tool_name == "open_app":
-                        app_name = args.get("app_name", "")
-                        if app_name: launch_app(app_name)
-                        tool_result = f"Launched {app_name}"
-                    elif tool_name == "close_app":
-                        app_name = args.get("app_name", "")
-                        if app_name: close_app(app_name)
-                        tool_result = f"Closed {app_name}"
-                    elif tool_name == "take_note":
-                        note_text = args.get("note_text", "")
-                        if note_text: take_note(note_text, config)
-                        tool_result = "Note saved."
-                    elif tool_name == "message_whatsapp":
-                        contact = args.get("contact", "")
-                        message = args.get("message", "")
-                        whatsapp_automation(contact, message)
-                        tool_result = f"Messaged {contact} on WhatsApp."
-                    elif tool_name == "phone_control":
-                        action = args.get("action", "")
-                        from server.platforms.android.phone_bridge import AndroidPhoneBridge
-                        pb = AndroidPhoneBridge()
-                        if action == "get_messages": tool_result = str(pb.get_messages())
-                        elif action == "take_photo": tool_result = pb.take_photo()
-                        elif action == "get_location": tool_result = pb.get_location()
-                        elif action == "get_battery": tool_result = pb.get_battery()
-                        else: tool_result = "Unknown phone action"
-                    elif tool_name == "execute_python":
-                        code = args.get("code", "")
-                        if code:
-                            from .background_tasks import task_runner
-                            task_runner.submit(execute_python_code, code)
-                            tool_result = "Python script is running in the background."
-                    elif tool_name == "headless_web_agent":
-                        url = args.get("url", "")
-                        objective = args.get("objective", "")
-                        visible = args.get("visible", False)
-                        if url:
-                            from .background_tasks import task_runner
-                            
-                            def _web_agent_callback(tid, result):
-                                log_info(f"[BACKGROUND] Web Agent Callback: {result[:100]}...")
-                                from server.websocket import ws_manager
-                                
-                                # Send a massive chat message to the dashboard
-                                ws_manager.broadcast_sync({
-                                    "type": "task_complete", 
-                                    "data": f"Research on {url} complete!\n\n{result[:1500]}..."
-                                })
-                                
-                            task_id = task_runner.submit(headless_web_agent, url, objective, visible=visible, callback=_web_agent_callback)
-                            tool_result = f"Task started silently in background (ID: {task_id}). Master will be notified when complete."
-                        else:
-                            tool_result = "Error: No URL provided."
-                    elif tool_name == "execute_skill":
-                        skill_name = args.get("skill_name", "")
-                        skill_args = args.get("args", "")
-                        if skill_name:
-                            tool_result = skill_manager.execute_skill(skill_name, skill_args)
-                    elif tool_name == "create_skill":
-                        name = args.get("name", "")
-                        desc = args.get("description", "")
-                        code = args.get("code", "")
-                        if name and code:
-                            tool_result = skill_manager.create_skill(name, desc, code)
-                    elif tool_name == "notify_master":
-                        tts = args.get("message_to_speak", "")
-                        from .websocket import ws_manager
-                        ws_manager.broadcast_sync({"type": "speak", "text": tts})
-                        tool_result = "Master was notified."
-                    else:
-                        tool_result = f"Unknown tool: {tool_name}"
-                except Exception as e:
-                    tool_result = f"Error executing tool: {e}"
-                    log_info(f"[ACTION] Error in {tool_name}: {e}")
-                    
+                    args = json.loads(t.function.arguments) if t.function.arguments else {}
+                except Exception:
+                    args = {}
+                tool_result = execute_tool_call(tool_name, args, config, background_python=True)
+
                 executed_tools.append({"name": tool_name, "args": args})
                 messages.append({
                     "role": "tool",
@@ -1565,18 +1505,15 @@ def _openrouter_response(text: str, history: list, system_prompt: str, config: d
                     "content": str(tool_result)
                 })
                 
-        final_text = msg.content or ""
-        import re
-        final_text = re.sub(r'<function=.*?</function>', '', final_text, flags=re.DOTALL)
-        final_text = re.sub(r'\[function=[^\]]+\]\{.*?\}', '', final_text, flags=re.DOTALL)
-        final_text = re.sub(r'<tool.*?/tool>', '', final_text, flags=re.DOTALL)
-        final_text = re.sub(r'<[^>]+>', '', final_text)
-        final_text = re.sub(r'\{.*?\"type\".*?\"function\".*?\}', '', final_text, flags=re.DOTALL)
-        final_text = re.sub(r'\{.*?\"name\".*?\"parameters\".*?\}', '', final_text, flags=re.DOTALL)
-        final_text = final_text.strip()
-        
-        return (final_text, executed_tools)
-        
+        final_text = _clean_final_text(msg.content or "")
+
+        # Return [] — these tools were ALREADY executed inline above. Returning them
+        # made processor.py's tool loop run every action a SECOND time (bypassing the
+        # dedup guard, which only covers execute_tool_call). Root cause of the historic
+        # "two Blender downloads for one request". Only Ollama may return unexecuted
+        # parsed_tools for the processor to run.
+        return (final_text, [])
+
     except ImportError:
         return ("OpenAI package is not installed (required for OpenRouter). Run: pip install openai", [])
 

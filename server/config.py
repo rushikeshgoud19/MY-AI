@@ -3,7 +3,36 @@ import json
 import logging
 from logging.handlers import RotatingFileHandler
 
-__all__ = ["CONFIG_PATH", "DEFAULT_CONFIG", "load_config", "_validate_config", "log_info"]
+__all__ = ["CONFIG_PATH", "DEFAULT_CONFIG", "load_config", "_validate_config", "log_info", "is_cloud_mode",
+           "mizune_tz", "mizune_now"]
+
+# ── Canonical clock ─────────────────────────────────────────────────────
+# The VM runs in UTC but Master lives in IST; every user-facing time must go
+# through these helpers or reminders/answers drift by 5h30m.
+_TZ_CACHE = None
+
+def mizune_tz():
+    """Master's timezone (config key 'timezone', default Asia/Kolkata)."""
+    global _TZ_CACHE
+    if _TZ_CACHE is None:
+        import datetime as _dt
+        name = "Asia/Kolkata"
+        try:
+            name = load_config().get("timezone", name)
+        except Exception:
+            pass
+        try:
+            import zoneinfo
+            _TZ_CACHE = zoneinfo.ZoneInfo(name)
+        except Exception:
+            # IST has no DST, so a fixed offset fallback is exact.
+            _TZ_CACHE = _dt.timezone(_dt.timedelta(hours=5, minutes=30))
+    return _TZ_CACHE
+
+def mizune_now():
+    """Timezone-aware 'now' in Master's timezone. Use for ALL user-facing time."""
+    import datetime as _dt
+    return _dt.datetime.now(mizune_tz())
 
 # Set up logging for the module
 logger = logging.getLogger("mizune")
@@ -28,6 +57,27 @@ def log_info(msg: str):
     except UnicodeEncodeError:
         print(str(msg).encode('ascii', 'replace').decode('ascii'))
     logger.info(msg)
+
+_CLOUD_MODE_CACHE = None
+
+def is_cloud_mode(config: dict = None) -> bool:
+    """True when Mizune runs headless on a cloud server (no webcam, no desktop, no UI
+    automation). Controlled by the MIZUNE_CLOUD env var (wins) or config['cloud_mode'].
+    Env values '1','true','yes','on' (case-insensitive) enable it. Result is cached."""
+    global _CLOUD_MODE_CACHE
+    env = os.environ.get("MIZUNE_CLOUD")
+    if env is not None:
+        return env.strip().lower() in ("1", "true", "yes", "on")
+    if config is not None and "cloud_mode" in config:
+        return bool(config.get("cloud_mode"))
+    if _CLOUD_MODE_CACHE is not None:
+        return _CLOUD_MODE_CACHE
+    try:
+        cfg = load_config()
+        _CLOUD_MODE_CACHE = bool(cfg.get("cloud_mode", False))
+    except Exception:
+        _CLOUD_MODE_CACHE = False
+    return _CLOUD_MODE_CACHE
     if _ws_callback:
         # Prevent recursive logging loops if websocket fails
         try:

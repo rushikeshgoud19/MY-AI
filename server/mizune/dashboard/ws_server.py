@@ -111,7 +111,7 @@ class MizuneWebSocketServer:
         msg_json = json.dumps(message)
         disconnected = set()
         
-        for client in self.clients:
+        for client in self.clients.copy():
             try:
                 asyncio.create_task(client.send(msg_json))
             except:

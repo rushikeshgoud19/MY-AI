@@ -79,8 +79,17 @@ class CronManager:
                 logger.error(f"Error in scheduler loop: {e}")
             time.sleep(60) # Wake up every 60 seconds
 
+    @staticmethod
+    def _as_aware(dt):
+        """Legacy rows were stored naive from the server's UTC clock — pin them to
+        UTC so aware/naive comparisons can't crash or drift. New rows are aware IST."""
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=datetime.timezone.utc)
+        return dt
+
     def _check_and_execute_tasks(self):
-        now = datetime.datetime.now()
+        from server.config import mizune_now, mizune_tz
+        now = mizune_now()
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
@@ -89,8 +98,7 @@ class CronManager:
         one_time_tasks = cursor.fetchall()
         for task_id, description, trigger_time_str in one_time_tasks:
             try:
-                # Naive ISO parsing, might need adjustment based on timezone handling
-                trigger_time = datetime.datetime.fromisoformat(trigger_time_str)
+                trigger_time = self._as_aware(datetime.datetime.fromisoformat(trigger_time_str))
                 if now >= trigger_time:
                     logger.info(f"Executing scheduled one-time task: {description}")
                     if self.task_callback:
@@ -107,7 +115,9 @@ class CronManager:
         recurring_tasks = cursor.fetchall()
         for task_id, description, cron_expression, last_executed_str in recurring_tasks:
             try:
-                base_time = datetime.datetime.fromisoformat(last_executed_str) if last_executed_str else now - datetime.timedelta(minutes=2)
+                base_time = self._as_aware(datetime.datetime.fromisoformat(last_executed_str)) if last_executed_str else now - datetime.timedelta(minutes=2)
+                # Evaluate cron in Master's timezone so "0 8 * * *" means 8 AM IST, not UTC.
+                base_time = base_time.astimezone(mizune_tz())
                 cron = croniter(cron_expression, base_time)
                 next_trigger = cron.get_next(datetime.datetime)
                 

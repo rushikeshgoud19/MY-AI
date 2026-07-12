@@ -9,9 +9,10 @@ import asyncio
 import threading
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Depends, HTTPException, status
 from fastapi.responses import JSONResponse, Response, StreamingResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import APIKeyHeader
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 
@@ -29,18 +30,9 @@ from server.tts import generate_tts
 from server.emotion import detect_emotion
 
 # Globals
-import traceroot
-from traceroot import observe
-from traceroot.instrumentation import Integration
+from server.tracing import observe, initialize_tracing
 
-TRACEROOT_API_KEY = os.getenv("TRACEROOT_API_KEY")
-if TRACEROOT_API_KEY:
-    integrations = [Integration.GOOGLE_GENAI, Integration.OPENAI]
-    
-    traceroot.initialize(
-        api_key=TRACEROOT_API_KEY,
-        integrations=integrations,
-    )
+if initialize_tracing():
     print("TraceRoot initialized")
 CFG = load_config()
 whatsapp_core_instance = None
@@ -51,6 +43,9 @@ async def lifespan(app: FastAPI):
     log_info("[SERVER] Starting background tasks...")
     
     ws_manager.set_main_loop(asyncio.get_running_loop())
+
+    from server.device_registry import device_registry
+    device_registry.set_loop(asyncio.get_running_loop())
     
     # Hook backend logs to stream to the Dashboard Kernel Stream
     from server.config import set_log_callback
@@ -100,10 +95,13 @@ async def lifespan(app: FastAPI):
     # -----------------------------
     
     yield
-    
     log_info("[SERVER] Shutting down background tasks...")
-    from server.platforms.whatsapp.core import stop_whatsapp_core
-    stop_whatsapp_core()
+    import server.audio as sa
+    sa.SHUTDOWN_EVENT.set()
+    
+    if whatsapp_core_instance is not None:
+        from server.platforms.whatsapp.core import stop_whatsapp_core
+        stop_whatsapp_core()
     
     from server.memory_worker import stop_memory_worker
     stop_memory_worker()
@@ -112,9 +110,31 @@ async def lifespan(app: FastAPI):
 
 # Create App
 app = FastAPI(lifespan=lifespan)
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    import traceback
+    log_info(f"[ERROR] Unhandled Exception: {exc}\n{traceback.format_exc()}")
+    return JSONResponse(status_code=500, content={"status": "error", "message": "Internal Server Error"})
+
+# Setup API Key authentication
+API_KEY_NAME = "X-API-Key"
+api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
+
+def get_api_key(api_key_header: str = Depends(api_key_header)):
+    # Default to a dev key if not in .env, to avoid breaking local UI immediately, 
+    # but require it to be passed. Actually, we will just use the config.
+    expected_key = os.getenv("MIZUNE_API_KEY", "mizune-dev-key")
+    if api_key_header == expected_key:
+        return api_key_header
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid or missing API Key",
+    )
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:1420", "tauri://localhost", "http://localhost:3000", "http://localhost:8000", "http://localhost:8001"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -129,7 +149,10 @@ if os.path.exists(dist_path):
         return FileResponse(os.path.join(dist_path, "index.html"))
 
 # Serve the root directory as static files so index.html is accessible
-app.mount("/ui", StaticFiles(directory=".", html=True), name="static")
+public_path = os.path.join(os.path.dirname(__file__), "public")
+if not os.path.exists(public_path):
+    os.makedirs(public_path, exist_ok=True)
+app.mount("/ui", StaticFiles(directory=public_path, html=True), name="static")
 
 def on_wake_trigger(pre_text=None):
     log_info("[TRIGGER] Processing voice command...")
@@ -153,20 +176,24 @@ async def health_check():
     return {"status": "ok", "mode": mizune_manager.current_mode}
 
 @app.post("/chat")
-async def chat_endpoint(request: Request):
+async def chat_endpoint(request: Request, api_key: str = Depends(get_api_key)):
     data = await request.json()
     text = data.get("text", "").strip()
     if not text:
-        return JSONResponse({"response": "", "emotion": "neutral"})
+        return JSONResponse({"response": "", "emotion": "neutral"}, status_code=400)
 
     ws_manager.broadcast_sync({"type": "user_input", "text": text})
     res = await asyncio.to_thread(process_command, text, CFG, ws_manager.broadcast_sync)
+    
+    if not res:
+        return JSONResponse({"response": "", "emotion": "neutral"}, status_code=500)
+        
     emo = detect_emotion(res)
     
     return JSONResponse({"response": res, "emotion": emo})
 
 @app.post("/tts")
-async def tts_endpoint(request: Request):
+async def tts_endpoint(request: Request, api_key: str = Depends(get_api_key)):
     data = await request.json()
     text = data.get("text", "").strip()
     if not text:
@@ -178,7 +205,7 @@ async def tts_endpoint(request: Request):
     return Response(status_code=500, content="TTS failed")
 
 @app.post("/notify")
-async def notify_endpoint(request: Request):
+async def notify_endpoint(request: Request, api_key: str = Depends(get_api_key)):
     data = await request.json()
     text = data.get("text", "").strip()
     if text:
@@ -188,11 +215,11 @@ async def notify_endpoint(request: Request):
     return Response(status_code=400)
 
 @app.get("/config")
-async def get_config():
+async def get_config(api_key: str = Depends(get_api_key)):
     return JSONResponse(CFG)
 
 @app.post("/config")
-async def save_config(request: Request):
+async def save_config(request: Request, api_key: str = Depends(get_api_key)):
     global CFG
     new_cfg = await request.json()
     CFG.update(new_cfg)
@@ -204,7 +231,7 @@ async def save_config(request: Request):
         return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
 
 @app.post("/api/traceroot_sql")
-async def handle_traceroot_sql(request: Request):
+async def handle_traceroot_sql(request: Request, api_key: str = Depends(get_api_key)):
     from server.agents import mizune_manager
     try:
         data = await request.json()
@@ -219,7 +246,7 @@ async def handle_traceroot_sql(request: Request):
         return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
 
 @app.get("/memory/export")
-async def export_memory():
+async def export_memory(api_key: str = Depends(get_api_key)):
     from server.memory import memory
     import tempfile
     
@@ -244,7 +271,7 @@ async def get_obsidian_status():
         return JSONResponse({"status": "error", "path": vault_path, "message": "Directory does not exist"})
 
 @app.post("/memory/obsidian/sync")
-async def sync_obsidian_memory():
+async def sync_obsidian_memory(api_key: str = Depends(get_api_key)):
     from server.memory import memory
     vault_path = CFG.get("obsidian_vault_path", "").strip()
     if not vault_path:
@@ -274,7 +301,7 @@ async def sync_obsidian_memory():
     except Exception as e:
         return JSONResponse({"status": "error", "message": f"Sync failed: {str(e)}"}, status_code=500)
 
-from traceroot import observe
+from server.tracing import observe
 @app.websocket("/ws/trace_test")
 @observe(name="websocket.trace_test", type="test")
 async def test_trace_propagation(websocket: WebSocket):
@@ -315,36 +342,56 @@ async def websocket_endpoint(websocket: WebSocket):
                         ws_manager.broadcast_sync({"type": "status", "text": "Thinking..."})
 
                         async def handle_chat():
-                            res = await asyncio.to_thread(process_command, text, CFG, ws_manager.broadcast_sync)
-                            if res:
-                                from server.emotion import detect_emotion
-                                emo_str = detect_emotion(res)
-                                
-                                # Convert emotion string to biometric scores
-                                v, a = 0.0, 0.5
-                                if emo_str in ["happy", "excited"]: v, a = 1.0, 0.8
-                                elif emo_str == "sad": v, a = -1.0, 0.2
-                                elif emo_str == "angry": v, a = -0.8, 0.9
-                                elif emo_str == "surprised": v, a = 0.5, 0.8
-                                elif emo_str == "blush": v, a = 0.8, 0.6
-                                elif emo_str == "sleepy": v, a = 0.0, 0.1
-                                
-                                # Send Biometrics to Dashboard so Slime Avatar reacts
-                                ws_manager.broadcast_sync({
-                                    "type": "state_update", 
-                                    "payload": {"valence": v, "arousal": a}
-                                })
-                                
-                                ws_manager.broadcast_sync({"type": "speak", "text": res})
-                                try:
-                                    from server.tts import generate_tts
-                                    from server.audio import play_audio_bytes
-                                    audio_bytes = await generate_tts(res, CFG)
-                                    if audio_bytes:
-                                        play_audio_bytes(audio_bytes)
-                                except Exception as e:
-                                    log_info(f"[WS] TTS generation error: {e}")
-                            ws_manager.broadcast_sync({"type": "status", "text": "Idle"})
+                            try:
+                                res = await asyncio.to_thread(process_command, text, CFG, ws_manager.broadcast_sync)
+                                if res:
+                                    from server.emotion import detect_emotion
+                                    emo_str = detect_emotion(res)
+                                    
+                                    # Convert emotion string to biometric scores
+                                    v, a = 0.0, 0.5
+                                    if emo_str in ["happy", "excited"]: v, a = 1.0, 0.8
+                                    elif emo_str == "sad": v, a = -1.0, 0.2
+                                    elif emo_str == "angry": v, a = -0.8, 0.9
+                                    elif emo_str == "surprised": v, a = 0.5, 0.8
+                                    elif emo_str == "blush": v, a = 0.8, 0.6
+                                    elif emo_str == "sleepy": v, a = 0.0, 0.1
+                                    
+                                    # Send Biometrics to Dashboard so Slime Avatar reacts
+                                    ws_manager.broadcast_sync({
+                                        "type": "state_update", 
+                                        "payload": {"valence": v, "arousal": a}
+                                    })
+                                    
+                                    ws_manager.broadcast_sync({"type": "speak", "text": res})
+                                    try:
+                                        from server.tts import generate_tts
+                                        from server.audio import play_audio_bytes
+                                        audio_bytes = await generate_tts(res, CFG)
+                                        if audio_bytes:
+                                            # Send Mizune's REAL edge-tts voice to the browser so it
+                                            # plays her actual voice instead of the robotic browser one.
+                                            import base64
+                                            ws_manager.broadcast_sync({
+                                                "type": "audio",
+                                                "format": "mp3",
+                                                "b64": base64.b64encode(audio_bytes).decode("utf-8"),
+                                            })
+                                            # Also play locally (only audible when running on a machine
+                                            # with speakers; harmless no-op/err on the headless VM).
+                                            try:
+                                                await asyncio.to_thread(play_audio_bytes, audio_bytes)
+                                            except Exception:
+                                                pass
+                                    except Exception as e:
+                                        log_info(f"[WS] TTS generation error: {e}")
+                            except Exception as e:
+                                import traceback
+                                traceback.print_exc()
+                                log_info(f"[WS] process_command error: {e}")
+                                ws_manager.broadcast_sync({"type": "speak", "text": f"Error: {e}"})
+                            finally:
+                                ws_manager.broadcast_sync({"type": "status", "text": "Idle"})
 
                         asyncio.create_task(handle_chat())
                 elif msg.get("type") == "command":
@@ -369,8 +416,10 @@ async def websocket_endpoint(websocket: WebSocket):
                             ws_manager.broadcast_sync({"type": "task_list", "tasks": tasks})
                             
                             try:
+                                import urllib.parse
+                                encoded_query = urllib.parse.quote_plus(query)
                                 from server.web_agent import headless_web_agent
-                                result = await asyncio.to_thread(headless_web_agent, "https://duckduckgo.com/?q=" + query.replace(' ', '+'), f"Research {query}")
+                                result = await asyncio.to_thread(headless_web_agent, "https://duckduckgo.com/?q=" + encoded_query, f"Research {query}")
                             except Exception as e:
                                 result = f"Research failed: {e}"
                                 
@@ -407,7 +456,12 @@ async def websocket_endpoint(websocket: WebSocket):
                             await asyncio.sleep(1.5)
                             tasks[2]["status"] = "completed"
                             ws_manager.broadcast_sync({"type": "task_list", "tasks": tasks})
-                            ws_manager.broadcast_sync({"type": "speak", "text": "Briefing Complete: You have 0 unread emails and 0 meetings today. (Calendar integration pending auth)."})
+                            
+                            # Fake data for now, ideally fetch real counts here
+                            unread_emails = 0
+                            meetings = 0
+                            
+                            ws_manager.broadcast_sync({"type": "speak", "text": f"Briefing Complete: You have {unread_emails} unread emails and {meetings} meetings today. (Calendar integration pending auth)."})
                             ws_manager.broadcast_sync({"type": "status", "text": "Idle"})
                         asyncio.create_task(run_briefing())
                         
@@ -435,9 +489,23 @@ async def websocket_endpoint(websocket: WebSocket):
                         }))
                     except Exception as e:
                         log_info(f"[WS] Error fetching knowledge graph: {e}")
+                elif msg.get("type") == "register_device":
+                    from server.device_registry import device_registry
+                    device_registry.register(
+                        msg.get("device_name", "unnamed-device"),
+                        websocket,
+                        capabilities=msg.get("capabilities", []),
+                        platform=msg.get("platform", "unknown"),
+                    )
+                    await websocket.send_text(json.dumps({"type": "device_registered"}))
+                elif msg.get("type") == "device_result":
+                    from server.device_registry import device_registry
+                    device_registry.handle_result(msg.get("request_id", ""), msg.get("result"))
             except Exception as e:
                 log_info(f"[WS] Error processing message: {e}")
     except WebSocketDisconnect:
+        from server.device_registry import device_registry
+        device_registry.unregister_socket(websocket)
         ws_manager.disconnect(websocket)
 
 if __name__ == "__main__":
@@ -450,7 +518,14 @@ if __name__ == "__main__":
 
     if is_port_in_use(PORT):
         log_info(f"[SERVER] ERROR: Port {PORT} is already in use!")
-        exit(1)
+        # Try to kill it if it's an old mizune process (on windows)
+        if os.name == 'nt':
+            log_info(f"[SERVER] Attempting to kill process on port {PORT}...")
+            os.system(f"FOR /F \"tokens=5\" %a in ('netstat -aon ^| find \":{PORT}\" ^| find \"LISTENING\"') do taskkill /F /PID %a")
+            time.sleep(1)
+        if is_port_in_use(PORT):
+            log_info(f"[SERVER] Port {PORT} is still in use! Please kill it manually or use a different port.")
+            exit(1)
 
     log_info("=" * 50)
     log_info(f"[SERVER] Starting {CFG.get('character_name','Mizune')} backend on port {PORT}...")

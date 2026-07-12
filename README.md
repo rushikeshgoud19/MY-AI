@@ -1,126 +1,140 @@
-# ✨ Mizune OS — Your Autonomous AI Companion
+<div align="center">
 
-Mizune is an advanced, autonomous operating system and digital companion that lives right on your desktop. She doesn't just chat—she can take over the mouse, keyboard, and terminal to execute complex workflows, run background scripts, and manage your digital life completely autonomously. 
+# Mizune
 
-Built to be a fully independent digital workforce, Mizune acts as your loyal secretary, researcher, and coding coach, ready to assist you 24/7.
+**A self-hosted autonomous AI assistant with a cloud brain, persistent memory, and hands on your devices.**
 
+![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-WebSocket-009688?logo=fastapi&logoColor=white)
+![Android](https://img.shields.io/badge/Android-Kotlin-3DDC84?logo=android&logoColor=white)
+![Azure](https://img.shields.io/badge/Cloud-Azure%20VM-0078D4?logo=microsoftazure&logoColor=white)
+![License](https://img.shields.io/badge/License-MIT-blue)
 
-## 🎬 Demo
+*Not a chatbot. A 24/7 assistant that schedules real actions, executes on remote devices,
+briefs you every morning — and verifies its own claims against ground truth.*
 
-<!-- TODO: record a short GIF of Mizune floating on the desktop + executing a voice command, save as docs/demo.gif -->
-> Demo GIF coming soon — Mizune floating on the desktop, executing voice commands in real time.
-
-## 🌟 What Mizune Can Do
-
-### 1. **Autonomous Web Research**
-Mizune features a **Headless Web Agent** that can silently browse the internet in the background. If you ask her to research the top startups, find a recipe, or summarize a news article, she will spin up a hidden browser, scrape the data, compile the results, and deliver the final answer right to your dashboard—all while you continue your work uninterrupted.
-
-### 2. **WhatsApp Super-Secretary**
-Mizune natively integrates with your WhatsApp! She runs a lightweight, invisible background bridge to act as your personal assistant.
-- She can read your incoming messages and instantly notify you out loud if there's an emergency.
-- You can text her from your phone when you are away from your PC to ask her questions, command her to run scripts, or start web research remotely.
-- She learns your relationships and remembers conversations, distinguishing between VIPs, family, and unknown contacts.
-
-### 3. **Seamless PC Automation**
-Mizune has true root-level execution capabilities. She can:
-- **Launch and Close Apps:** Tell her to open Notepad, close Spotify, or start your favorite game.
-- **Run Python Scripts:** She can write, sandbox, and execute raw Python scripts to automate tasks, move files, or process data on your PC.
-- **System Monitoring:** She can check your CPU, RAM, battery, and disk space to keep you updated on your PC's health.
-
-### 4. **Smart Task Scheduling**
-Never forget a task again. You can ask Mizune to schedule one-time reminders (e.g., "Remind me to drink water in 30 minutes") or recurring daily routines (e.g., "Give me a news briefing every morning at 8 AM"). She handles time management autonomously in the background.
-
-### 5. **Flawless Memory & Evolving Personality**
-Mizune possesses a ChromaDB-backed semantic long-term memory. She continuously learns about your preferences, remembers facts you tell her, and understands your workflow over time. She can recall context from weeks ago instantly, making her feel truly alive.
-
-### 6. **Coding Coach & Screen Vision**
-When she's not automating your job, she can watch you work! With Vision Mode enabled, she silently analyzes your screen, catches coding bugs, validates your logic, and provides dynamic feedback out loud to keep you focused and productive.
+</div>
 
 ---
 
-
-## 🧠 Architecture at a Glance
-
-```mermaid
-graph TD
-    U[User — voice / text / WhatsApp] --> IB[Zero-Latency Intent Brain]
-    IB --> O[Orchestrator]
-    O --> P[Perception Agent<br/>screen vision, mic]
-    O --> R[Research Agent<br/>headless web browsing]
-    O --> E[Execution Agent<br/>PC automation, sandboxed Python]
-    O --> M[Memory Agent<br/>ChromaDB semantic memory]
-    O --> EM[Emotion Agent]
-    O --> C[Critic Agent<br/>output validation]
-    O --> MD[Media Agent<br/>Edge TTS + SQLite cache]
-    E --> PC[(Desktop:<br/>apps, files, terminal)]
-    M --> DB[(ChromaDB)]
-    O --> WA[WhatsApp Bridge]
-    subgraph Frontend
-        T[Tauri + Three.js VRM<br/>floating 3D character]
-    end
-    O <--> |WebSocket| T
+```
+                            ┌──────────────────────────────┐
+                            │         CLOUD BRAIN          │
+                            │   FastAPI · WebSocket :8001  │
+                            │                              │
+     WhatsApp ◄──Baileys──► │  processor ─► AI cascade     │ ◄──WS──► Voice UI /
+     (loop-proof            │  Groq→Gemini→OpenRouter→NVIDIA│          Dashboard
+      secretary)            │      │            │          │          (server-side
+                            │  memory tree   scheduler     │          neural TTS)
+     Gmail ◄──poll────────► │  (3-layer      (timezone-    │
+                            │   seal+recall)  aware cron)  │ ◄──WS──► Device nodes
+     Obsidian vault ◄─sync─ │  background    [TOOL RESULTS]│          laptop ✓ phone ⏳
+     (idempotent)           │  agent (gated)  truth seals  │
+                            └──────────────────────────────┘
 ```
 
-## ⚙️ The Technology Behind Her
+## Highlights
 
-Mizune bypasses standard AI limitations by utilizing a custom multi-agent architecture and a Zero-Latency Intent Brain:
-- **Lightning Fast:** Uses a combination of edge-TTS and background queues to respond rapidly and fluidly.
-- **Auto-Healing:** Built-in safeguards automatically recover from API limits, corrupted databases, and expired integration tokens without user intervention.
-- **Token Efficient:** Smart caching and background summarization allow her to handle massive tasks without blowing up API usage.
+| Capability | How it works |
+|------------|--------------|
+| **Messaging secretary** | Native WhatsApp integration (Baileys): contact tiering, rate limiting, debouncing, 4k message chunking, voice-note transcription. Echo-loop-proof by design. |
+| **Morning briefing** | Daily digest at a configurable hour: weather, today's schedule, high-importance email and messages — collected deterministically, delivered conversationally. |
+| **Scheduled actions** | "In an hour, do X" schedules a real action, not just a reminder. At fire time the assistant executes it with full tool access. Stored code runs deterministically — never re-generated by the model. |
+| **Remote device execution** | Lightweight agents connect outbound from your devices and register capabilities. One message can install software, open apps, or fetch files on another machine. |
+| **Verified memory** | Three-layer memory (episodic → summary → sealed) plus semantic vector recall on every message, hard-capped by token budget. Tool outcomes are sealed as `[TOOL RESULTS]` — the final result, never the intention. |
+| **Honesty guarantees** | Seal records are ground truth. Failed actions produce an honest failure report instead of an optimistic confirmation. Claims can be audited against the seal log. |
+| **Gated background agent** | Proactive checks only wake the LLM when something is actionable, deduplicate repeat alerts (2h cooldown), and respect configurable quiet hours. |
+| **Neural voice** | Browser voice interface with speech recognition in, and server-generated neural TTS streamed back over WebSocket — real voice quality, not browser synthesis. |
+| **Knowledge vault** | Conversations, contacts, topics and sealed memories sync to an Obsidian vault — idempotently. |
+| **Self-extension** | The assistant writes, registers and version-tracks its own skill plugins, with success-rate telemetry. |
 
-## 🚀 Quick Start
+## Performance
 
-### Prerequisites
-- **Node.js** (≥ 18)
-- **Python** (≥ 3.10)
-- **Rust / Cargo** (Required for Tauri desktop app)
-- **Git**
+Measured on production traces (TraceRoot), before → after the optimization program:
 
-### Installation
+| Metric | Before | After |
+|--------|--------|-------|
+| Typical response | 17s+ | **~2s** |
+| Average response | 18.2s | **6.3s** |
+| Median prompt size | 8,309 tokens | **~5,000** (hard-capped) |
+| Worst prompt spike | 45,216 tokens | structurally impossible (4k history ceiling) |
+| Failure storms | 11% of traces | zero user-facing (cascade fallback) |
+
+## Architecture
+
+- **One brain, two entry points** — `main.py` → `server.py` locally; the same `server/`
+  package runs on an Azure VM for 24/7 operation. A single `/ws` WebSocket carries chat,
+  status, emotion state, streamed TTS audio, and device-node registration.
+- **Provider cascade** — Groq → Gemini → OpenRouter → NVIDIA with 10s timeouts, no
+  same-provider retries, side-effect deduplication, and a single sanitizer on every
+  return path. Tools execute exactly once.
+- **Canonical clock** — every user-facing time flows through one timezone-aware helper
+  (`mizune_now()`); cron expressions are evaluated in the user's timezone, not the
+  server's.
+- **Deterministic scheduling** — scheduled code executes through the guarded tool
+  dispatcher directly; the model is never asked to re-type code (models corrupt
+  quote-heavy strings in tool JSON).
+
+## Quick start
 
 ```bash
-git clone https://github.com/rushikeshgoud19/MY-AI.git
+git clone https://github.com/rushikeshgoud19/MY-AI
 cd MY-AI
 
-# Install Node dependencies
-npm install
+# 1. Configuration (secrets never leave your machine — gitignored)
+cp config.example.json config.json    # add your provider API keys
 
-# Setup Python Backend Environment
-python -m venv .venv
-.venv\Scripts\activate  # Windows
+# 2. Start the brain
+python main.py                        # FastAPI + WebSocket on :8001
 
-# Install Python dependencies
-pip install -r requirements.txt
+# 3. Voice interface
+#    http://localhost:8001/ui/voice.html   (Chrome/Edge for microphone)
+
+# 4. WhatsApp — the Baileys bridge starts with the core; scan the QR once.
+
+# 5. Optional: register this machine as a device node
+start_device_agent.bat
 ```
 
-### Configuration
+**Cloud deployment**: push to the deploy branch, then on the VM clone to `/tmp`,
+copy `server/` and `public/` over the app root, and restart the backend.
+Configuration files are patched in place and never committed.
 
-You need to configure two files for the API keys:
+## Repository layout
 
-1. **Config JSON:** Copy `config.example.json` to `config.json` and fill in your keys (Gemini, OpenRouter, Groq, etc.).
-   ```bash
-   cp config.example.json config.json
-   ```
-2. **Environment Variables:** Copy `.env.example` to `.env` and add your [TraceRoot API Key](https://app.traceroot.ai/) for full observability.
-   ```bash
-   cp .env.example .env
-   ```
-
-### Running the System
-
-If you are on Windows, you can simply double-click the **`start.bat`** or **`Launch Mizune.vbs`** script to automatically launch both the backend and frontend simultaneously.
-
-**For manual Developer Mode:**
-Open two terminals in the `MY-AI` directory:
-
-```bash
-# Terminal 1 — Start the Python Brain (Backend)
-.venv\Scripts\activate
-python server.py
-
-# Terminal 2 — Start the Desktop App (Tauri Frontend)
-npm run tauri dev
+```
+server/            core runtime — processor, AI cascade, memory, scheduler,
+                   briefing, background agent, platforms/ (whatsapp · gmail ·
+                   android), TTS, vault sync
+agents/            intent-routing manager (production dependency)
+public/            voice UI and dashboard assets
+character/         personality definition (SOUL.md)
+mizune-android/    Kotlin companion app — WebSocket client, TTS, wake word
+device_agent.py    device-node agent for desktop machines
+docs/              engineering ledger and architecture references
+legacy/            retired implementations, kept for reference
 ```
 
----
-*Engineered by [Rushikesh Goud](https://github.com/rushikeshgoud19)*
+## Engineering principles
+
+1. **Measure before optimizing** — every performance claim above comes from production
+   trace data, not intuition.
+2. **Deterministic where it matters** — data collection, scheduling and code execution
+   are code paths, not model calls. The model handles language; the runtime handles truth.
+3. **Trust but verify** — the assistant's claims are auditable against sealed outcome
+   records. When words and seals disagree, the seals win.
+4. **Fail honestly** — errors surface as clear reports, never silent retries or
+   invented success.
+5. **Secrets stay home** — keys live in gitignored config; telemetry capture is
+   scrubbed at the decorator level.
+
+## Roadmap
+
+- **Phone as a device node** — the Android app registers with `notify / open_url / speak`
+  capabilities; briefings arrive as native notifications.
+- **Operator console** — device fleet panel, memory graph and trace viewer.
+- **Additional messaging adapters** — Telegram/Discord on the shared platform core.
+
+## License
+
+MIT © [Rushikesh](https://github.com/rushikeshgoud19)

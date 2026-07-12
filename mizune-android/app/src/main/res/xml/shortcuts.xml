@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="voice_chat"
+        android:enabled="true"
+        android:icon="@android:drawable/ic_dialog_info"
+        android:shortcutShortLabel="@string/shortcut_voice_chat"
+        android:shortcutLongLabel="@string/shortcut_voice_chat">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.mizune.app"
+            android:targetClass="com.mizune.app.MainActivity">
+            <extra android:name="shortcut" android:value="voice_chat" />
+        </intent>
+    </shortcut>
+
+    <shortcut
+        android:shortcutId="vision_mode"
+        android:enabled="true"
+        android:icon="@android:drawable/ic_dialog_info"
+        android:shortcutShortLabel="@string/shortcut_vision_mode"
+        android:shortcutLongLabel="@string/shortcut_vision_mode">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.mizune.app"
+            android:targetClass="com.mizune.app.MainActivity">
+            <extra android:name="shortcut" android:value="vision_mode" />
+        </intent>
+    </shortcut>
+
+    <shortcut
+        android:shortcutId="quick_note"
+        android:enabled="true"
+        android:icon="@android:drawable/ic_dialog_info"
+        android:shortcutShortLabel="@string/shortcut_quick_note"
+        android:shortcutLongLabel="@string/shortcut_quick_note">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.mizune.app"
+            android:targetClass="com.mizune.app.MainActivity">
+            <extra android:name="shortcut" android:value="quick_note" />
+        </intent>
+    </shortcut>
+</shortcuts>

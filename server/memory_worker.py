@@ -1,3 +1,4 @@
+import re
 import time
 import json
 import logging
@@ -8,6 +9,41 @@ from .memory_tree import memory_tree_db
 from .config import log_info
 
 logger = logging.getLogger("mizune.memory_worker")
+
+# Raw tool-call JSON like {"name": "store_memory", "parameters": {...}} — protocol
+# junk that must never be distilled into a memory as-is.
+_TOOLCALL_JSON_RE = re.compile(r'\{\s*"name"\s*:\s*"[\w-]+"\s*,\s*"(parameters|args|arguments)"\s*:.*?\}\s*\}', re.DOTALL)
+_XML_FUNCTION_RE = re.compile(r'<function=.*?</function>|\[function=[^\]]+\]\s*\{.*?\}', re.DOTALL)
+
+
+def _clean_for_distillation(text: str) -> str:
+    """Strip tool-call artifacts so the summarizer only sees human-meaningful content."""
+    if not text:
+        return ""
+    t = _XML_FUNCTION_RE.sub('', str(text))
+    t = _TOOLCALL_JSON_RE.sub('', t)
+    t = re.sub(r'\n{3,}', '\n\n', t).strip()
+    return t
+
+
+def _distill_summary_output(summary_text: str) -> str:
+    """Clean the summarizer's own output; salvage the fact if it echoed a raw tool call."""
+    s = (summary_text or "").strip()
+    if not s:
+        return ""
+    # If the whole output is a tool-call JSON blob, pull the actual fact out of it.
+    if s.startswith("{"):
+        try:
+            obj = json.loads(s)
+            if isinstance(obj, dict):
+                params = obj.get("parameters") or obj.get("args") or obj.get("arguments") or {}
+                if isinstance(params, dict):
+                    for key in ("fact", "note_text", "message", "content"):
+                        if params.get(key):
+                            return str(params[key]).strip()
+        except Exception:
+            pass
+    return _clean_for_distillation(s)
 
 class MemoryTreeWorker:
     """
@@ -163,7 +199,10 @@ class MemoryTreeWorker:
                 memory_tree_db.update_chunk_state(chunk_id, "admitted")
                 
                 # Queue the next phase: append to source buffer
-                job_payload = json.dumps({"chunk_id": chunk_id, "source_id": chunk["source_id"]})
+                # (episodic chunks carry session_id; older code expected a
+                # "source_id" key that get_chunk never returned — KeyError killed
+                # every extract job and no chunk ever reached the buffer)
+                job_payload = json.dumps({"chunk_id": chunk_id, "source_id": chunk.get("source_id") or chunk.get("session_id") or "session_unknown"})
                 cursor.execute(
                     "INSERT INTO jobs (job_type, payload, created_at) VALUES (?, ?, ?)",
                     ("append_buffer", job_payload, now)
@@ -266,15 +305,29 @@ class MemoryTreeWorker:
                 content_to_summarize = [row[0] for row in cursor.fetchall()]
                 
             if not content_to_summarize: return False
-            
+
+            # Distillation quality gate: strip raw tool-call JSON / XML artifacts so
+            # memories are facts, not protocol junk. If a chunk is nothing but junk,
+            # it contributes nothing to the summary.
+            cleaned_chunks = [c for c in (_clean_for_distillation(c) for c in content_to_summarize) if c]
+            if not cleaned_chunks:
+                # All junk: seal the children so the job doesn't retry forever, no summary node.
+                log_info("[MEMORY WORKER] Seal skipped: no substantive content after cleaning.")
+                if level == 1:
+                    cursor.execute(f"UPDATE episodic SET status = 'sealed' WHERE id IN ({placeholders})", chunk_ids)
+                else:
+                    cursor.execute(f"UPDATE episodic SET status = 'dropped' WHERE id IN ({placeholders})", chunk_ids)
+                memory_tree_db.db.commit()
+                return True
+
             # AI Summarization
-            combined_text = "\\n---\\n".join(content_to_summarize)
+            combined_text = "\n---\n".join(cleaned_chunks)
             prompt = (
                 f"You are Mizune's subconscious memory compressor. Summarize the following events/data points "
                 f"into a single, dense, coherent paragraph that captures the key entities, facts, and context. "
-                f"DO NOT use conversational filler. Just the compressed facts.\\n\\n{combined_text}"
+                f"DO NOT use conversational filler. Just the compressed facts.\n\n{combined_text}"
             )
-            
+
             from .ai import get_ai_response
             try:
                 # We use a forced prompt to avoid triggering tool calls
@@ -282,25 +335,39 @@ class MemoryTreeWorker:
             except Exception as e:
                 log_info(f"[MEMORY WORKER] Summarization AI failed: {e}")
                 summary_text = f"[AUTO-SUMMARY FAILED] Merged {len(chunk_ids)} items."
-            
-            import uuid
-            summary_id = f"sum_{uuid.uuid4().hex[:8]}"
+
+            # The summarizer itself can echo a raw tool call (seen in old vault exports:
+            # a literal store_memory JSON blob saved as a "memory"). Salvage the fact.
+            summary_text = _distill_summary_output(summary_text) or f"[AUTO-SUMMARY EMPTY] Merged {len(chunk_ids)} items."
             
             # Insert the new summary
-            memory_tree_db.insert_summary(summary_id, tree_type, tree_id, level, summary_text, chunk_ids)
-            
-            # Export to Vault
-            from .vault_sync import vault_sync
-            if vault_sync:
-                vault_sync.export_summary(summary_id)
-            
-            # Update children state to sealed
+            summary_id = memory_tree_db.insert_summary(tree_id, summary_text, level=level, tree_type=tree_type)
+            if summary_id is None:
+                log_info("[MEMORY WORKER] Summary insert failed; seal job aborted.")
+                return False
+
+            # Export to Vault (non-fatal: the seal must survive a vault failure)
+            try:
+                from .vault_sync import vault_sync
+                if vault_sync:
+                    vault_sync.export_summary(summary_id)
+            except Exception as e:
+                log_info(f"[MEMORY WORKER] Vault export failed (non-fatal): {e}")
+
+            # Update children state: seal raw chunks, drop consumed summaries
+            # (dropping prevents the same L{n} summaries from cascading forever)
             now = time.time()
             if level == 1:
                 cursor.execute(f"UPDATE episodic SET status = 'sealed' WHERE id IN ({placeholders})", chunk_ids)
+            else:
+                cursor.execute(f"UPDATE episodic SET status = 'dropped' WHERE id IN ({placeholders})", chunk_ids)
             
             # Cascade check: are there enough L{level} summaries to make an L{level+1}?
-            cursor.execute("SELECT id FROM episodic WHERE source = 'summary' AND session_id = ? AND status = 'sealed'", (tree_id,))
+            cursor.execute(
+                "SELECT id FROM episodic WHERE source = 'summary' AND session_id = ? AND status = 'sealed' "
+                "AND COALESCE(json_extract(metadata, '$.level'), 1) = ?",
+                (tree_id, level)
+            )
             peer_summaries = cursor.fetchall()
             
             cascade_limit = 5

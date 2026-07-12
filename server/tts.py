@@ -94,8 +94,9 @@ def clean_text_for_tts(text: str) -> str:
         
     return tts_text
 
-from traceroot import observe, update_current_span
-@observe(name="media.generate", type="agent")
+from server.tracing import observe, update_current_span
+# capture_input=False: `config` holds live API keys — keep them out of TraceRoot.
+@observe(name="media.generate", type="agent", capture_input=False)
 async def generate_tts(text: str, config: dict) -> bytes:
     """Generate speech from text using edge-tts (free Microsoft Neural voices) and return audio bytes."""
     update_current_span(metadata={"text_preview": text[:50]})

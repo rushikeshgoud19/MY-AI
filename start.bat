@@ -5,7 +5,7 @@ echo   Starting Mizune AI Companion...
 echo ========================================
 
 :: Start Python Backend
-start "Mizune Backend" python server.py
+start "Mizune Backend" .venv\Scripts\python.exe server.py
 
 :: Start Tauri frontend compiled executable
 start "Mizune Frontend" "src-tauri\target\release\mizune-ai.exe"

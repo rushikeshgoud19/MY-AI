@@ -207,26 +207,37 @@ class MizuneManagerWrapper:
         
     def initialize(self, config: dict):
         self.agent.config = config
-        self.workers["data"] = DataCollectionWorker(config)
-        self.workers["camera"] = CameraAgent(config)
+
+        # On cloud there is no webcam or desktop to observe — skip the workers that would
+        # try to grab /dev/video0 or read the active window, so we don't spin threads that
+        # error every loop.
+        from .config import is_cloud_mode
+        cloud = is_cloud_mode(config)
+
+        if not cloud:
+            self.workers["data"] = DataCollectionWorker(config)
+            self.workers["camera"] = CameraAgent(config)
+        else:
+            log_info("[BRAIN] Cloud mode: skipping CameraAgent + DataCollectionWorker (no local hardware).")
         
-        # Connect Agentic Brains
-        try:
-            from agents.task_planner_agent import TaskPlannerAgent
-            from agents.action_executor_agent import ActionExecutorAgent
-            from agents.system_agent import SystemAgent
-            from agents.vision_perception_agent import VisionPerceptionAgent
-            from agents.new.obsidian_agent import ObsidianAgent
-            from agents.traceroot_analyst_agent import TracerootAnalystAgent
-            
-            self.workers["planner"] = TaskPlannerAgent(config)
-            self.workers["executor"] = ActionExecutorAgent(config)
-            self.workers["system"] = SystemAgent(config)
-            self.workers["vision"] = VisionPerceptionAgent(config)
-            self.workers["obsidian"] = ObsidianAgent(config)
-            self.workers["traceroot_analyst"] = TracerootAnalystAgent(config)
-        except Exception as e:
-            log_info(f"[BRAIN] Failed to connect agentic brains: {e}")
+        # Connect Agentic Brains — each in its own guard so one broken agent
+        # can't take down the other five (a NameError here used to kill ALL of
+        # them, leaving "My planning brain isn't connected" for every task).
+        brain_specs = [
+            ("planner", "agents.task_planner_agent", "TaskPlannerAgent"),
+            ("executor", "agents.action_executor_agent", "ActionExecutorAgent"),
+            ("system", "agents.system_agent", "SystemAgent"),
+            ("vision", "agents.vision_perception_agent", "VisionPerceptionAgent"),
+            ("obsidian", "agents.new.obsidian_agent", "ObsidianAgent"),
+            ("traceroot_analyst", "agents.traceroot_analyst_agent", "TracerootAnalystAgent"),
+        ]
+        import importlib
+        for worker_name, module_path, class_name in brain_specs:
+            try:
+                mod = importlib.import_module(module_path)
+                self.workers[worker_name] = getattr(mod, class_name)(config)
+            except Exception as e:
+                log_info(f"[BRAIN] Worker '{worker_name}' unavailable: {e}")
             
         self.agent.initialize(config, self.workers)
         

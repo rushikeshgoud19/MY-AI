@@ -35,8 +35,9 @@ class TtsPlayer(private val context: Context) {
         })
     }
 
-    fun playTts(text: String, onPlaybackEnded: () -> Unit) {
-        val ttsUrl = "http://40.123.215.32:8001/tts"
+    fun playTts(text: String, serverUrl: String, onPlaybackEnded: () -> Unit) {
+        val baseUrl = serverUrl.trimEnd('/')
+        val ttsUrl = "$baseUrl/tts"
         onPlaybackEndedCallback = onPlaybackEnded
         
         Thread {

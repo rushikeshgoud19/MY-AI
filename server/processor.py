@@ -10,10 +10,12 @@ import asyncio
 import threading
 import logging
 import shlex
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 from server.config import log_info
 from server.commands import COMMON_APPS, launch_app, close_app, whatsapp_automation, take_note
 from server.ai import get_ai_response
+from server.task_planner import is_multi_step_request, get_task_planner
 from server.agents import mizune_manager, save_turn
 from server.memory import memory
 from server.memory_tree import memory_tree_db
@@ -23,6 +25,10 @@ from server.vision import _acquire_vision_lock, _release_vision_lock, _analyze_s
 
 logger = logging.getLogger("mizune.processor")
 
+# Memory recall runs off-thread with a time budget so it never blocks a reply.
+# Not a context manager: shutdown would wait on slow recalls and defeat the timeout.
+_recall_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="mem-recall")
+
 # Session Store
 from server.session_store import SessionStore
 global_session_store = SessionStore()
@@ -30,36 +36,138 @@ global_session_store = SessionStore()
 from server.scheduler import CronManager
 global_cron_manager = CronManager()
 
+def _seal_watermark():
+    """Highest history rowid now — used to find [TOOL RESULTS] seals created after."""
+    try:
+        from server.memory import memory
+        cur = memory.db.cursor()
+        row = cur.execute("SELECT MAX(rowid) FROM history").fetchone()
+        return row[0] or 0
+    except Exception:
+        return None
+
+
+def _report_seal_failures(since_rowid, broadcast):
+    """R.2 truthful reports: if any tool sealed a failure during this run, say so
+    honestly instead of leaving Master with an optimistic confirmation."""
+    if since_rowid is None:
+        return
+    try:
+        from server.memory import memory
+        cur = memory.db.cursor()
+        rows = cur.execute(
+            "SELECT content FROM history WHERE rowid > ? AND content LIKE '%[TOOL RESULTS]%'",
+            (since_rowid,)).fetchall()
+        fails = [r[0] for r in rows
+                 if any(k in r[0] for k in ("FAILED", "ERROR", "Error:", "Error "))]
+        if fails:
+            detail = fails[-1].replace("[TOOL RESULTS] ", "")[:200]
+            broadcast({"type": "speak",
+                       "text": f"Master, honest report — that scheduled task hit a problem: {detail}"})
+    except Exception as e:
+        log_info(f"[SCHEDULER] Truthful-report check failed: {e}")
+
+
 def _scheduler_callback(task_description):
     from server.websocket import ws_manager
     from server.config import load_config
     config = load_config()
     log_info(f"[SCHEDULER WAKEUP] Processing task: {task_description}")
-    
-    prompt = f"[SYSTEM ALERT: A scheduled task has triggered!] Task description: {task_description}. Please execute this task now and speak your response."
-    
+
+    # Morning briefing: deterministic data, one LLM call only to voice it.
+    if task_description == "MIZUNE_MORNING_BRIEFING":
+        from server.briefing import build_briefing_sitrep
+        sitrep = build_briefing_sitrep()
+        log_info(f"[BRIEFING] Sitrep built ({len(sitrep)} chars).")
+        prompt = (
+            f"[MORNING BRIEFING] Here is today's data:\n{sitrep}\n\n"
+            f"Summarize this warmly in-persona for Master in under 150 words, then send that "
+            f"summary to 'Master' on WhatsApp using the message_whatsapp tool. Facts must come "
+            f"from the data above only — do not invent weather, emails, or tasks."
+        )
+        wm = _seal_watermark()
+        def _brief():
+            process_command(prompt, config, ws_manager.broadcast_sync, 'main')
+            _report_seal_failures(wm, ws_manager.broadcast_sync)
+        threading.Thread(target=_brief, daemon=True).start()
+        return
+
+    # Deterministic path: if the stored action is literal python (she schedules
+    # `execute_python code="..."`), run it directly through the guarded tool
+    # dispatcher. Re-emitting code through the LLM truncates it — models fumble
+    # quotes-in-JSON — so scheduled code must never round-trip through the model.
+    m = re.match(r'\s*execute_python\s+code="(.*)"\s*$', task_description, re.DOTALL)
+    if m and "whatsapp" not in task_description.lower():
+        from server.ai import execute_tool_call
+        result = execute_tool_call("execute_python", {"code": m.group(1)}, config)
+        log_info(f"[SCHEDULER] Direct-executed stored python: {str(result)[:150]}")
+        # R.2: report the REAL outcome, not a blanket success.
+        res_str = str(result)
+        if any(k in res_str for k in ("Error", "ERROR", "failed", "FAILED")):
+            ws_manager.broadcast_sync({"type": "speak",
+                "text": f"Master, honest report — the scheduled task failed: {res_str[:180]}"})
+        else:
+            ws_manager.broadcast_sync({"type": "speak", "text": "Scheduled task done, Master!"})
+        return
+
+    prompt = (
+        f"[SYSTEM ALERT: A scheduled task has triggered!] Task description: {task_description}. "
+        f"Execute this task NOW using your tools. The description states the INTENT — if it contains "
+        f"raw code or tool-call syntax, do NOT copy it verbatim; write a fresh, correct tool call "
+        f"that fulfills the same intent. Then speak a short confirmation."
+    )
+
     if "VIA_WHATSAPP" in task_description or "whatsapp" in task_description.lower():
         prompt += " IMPORTANT: The user requested this reminder on WhatsApp. You MUST use the message_whatsapp tool to send this reminder to 'Master' (or the requested contact) right now! Do NOT just say it out loud, actually send the WhatsApp message using the tool!"
-        
-    threading.Thread(target=process_command, args=(prompt, config, ws_manager.broadcast_sync, 'main'), daemon=True).start()
+
+    # R.2 truthful reports: watch the seals this run creates and surface failures.
+    wm = _seal_watermark()
+    def _run_and_report():
+        process_command(prompt, config, ws_manager.broadcast_sync, 'main')
+        _report_seal_failures(wm, ws_manager.broadcast_sync)
+    threading.Thread(target=_run_and_report, daemon=True).start()
 
 global_cron_manager.start(task_callback=_scheduler_callback)
 
+# Register the daily morning briefing (idempotent — checks for an existing row).
+# Lives here so BOTH entry points (local server.py, VM backend_main.py) get it.
+try:
+    from server.briefing import ensure_briefing_scheduled
+    from server.config import load_config as _lc
+    ensure_briefing_scheduled(_lc(), global_cron_manager)
+except Exception as _e:
+    log_info(f"[BRIEFING] Registration skipped: {_e}")
+
 _processing_lock = threading.Lock()
+# Per-session locks so a slow WhatsApp reply doesn't drop the user's desktop input
+# (and vice versa). The old single global lock serialized ALL platforms and silently
+# returned None for any message that arrived while another was in flight.
+_session_locks = {}
+_session_locks_guard = threading.Lock()
+
+def _get_session_lock(session_id: str) -> threading.Lock:
+    with _session_locks_guard:
+        lock = _session_locks.get(session_id)
+        if lock is None:
+            lock = threading.Lock()
+            _session_locks[session_id] = lock
+        return lock
 
 def process_command(text: str, config: dict, broadcast_sync_fn, session_id: str = 'main') -> str:
-    """Wrapper to prevent ghost inputs from cloning Mizune's brain."""
-    if not _processing_lock.acquire(blocking=False):
-        log_info(f"[PROCESSOR] Ignoring overlapping input '{text}' (Mizune is busy).")
+    """Wrapper to prevent ghost inputs from cloning Mizune's brain (per-session)."""
+    lock = _get_session_lock(session_id)
+    if not lock.acquire(blocking=False):
+        log_info(f"[PROCESSOR] Ignoring overlapping input '{text}' for session '{session_id}' (busy).")
         return None
     try:
         return _process_command_internal(text, config, broadcast_sync_fn, session_id)
     finally:
-        _processing_lock.release()
+        lock.release()
 
-from traceroot import observe
+from server.tracing import observe
 
-@observe(name="Mizune.ProcessCommand", type="span")
+# capture_input=False: the `config` arg holds live API keys — never send it to TraceRoot.
+@observe(name="Mizune.ProcessCommand", type="span", capture_input=False)
 def _process_command_internal(text: str, config: dict, broadcast_sync_fn, session_id: str = 'main') -> str:
     # Initialize session and load emotion state
     platform = "whatsapp" if "whatsapp:" in session_id else "desktop"
@@ -135,7 +243,15 @@ def _process_command_internal(text: str, config: dict, broadcast_sync_fn, sessio
         r"describe my screen|what's on my monitor|what is on my monitor|check my screen|"
         r"see my screen|guess what i am doing|tell me what i am doing|"
         r"see what('s| is) on (my )?screen|what('s| is) happening on (my )?screen)\b", lower_text)
-    
+
+    # On cloud there is no screen/webcam to look at — short-circuit vision requests
+    # instead of trying to screenshot a headless box (which errors after a delay).
+    from server.config import is_cloud_mode
+    _cloud = is_cloud_mode(config)
+
+    if _is_screen_request and _cloud:
+        return "[EMOTION: neutral] I'm running on the cloud right now, Master, so I don't have eyes on your screen! Ask me something else~"
+
     if _is_screen_request:
         if not _acquire_vision_lock("screen_vision"):
             return "I'm already processing another vision task, Master~ Try again in a moment!"
@@ -291,7 +407,7 @@ You are looking at Master through your webcam camera RIGHT NOW. Describe what yo
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             loop.run_until_complete(evolution_engine._run_evolution_cycle())
-        threading.Thread(target=_manual_evolve).start()
+        threading.Thread(target=_manual_evolve, daemon=True).start()
         return "[EMOTION: excited] I just started a manual evolution cycle in the background, Master!"
 
     if lower_text.startswith("/evolution pause"):
@@ -323,53 +439,87 @@ You are looking at Master through your webcam camera RIGHT NOW. Describe what yo
         except: pass
     
     # Get active context
-    chronicle = global_session_store.get_recent(session_id, limit=config.get("memory_size", 30))
+    chronicle = global_session_store.get_recent(session_id, limit=config.get("memory_size", 10))
     
-    # Cross-session memory lookup
-    # OPTIMIZED: Only trigger heavy ChromaDB lookups for explicit memory requests, not common words like "what is"
-    triggers = ["remember", "yesterday", "did i", "did we", "have i", "have we"]
-    if any(t in lower_text for t in triggers) and len(lower_text) > 8:
-        query = lower_text
-        for word in triggers + ["do you know", "can you tell me", "what was"]:
-            query = query.replace(word, "")
-        query = query.strip()
-        if len(query) > 2:
-            past_context = ""
+    # Cross-session memory lookup — runs on EVERY substantive message so Mizune
+    # actually uses what she knows instead of starting fresh each time.
+    # Latency guard: recall runs in a worker thread with a hard time budget;
+    # if it can't answer in time, the reply proceeds without past context.
+    query = lower_text
+    for word in ["remember", "do you know", "can you tell me", "what was", "yesterday",
+                 "did i", "did we", "have i", "have we"]:
+        query = query.replace(word, "")
+    query = query.strip()
+
+    if len(query) > 2 and len(lower_text) > 8:
+        def _deep_recall(q: str) -> str:
+            ctx = ""
             # Search SQLite Chat History (Fast)
-            past = global_session_store.search_across_sessions(query, limit=2)
+            past = global_session_store.search_across_sessions(q, limit=2)
             if past:
-                past_context += "Past Chat Mentions:\n" + "\n".join([f"[{p['timestamp']}] {p['role']}: {p['content']}" for p in past]) + "\n\n"
-            
-            # Search ChromaDB Semantic Memory & Advanced Memory Tree (Slow - Now gated)
-            try:
-                from .memory_tree import memory_tree_db
-                tree_facts = memory_tree_db.recall(query, None, {}, limit=2)
-                if tree_facts:
-                    past_context += "Compressed Memory Graph Nodes:\n"
-                    for fact in tree_facts:
-                        if "topic_summary" in fact:
-                            past_context += f"- [TOPIC: {fact['entity']}] {fact['topic_summary']}\n"
-                        else:
-                            past_context += f"- {fact['content']}\n"
-                            
-                semantic_facts = memory.recall_longterm(query, n_results=2)
-                if semantic_facts:
-                    past_context += "Semantic Long-Term Memory Facts:\n" + "\n".join([f"- {fact}" for fact in semantic_facts]) + "\n"
-            except Exception as e:
-                log_info(f"[MEMORY] Advanced recall failed: {e}")
-                
-            if past_context.strip():
-                text_with_context = f"{text}\n\n[SYSTEM: Relevant Past Context regarding '{query}':\n{past_context.strip()}]"
-                chronicle[-1]["parts"][0]["text"] = text_with_context
+                ctx += "Past Chat Mentions:\n" + "\n".join([f"[{p['timestamp']}] {p['role']}: {p['content']}" for p in past]) + "\n\n"
+
+            # Search ChromaDB Semantic Memory & Advanced Memory Tree
+            from .memory_tree import memory_tree_db
+            tree_facts = memory_tree_db.recall(q, None, {}, limit=2)
+            if tree_facts:
+                ctx += "Compressed Memory Graph Nodes:\n"
+                for fact in tree_facts:
+                    if "topic_summary" in fact:
+                        ctx += f"- [TOPIC: {fact['entity']}] {fact['topic_summary']}\n"
+                    else:
+                        ctx += f"- {fact['content']}\n"
+
+            semantic_facts = memory.recall_longterm(q, n_results=2)
+            if semantic_facts:
+                ctx += "Semantic Long-Term Memory Facts:\n" + "\n".join([f"- {fact}" for fact in semantic_facts]) + "\n"
+            return ctx
+
+        past_context = ""
+        try:
+            future = _recall_pool.submit(_deep_recall, query)
+            past_context = future.result(timeout=config.get("memory_recall_budget_seconds", 1.2))
+        except FuturesTimeoutError:
+            log_info("[MEMORY] Recall exceeded time budget; replying without past context.")
+        except Exception as e:
+            log_info(f"[MEMORY] Advanced recall failed: {e}")
+
+        if past_context.strip():
+            # Cap recall context at ~300 tokens (~1200 chars) so personalization
+            # never undoes the prompt diet (Phase E). Keep the head — recall
+            # sources emit most-relevant-first.
+            recall_block = past_context.strip()
+            max_chars = int(config.get("recall_context_max_chars", 1200))
+            if len(recall_block) > max_chars:
+                recall_block = recall_block[:max_chars].rsplit("\n", 1)[0] + "\n[...recall truncated]"
+            text_with_context = f"{text}\n\n[SYSTEM: Relevant Past Context regarding '{query}':\n{recall_block}]"
+            chronicle[-1]["parts"][0]["text"] = text_with_context
+
+    # Device/origin awareness: tell Mizune WHERE Master is messaging from and
+    # which remote devices are online, so "download this on my laptop" from the
+    # phone gets routed to the laptop node instead of the server.
+    try:
+        from server.device_registry import device_registry
+        device_ctx = device_registry.context_line(platform)
+        if device_ctx and chronicle:
+            chronicle[-1]["parts"][0]["text"] += f"\n\n[SYSTEM: {device_ctx}]"
+    except Exception as e:
+        log_info(f"[DEVICES] Context injection failed: {e}")
+
+    # Multi-step task planner path
+    if is_multi_step_request(text):
+        broadcast_sync_fn({"type": "status", "text": "Planning multi-step task..."})
+        planner = get_task_planner(config, broadcast_sync_fn)
+        return planner.execute(text)
 
     try:
         # Route through manager with emotional context
+        exec_ctx = {"history": chronicle, "emotion_modifier": emotion_modifier}
+        broadcast_sync_fn({"type": "status", "text": "Analyzing your intent..."})
         try:
             loop = asyncio.get_running_loop()
-            raise RuntimeError("force fallback")
+            res = asyncio.run_coroutine_threadsafe(mizune_manager.execute(text, context=exec_ctx), loop).result()
         except RuntimeError:
-            exec_ctx = {"history": chronicle, "emotion_modifier": emotion_modifier}
-            broadcast_sync_fn({"type": "status", "text": "Analyzing your intent..."})
             res = asyncio.run(mizune_manager.execute(text, context=exec_ctx))
 
         broadcast_sync_fn({"type": "mode", "mode": mizune_manager.current_mode})
@@ -416,18 +566,20 @@ You are looking at Master through your webcam camera RIGHT NOW. Describe what yo
             except: pass
             return res
 
-        # ── Built-in Time/Date ──
+        # ── Built-in Time/Date (Master's timezone, NOT the UTC server clock) ──
         if re.search(r"\b(what(?:'s| is)(?: the)? (?:time|current time)|time is it|tell me the time)\b", lower_text):
-            return f"It's {time.strftime('%I:%M %p')}, Master!"
+            from server.config import mizune_now
+            return f"It's {mizune_now().strftime('%I:%M %p')}, Master!"
         elif re.search(r"\b(what(?:'s| is)(?: the)? (?:date|today(?:'s)? date|day)|what day is it)\b", lower_text):
-            return f"Today is {time.strftime('%A, %B %d, %Y')}, Master!"
+            from server.config import mizune_now
+            return f"Today is {mizune_now().strftime('%A, %B %d, %Y')}, Master!"
 
         # ── System Commands ──
         if re.search(r"\b(lock|lock screen|lock pc)\b", lower_text):
-            subprocess.Popen("rundll32.exe user32.dll,LockWorkStation", shell=True)
+            subprocess.Popen(["rundll32.exe", "user32.dll,LockWorkStation"])
             return "Locking your PC!"
         elif re.search(r"\b(sleep|put pc to sleep|sleep pc)\b", lower_text):
-            subprocess.Popen("rundll32.exe powrprof.dll,SetSuspendState 0,1,0", shell=True)
+            subprocess.Popen(["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"])
             return "Putting your PC to sleep. Goodnight!"
             
         # ── Knowledge Graph ──
@@ -501,7 +653,11 @@ You are looking at Master through your webcam camera RIGHT NOW. Describe what yo
         _is_master_now = True # if not camera_agent else camera_agent.is_master_present
         if _is_master_now and tool_calls:
             log_info(f"[PROCESSOR] Received {len(tool_calls)} native tool calls.")
-            
+
+            # Outcome-seal fix (0.2 Part 2): capture FINAL tool results so the memory sealer
+            # seals what actually happened, not just Mizune's intention (written at line ~545).
+            tool_outcomes = []
+
             # Deduplication: If we are going to message on WhatsApp, skip generic "open_app" for WhatsApp or Browser to avoid opening 3 tabs
             has_wa_msg = any(t.get("name") == "message_whatsapp" for t in tool_calls)
             
@@ -542,7 +698,8 @@ You are looking at Master through your webcam camera RIGHT NOW. Describe what yo
                         action = args.get("action_to_take", "")
                         if delay_mins > 0 and action:
                             import datetime
-                            trigger_time = datetime.datetime.now() + datetime.timedelta(minutes=delay_mins)
+                            from server.config import mizune_now
+                            trigger_time = mizune_now() + datetime.timedelta(minutes=delay_mins)
                             global_cron_manager.add_one_time_task(action, trigger_time.isoformat())
                             log_info(f"[PROCESSOR] Scheduled task: {action} at {trigger_time}")
                             
@@ -639,6 +796,7 @@ You are looking at Master through your webcam camera RIGHT NOW. Describe what yo
                                 result = subprocess.run(["python", ".temp_exec.py"], capture_output=True, text=True, timeout=30)
                                 if result.returncode == 0:
                                     log_info(f"[PROCESSOR] Python script succeeded:\n{result.stdout[:200]}")
+                                    tool_outcomes.append(f"execute_python SUCCEEDED: {(result.stdout or '').strip()[:150]}")
                                     break  # Success!
                                 else:
                                     err = result.stderr or result.stdout
@@ -656,12 +814,24 @@ You are looking at Master through your webcam camera RIGHT NOW. Describe what yo
                                             break
                                     else:
                                         log_info("[PROCESSOR] Max retries reached for python execution.")
+                                        tool_outcomes.append(f"execute_python FAILED after retries: {(err or '').strip()[:150]}")
                             except Exception as e:
                                 log_info(f"[PROCESSOR] Execution error: {e}")
+                                tool_outcomes.append(f"execute_python ERROR: {e}")
                                 break
                 except Exception as e:
                     log_info(f"[PROCESSOR] Error executing tool {name}: {e}")
-                
+                    tool_outcomes.append(f"{name}: ERROR ({e})")
+
+            # Seal the FINAL tool outcomes into memory so the summarizer records what actually
+            # happened (fixes stale "failed" memories like the Blender case). Role "system" maps
+            # to a harmless user-side note in the next prompt (ai.py: non-"model" -> "user").
+            if tool_outcomes:
+                try:
+                    memory.add_to_history("system", "[TOOL RESULTS] " + " | ".join(tool_outcomes))
+                except Exception as _e:
+                    log_info(f"[PROCESSOR] Failed to seal tool outcomes: {_e}")
+
         clean_res = re.sub(r"\[ACTION:.*?\]", "", clean_res, flags=re.IGNORECASE).strip()
         clean_res = re.sub(r"\[EMOTION:.*?\]", "", clean_res, flags=re.IGNORECASE).strip()
         

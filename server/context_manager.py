@@ -2,7 +2,7 @@ import json
 import logging
 import hashlib
 from typing import List, Dict, Any, Tuple
-from .token_juice import token_juice
+from .tokenjuice import token_juice
 from .config import log_info
 
 logger = logging.getLogger("mizune.context_manager")
@@ -24,10 +24,24 @@ class ContextManager:
             self.max_tokens = 60000 
             
         self.compression_threshold = int(self.max_tokens * 0.85)
-        
+        # E.3: a HARD, low ceiling on history tokens so prompts stay small even when
+        # a single turn balloons (big tool output / pasted text). The model-context
+        # threshold above (~51k-102k) almost never triggers; this does the real work.
+        self.hard_budget = config.get("context_token_budget", 4000)
+
     def _estimate_tokens(self, text: str) -> int:
         """Rough estimation: ~4 chars per token."""
         return len(text) // 4
+
+    def _enforce_hard_budget(self, chronicle: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], bool]:
+        """Drop OLDEST turns until total history is under hard_budget. Always keep the
+        most recent turns (min 2) so the current exchange is never lost."""
+        def total(c): return sum(self._estimate_tokens(e["parts"][0]["text"]) for e in c)
+        trimmed = False
+        while len(chronicle) > 2 and total(chronicle) > self.hard_budget:
+            chronicle.pop(0)
+            trimmed = True
+        return chronicle, trimmed
         
     def prepare_context(self, chronicle: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], bool]:
         """
@@ -52,14 +66,20 @@ class ContextManager:
         # 2. Check for action loops (e.g., repeatedly failing on the same error)
         juiced_chronicle = self._detect_and_break_loops(juiced_chronicle)
             
-        # 3. Estimate total tokens
+        # 3. Enforce the HARD low budget first (E.3) — this is what actually keeps
+        #    prompts small day-to-day. Drops oldest turns beyond the budget.
+        juiced_chronicle, trimmed = self._enforce_hard_budget(juiced_chronicle)
+        if trimmed:
+            log_info(f"[CONTEXT] Trimmed old turns to stay under {self.hard_budget}-token hard budget.")
+
+        # 4. Estimate total tokens
         total_tokens = sum(self._estimate_tokens(e["parts"][0]["text"]) for e in juiced_chronicle)
-        
-        # 4. If under threshold, return as is
+
+        # 5. If under the model-context threshold, return (possibly trimmed) as is
         if total_tokens < self.compression_threshold:
-            return juiced_chronicle, False
-            
-        # 5. Compress the middle
+            return juiced_chronicle, trimmed
+
+        # 6. Compress the middle (only for genuinely huge windows)
         log_info(f"[CONTEXT] Window at {total_tokens} tokens (limit {self.compression_threshold}). Compressing...")
         return self._compress_middle(juiced_chronicle), True
         

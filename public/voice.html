@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mizune · Voice</title>
+<link rel="stylesheet" href="voice.css">
+</head>
+<body>
+
+<header id="topbar">
+  <div class="brand"><span class="dot"></span> MIZUNE · INTELLIGENCE</div>
+  <div class="modes">
+    <button class="mode" data-theme="aurora">◆ AURORA</button>
+    <button class="mode active" data-theme="classic">◆ CLASSIC</button>
+    <button class="mode" data-theme="plasma">◆ PLASMA</button>
+  </div>
+  <div class="caps" id="caps-label">— capabilities · — clusters</div>
+  <button id="close-btn" onclick="location.href='/'">✕ CLOSE</button>
+</header>
+
+<aside id="sidepanel">
+  <div class="live-badge"><span class="dot"></span> LIVE</div>
+  <div class="avatar-ring"><div class="avatar-core"></div></div>
+  <p class="hint">Tap the core or type below to talk with Mizune.<br>Interrupt any time.</p>
+  <input id="type-input" placeholder="Type to Mizune…" autocomplete="off">
+</aside>
+
+<div id="live-pill" class="off"><span class="dot"></span> <span id="live-text">TAP CORE TO START</span></div>
+
+<canvas id="cosmos"></canvas>
+
+<div id="captions">
+  <div id="cap-user"></div>
+  <div id="cap-mizune"></div>
+</div>
+
+<footer id="controls">
+  <button id="mute-btn" disabled>🎙 Mute</button>
+  <button id="end-btn" class="end" disabled>■ End voice</button>
+</footer>
+
+<div id="status-chip">disconnected</div>
+
+<script src="voice.js"></script>
+</body>
+</html>

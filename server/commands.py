@@ -8,7 +8,10 @@ import time
 import logging
 import re
 from urllib.parse import urlparse
-import pyautogui
+try:
+    import pyautogui
+except ImportError:
+    pyautogui = None
 
 __all__ = ["launch_app", "close_app", "whatsapp_automation", "take_note", "search_memory", "get_system_info", "COMMON_APPS"]
 
@@ -245,7 +248,7 @@ def whatsapp_automation(contact: str, message: str = None) -> str:
         import json, os
         contacts_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "contacts.json")
         if os.path.exists(contacts_file):
-            with open(contacts_file, "r") as f:
+            with open(contacts_file, "r", encoding="utf-8", errors="replace") as f:
                 contacts_db = json.load(f)
                 # lowercase match
                 for name, number in contacts_db.items():

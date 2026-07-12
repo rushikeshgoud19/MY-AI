@@ -234,22 +234,35 @@ class VaultSync:
         
         
         daily_logs = {}
+        seen = set()  # (date, normalized content) — the same turn often exists in
+                      # episodic AND the legacy DBs, so dedupe by content per day
+
+        import re as _re
+        def _add_line(date_str, time_str, prefix, content):
+            # Key on prefix+content with role markers stripped: the episodic path
+            # embeds the role INSIDE content ("**[MIZUNE]** hi") while the legacy
+            # path passes it as prefix with bare content ("hi") — keying content
+            # alone made those look different and let duplicates through.
+            norm = _re.sub(r'\W+', ' ', f"{prefix} {content}".lower()).strip()
+            norm = _re.sub(r'^((mizune|master|model|user|system|chat|whatsapp|gmail|voice)\s+)+', '', norm)
+            key = (date_str, norm[:200])
+            if key in seen:
+                return
+            seen.add(key)
+            daily_logs.setdefault(date_str, []).append(f"[{time_str}] {prefix}{content}")
+
         for row in rows:
             timestamp, source, content = row
             # Convert timestamp to YYYY-MM-DD
             date_str = time.strftime('%Y-%m-%d', time.localtime(timestamp))
             time_str = time.strftime('%H:%M:%S', time.localtime(timestamp))
-            
-            if date_str not in daily_logs:
-                daily_logs[date_str] = []
-                
+
             prefix = ""
             if source: prefix = f"**[{source.upper()}]** "
             elif content.startswith("MODEL:"): content = f"**[MIZUNE]** {content[6:]}"
             elif content.startswith("USER:"): content = f"**[MASTER]** {content[5:]}"
-            
-            
-            daily_logs[date_str].append(f"[{time_str}] {prefix}{content}")
+
+            _add_line(date_str, time_str, prefix, content)
             
         # Legacy history fallback
         for legacy_db in [".data/mizune_memory.db", "data_collector/mizune_memory.db"]:
@@ -260,24 +273,16 @@ class VaultSync:
                     lc = ldb.cursor()
                     # Check which table exists
                     tables = [r[0] for r in lc.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
-                    if "history" in tables:
-                        lc.execute("SELECT timestamp, role, content FROM history ORDER BY timestamp ASC")
+                    for table in ("history", "conversation_log"):
+                        if table not in tables:
+                            continue
+                        lc.execute(f"SELECT timestamp, role, content FROM {table} ORDER BY timestamp ASC")
                         for lrow in lc.fetchall():
                             ts_str, role, content = lrow
                             if " " in str(ts_str):
                                 date_str, time_str = str(ts_str).split(" ", 1)
-                                if date_str not in daily_logs: daily_logs[date_str] = []
                                 prefix = "**[MIZUNE]** " if role == "model" else "**[MASTER]** "
-                                daily_logs[date_str].append(f"[{time_str}] {prefix}{content}")
-                    if "conversation_log" in tables:
-                        lc.execute("SELECT timestamp, role, content FROM conversation_log ORDER BY timestamp ASC")
-                        for lrow in lc.fetchall():
-                            ts_str, role, content = lrow
-                            if " " in str(ts_str):
-                                date_str, time_str = str(ts_str).split(" ", 1)
-                                if date_str not in daily_logs: daily_logs[date_str] = []
-                                prefix = "**[MIZUNE]** " if role == "model" else "**[MASTER]** "
-                                daily_logs[date_str].append(f"[{time_str}] {prefix}{content}")
+                                _add_line(date_str, time_str, prefix, content)
                 except Exception as e:
                     log_info(f"[VAULT SYNC] Legacy history export failed for {legacy_db}: {e}")
             
@@ -298,6 +303,53 @@ class VaultSync:
             for d in sorted(daily_logs.keys(), reverse=True):
                 f.write(f"- [[{d}]]\n")
 
+    def export_summary(self, episodic_id: int):
+        """Export a single sealed summary row to the Vault's Memories folder."""
+        try:
+            cursor = memory_tree_db.db.cursor()
+            row = cursor.execute(
+                "SELECT id, session_id, content, timestamp, metadata FROM episodic "
+                "WHERE id = ? AND source = 'summary'",
+                (episodic_id,)
+            ).fetchone()
+            if not row:
+                return
+            s_id, session_id, content, ts, metadata = row
+
+            level, tree_type = 1, "session"
+            if metadata:
+                try:
+                    import json
+                    meta = json.loads(metadata)
+                    level = meta.get("level", 1)
+                    tree_type = meta.get("tree_type", "session")
+                except Exception:
+                    pass
+
+            os.makedirs(self.memories_dir, exist_ok=True)
+            filepath = os.path.join(self.memories_dir, f"L{level}_{tree_type}_sum_{s_id}.md")
+            date_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(ts or time.time()))
+
+            md = (
+                f"---\n"
+                f"id: sum_{s_id}\n"
+                f"type: {tree_type}\n"
+                f"session: {session_id}\n"
+                f"level: {level}\n"
+                f"date: {date_str}\n"
+                f"---\n\n"
+                f"# Memory: {tree_type} (Level {level})\n\n"
+                f"{content}\n"
+            )
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(md)
+
+            # Prevent our own write from echoing back through the watchdog
+            self._last_sync_times[filepath] = time.time()
+            log_info(f"[VAULT SYNC] Exported summary sum_{s_id} to Vault.")
+        except Exception as e:
+            log_info(f"[VAULT SYNC] export_summary failed for {episodic_id}: {e}")
+
     def handle_file_change(self, filepath: str):
         """Called by watchdog when user edits a memory file in Obsidian."""
         try:
@@ -313,23 +365,35 @@ class VaultSync:
                 
             # Extract ID from frontmatter
             import re
-            match = re.search(r'^id:\s*(sum_[a-f0-9]+)', content, re.MULTILINE)
+            match = re.search(r'^id:\s*sum_([a-f0-9]+)', content, re.MULTILINE)
             if not match: return
-            
+
             summary_id = match.group(1)
-            
+            if not summary_id.isdigit():
+                return  # legacy uuid-style summary files have no episodic row
+            rid = int(summary_id)
+
             # Extract actual text (strip frontmatter and title)
-            text_body = re.sub(r'^---.*?---\\n+', '', content, flags=re.DOTALL)
-            text_body = re.sub(r'^# .*?\\n+', '', text_body).strip()
-            
+            text_body = re.sub(r'^---.*?---\n+', '', content, flags=re.DOTALL)
+            text_body = re.sub(r'^# .*?\n+', '', text_body).strip()
+
             if not text_body: return
-            
-            # Update DB
+
+            # Update DB (episodic row + external-content FTS index)
             cursor = memory_tree_db.db.cursor()
-            cursor.execute("UPDATE summaries SET content = ? WHERE id = ?", (text_body, summary_id))
+            old = cursor.execute(
+                "SELECT content FROM episodic WHERE id = ? AND source = 'summary'", (rid,)
+            ).fetchone()
+            if not old: return
+            cursor.execute("UPDATE episodic SET content = ? WHERE id = ?", (text_body, rid))
+            cursor.execute(
+                "INSERT INTO episodic_fts (episodic_fts, rowid, content) VALUES ('delete', ?, ?)",
+                (rid, old[0])
+            )
+            cursor.execute("INSERT INTO episodic_fts (rowid, content) VALUES (?, ?)", (rid, text_body))
             memory_tree_db.db.commit()
-            
-            log_info(f"[VAULT SYNC] Ingested user edits for {summary_id} from Vault.")
+
+            log_info(f"[VAULT SYNC] Ingested user edits for sum_{rid} from Vault.")
             
         except Exception as e:
             log_info(f"[VAULT SYNC] File ingestion failed: {e}")

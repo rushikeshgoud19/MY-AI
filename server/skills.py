@@ -47,6 +47,11 @@ class SkillManager:
         for filename in os.listdir(self.skills_dir):
             if filename.endswith(".py"):
                 skill_name = filename[:-3]
+                # Security Check: Only load if it is explicitly approved in metadata
+                meta = self.metadata.get(skill_name, {})
+                if meta.get("status") != "active":
+                    log_info(f"[SKILLS] Blocked auto-loading of unapproved skill: {skill_name}")
+                    continue
                 self._load_skill_file(skill_name, os.path.join(self.skills_dir, filename))
                 
     def _load_skill_file(self, skill_name: str, filepath: str):
@@ -57,8 +62,6 @@ class SkillManager:
             
             if hasattr(module, 'execute'):
                 self.loaded_skills[skill_name] = getattr(module, 'execute')
-                if skill_name not in self.metadata:
-                    self._init_skill_meta(skill_name, "Manually added")
                 log_info(f"[SKILLS] Successfully loaded skill: {skill_name}")
             else:
                 log_info(f"[SKILLS] Skill {skill_name} is missing 'execute' function.")
@@ -109,7 +112,7 @@ class SkillManager:
             new_version = 1
         
         # Add metadata header
-        full_code = f'"""\\nDescription: {description}\\nVersion: {new_version}\\n"""\\n\\n{code}'
+        full_code = f'"""\nDescription: {description}\nVersion: {new_version}\n"""\n\n{code}'
         
         try:
             with open(filepath, 'w', encoding='utf-8') as f:
@@ -173,6 +176,6 @@ class SkillManager:
             stats = f"(v{meta.get('version', 1)} | {meta.get('use_count', 0)} uses | {success_rate}% success)"
             desc_list.append(f"- **{name}** {stats}: {desc}")
                 
-        return "\\n".join(desc_list) if desc_list else "No skills loaded."
+        return "\n".join(desc_list) if desc_list else "No skills loaded."
 
 skill_manager = SkillManager()

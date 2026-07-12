@@ -1,0 +1,23 @@
+# Exclude vendored repos, build artifacts, and generated bundles from the knowledge graph
+android/
+mizune-android/
+Agent-Reach/
+openWakeWord/
+node_modules/
+dist/
+public/
+.venv/
+.wwebjs_auth/
+.wwebjs_auth_baileys/
+.wwebjs_cache/
+.chroma_db/
+__pycache__/
+tts_cache/
+dataset/
+training/
+graphify-out/
+*.log
+*.tar
+*.db
+*.wav
+*.npy
