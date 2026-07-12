@@ -1507,8 +1507,13 @@ def _openrouter_response(text: str, history: list, system_prompt: str, config: d
                 
         final_text = _clean_final_text(msg.content or "")
 
-        return (final_text, executed_tools)
-        
+        # Return [] — these tools were ALREADY executed inline above. Returning them
+        # made processor.py's tool loop run every action a SECOND time (bypassing the
+        # dedup guard, which only covers execute_tool_call). Root cause of the historic
+        # "two Blender downloads for one request". Only Ollama may return unexecuted
+        # parsed_tools for the processor to run.
+        return (final_text, [])
+
     except ImportError:
         return ("OpenAI package is not installed (required for OpenRouter). Run: pip install openai", [])
 
