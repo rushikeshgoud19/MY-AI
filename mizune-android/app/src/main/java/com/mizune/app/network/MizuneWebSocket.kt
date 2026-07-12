@@ -19,6 +19,8 @@ interface MizuneWebSocketListener {
     fun onStateUpdate(valence: Double, arousal: Double)
     fun onStatusUpdate(status: String)
     fun onTaskList(tasks: List<TaskItem>) {}
+    /** Device-node command from the brain (notify / open_url / speak). */
+    fun onDeviceCommand(requestId: String, action: String, args: Map<String, String>) {}
 }
 
 class MizuneWebSocket(
@@ -81,6 +83,15 @@ class MizuneWebSocket(
         sendOrQueue(json.toString())
     }
 
+    fun sendDeviceResult(requestId: String, result: String) {
+        val payload = buildJsonObject {
+            put("type", "device_result")
+            put("request_id", requestId)
+            put("result", result)
+        }
+        sendOrQueue(payload.toString())
+    }
+
     fun sendVisionMessage(base64Image: String) {
         val json = buildJsonObject {
             put("type", "mobile_vision")
@@ -141,6 +152,17 @@ class MizuneWebSocket(
                 reconnectAttempts = 0
                 updateState(ConnectionState.CONNECTED)
                 flushQueue()
+                // Register this phone as a device node so the brain can route
+                // remote_device_command actions to it.
+                val reg = buildJsonObject {
+                    put("type", "register_device")
+                    put("device_name", "phone")
+                    put("platform", "android")
+                    put("capabilities", buildJsonArray {
+                        add("notify"); add("open_url"); add("speak")
+                    })
+                }
+                webSocket.send(reg.toString())
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -173,6 +195,17 @@ class MizuneWebSocket(
                                 Log.e(TAG, "Error parsing task list", e)
                             }
                         }
+                        "device_command" -> {
+                            val requestId = json["request_id"]?.jsonPrimitive?.content ?: ""
+                            val action = json["action"]?.jsonPrimitive?.content ?: ""
+                            val args = json["args"]?.jsonObject?.mapValues { entry ->
+                                entry.value.jsonPrimitive.content
+                            } ?: emptyMap()
+                            if (requestId.isNotEmpty() && action.isNotEmpty()) {
+                                listener.onDeviceCommand(requestId, action, args)
+                            }
+                        }
+                        "device_registered" -> Log.d(TAG, "Registered as device node")
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Error parsing message: $text", e)

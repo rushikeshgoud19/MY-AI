@@ -8,6 +8,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.media.RingtoneManager
+import android.net.Uri
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
@@ -116,6 +117,46 @@ class MizuneService : Service() {
                 synchronized(listenersLock) {
                     uiListeners.forEach { it.onTaskList(tasks) }
                 }
+            }
+
+            override fun onDeviceCommand(requestId: String, action: String, args: Map<String, String>) {
+                val result = try {
+                    when (action) {
+                        "notify" -> {
+                            val title = args["title"] ?: "Mizune"
+                            val message = args["message"] ?: args["text"] ?: ""
+                            showAlertNotification(title, message)
+                            "Notification shown on phone."
+                        }
+                        "open_url" -> {
+                            val url = args["url"] ?: ""
+                            if (url.startsWith("http://") || url.startsWith("https://")) {
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                }
+                                startActivity(intent)
+                                "Opened $url on phone."
+                            } else {
+                                "Refused: only http(s) URLs are allowed."
+                            }
+                        }
+                        "speak" -> {
+                            val text = args["text"] ?: args["message"] ?: ""
+                            // Route through the normal message pipeline: the foreground
+                            // app voices it; if backgrounded, it lands as a notification.
+                            synchronized(listenersLock) {
+                                uiListeners.forEach { it.onMessage(text, "neutral") }
+                            }
+                            if (!isAppInForeground) showAlertNotification("Mizune", text)
+                            "Spoken/notified on phone."
+                        }
+                        else -> "Unknown action '$action'. Phone supports: notify, open_url, speak."
+                    }
+                } catch (e: Exception) {
+                    Log.e("MizuneService", "Device command failed", e)
+                    "Error executing $action on phone: ${e.message}"
+                }
+                webSocket.sendDeviceResult(requestId, result)
             }
         }, serverUrl)
 

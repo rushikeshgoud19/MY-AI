@@ -171,12 +171,12 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "remote_device_command",
-            "description": "Execute actions (install_app, download_file, open_app, open_url, run_command) on Master's other online devices.",
+            "description": "Execute actions on Master's other online devices. Laptop: install_app, download_file, open_app, open_url, run_command. Phone: notify, open_url, speak.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "device": {"type": "string", "description": "The target device name as listed in the online-devices context (e.g. 'laptop')."},
-                    "action": {"type": "string", "description": "One of: download_file, open_app, open_url, run_command."},
+                    "device": {"type": "string", "description": "Target device name from the online-devices context (e.g. 'laptop', 'phone')."},
+                    "action": {"type": "string", "description": "One of: download_file, open_app, open_url, run_command, notify, speak."},
                     "args": {"type": "object", "description": "Action arguments, e.g. {\"url\": \"https://...\", \"filename\": \"setup.exe\"}."}
                 },
                 "required": ["device", "action"]
