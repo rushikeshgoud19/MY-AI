@@ -239,7 +239,13 @@ class VaultSync:
 
         import re as _re
         def _add_line(date_str, time_str, prefix, content):
-            key = (date_str, _re.sub(r'\W+', ' ', str(content).lower()).strip()[:200])
+            # Key on prefix+content with role markers stripped: the episodic path
+            # embeds the role INSIDE content ("**[MIZUNE]** hi") while the legacy
+            # path passes it as prefix with bare content ("hi") — keying content
+            # alone made those look different and let duplicates through.
+            norm = _re.sub(r'\W+', ' ', f"{prefix} {content}".lower()).strip()
+            norm = _re.sub(r'^((mizune|master|model|user|system|chat|whatsapp|gmail|voice)\s+)+', '', norm)
+            key = (date_str, norm[:200])
             if key in seen:
                 return
             seen.add(key)

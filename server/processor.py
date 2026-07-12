@@ -36,11 +36,61 @@ global_session_store = SessionStore()
 from server.scheduler import CronManager
 global_cron_manager = CronManager()
 
+def _seal_watermark():
+    """Highest history rowid now — used to find [TOOL RESULTS] seals created after."""
+    try:
+        from server.memory import memory
+        cur = memory.db.cursor()
+        row = cur.execute("SELECT MAX(rowid) FROM history").fetchone()
+        return row[0] or 0
+    except Exception:
+        return None
+
+
+def _report_seal_failures(since_rowid, broadcast):
+    """R.2 truthful reports: if any tool sealed a failure during this run, say so
+    honestly instead of leaving Master with an optimistic confirmation."""
+    if since_rowid is None:
+        return
+    try:
+        from server.memory import memory
+        cur = memory.db.cursor()
+        rows = cur.execute(
+            "SELECT content FROM history WHERE rowid > ? AND content LIKE '%[TOOL RESULTS]%'",
+            (since_rowid,)).fetchall()
+        fails = [r[0] for r in rows
+                 if any(k in r[0] for k in ("FAILED", "ERROR", "Error:", "Error "))]
+        if fails:
+            detail = fails[-1].replace("[TOOL RESULTS] ", "")[:200]
+            broadcast({"type": "speak",
+                       "text": f"Master, honest report — that scheduled task hit a problem: {detail}"})
+    except Exception as e:
+        log_info(f"[SCHEDULER] Truthful-report check failed: {e}")
+
+
 def _scheduler_callback(task_description):
     from server.websocket import ws_manager
     from server.config import load_config
     config = load_config()
     log_info(f"[SCHEDULER WAKEUP] Processing task: {task_description}")
+
+    # Morning briefing: deterministic data, one LLM call only to voice it.
+    if task_description == "MIZUNE_MORNING_BRIEFING":
+        from server.briefing import build_briefing_sitrep
+        sitrep = build_briefing_sitrep()
+        log_info(f"[BRIEFING] Sitrep built ({len(sitrep)} chars).")
+        prompt = (
+            f"[MORNING BRIEFING] Here is today's data:\n{sitrep}\n\n"
+            f"Summarize this warmly in-persona for Master in under 150 words, then send that "
+            f"summary to 'Master' on WhatsApp using the message_whatsapp tool. Facts must come "
+            f"from the data above only — do not invent weather, emails, or tasks."
+        )
+        wm = _seal_watermark()
+        def _brief():
+            process_command(prompt, config, ws_manager.broadcast_sync, 'main')
+            _report_seal_failures(wm, ws_manager.broadcast_sync)
+        threading.Thread(target=_brief, daemon=True).start()
+        return
 
     # Deterministic path: if the stored action is literal python (she schedules
     # `execute_python code="..."`), run it directly through the guarded tool
@@ -51,7 +101,13 @@ def _scheduler_callback(task_description):
         from server.ai import execute_tool_call
         result = execute_tool_call("execute_python", {"code": m.group(1)}, config)
         log_info(f"[SCHEDULER] Direct-executed stored python: {str(result)[:150]}")
-        ws_manager.broadcast_sync({"type": "speak", "text": "Scheduled task done, Master!"})
+        # R.2: report the REAL outcome, not a blanket success.
+        res_str = str(result)
+        if any(k in res_str for k in ("Error", "ERROR", "failed", "FAILED")):
+            ws_manager.broadcast_sync({"type": "speak",
+                "text": f"Master, honest report — the scheduled task failed: {res_str[:180]}"})
+        else:
+            ws_manager.broadcast_sync({"type": "speak", "text": "Scheduled task done, Master!"})
         return
 
     prompt = (
@@ -60,13 +116,27 @@ def _scheduler_callback(task_description):
         f"raw code or tool-call syntax, do NOT copy it verbatim; write a fresh, correct tool call "
         f"that fulfills the same intent. Then speak a short confirmation."
     )
-    
+
     if "VIA_WHATSAPP" in task_description or "whatsapp" in task_description.lower():
         prompt += " IMPORTANT: The user requested this reminder on WhatsApp. You MUST use the message_whatsapp tool to send this reminder to 'Master' (or the requested contact) right now! Do NOT just say it out loud, actually send the WhatsApp message using the tool!"
-        
-    threading.Thread(target=process_command, args=(prompt, config, ws_manager.broadcast_sync, 'main'), daemon=True).start()
+
+    # R.2 truthful reports: watch the seals this run creates and surface failures.
+    wm = _seal_watermark()
+    def _run_and_report():
+        process_command(prompt, config, ws_manager.broadcast_sync, 'main')
+        _report_seal_failures(wm, ws_manager.broadcast_sync)
+    threading.Thread(target=_run_and_report, daemon=True).start()
 
 global_cron_manager.start(task_callback=_scheduler_callback)
+
+# Register the daily morning briefing (idempotent — checks for an existing row).
+# Lives here so BOTH entry points (local server.py, VM backend_main.py) get it.
+try:
+    from server.briefing import ensure_briefing_scheduled
+    from server.config import load_config as _lc
+    ensure_briefing_scheduled(_lc(), global_cron_manager)
+except Exception as _e:
+    log_info(f"[BRIEFING] Registration skipped: {_e}")
 
 _processing_lock = threading.Lock()
 # Per-session locks so a slow WhatsApp reply doesn't drop the user's desktop input
