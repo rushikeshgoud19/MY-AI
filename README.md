@@ -4,6 +4,12 @@ Mizune is an advanced, autonomous operating system and digital companion that li
 
 Built to be a fully independent digital workforce, Mizune acts as your loyal secretary, researcher, and coding coach, ready to assist you 24/7.
 
+
+## 🎬 Demo
+
+<!-- TODO: record a short GIF of Mizune floating on the desktop + executing a voice command, save as docs/demo.gif -->
+> Demo GIF coming soon — Mizune floating on the desktop, executing voice commands in real time.
+
 ## 🌟 What Mizune Can Do
 
 ### 1. **Autonomous Web Research**
@@ -31,6 +37,29 @@ Mizune possesses a ChromaDB-backed semantic long-term memory. She continuously l
 When she's not automating your job, she can watch you work! With Vision Mode enabled, she silently analyzes your screen, catches coding bugs, validates your logic, and provides dynamic feedback out loud to keep you focused and productive.
 
 ---
+
+
+## 🧠 Architecture at a Glance
+
+```mermaid
+graph TD
+    U[User — voice / text / WhatsApp] --> IB[Zero-Latency Intent Brain]
+    IB --> O[Orchestrator]
+    O --> P[Perception Agent<br/>screen vision, mic]
+    O --> R[Research Agent<br/>headless web browsing]
+    O --> E[Execution Agent<br/>PC automation, sandboxed Python]
+    O --> M[Memory Agent<br/>ChromaDB semantic memory]
+    O --> EM[Emotion Agent]
+    O --> C[Critic Agent<br/>output validation]
+    O --> MD[Media Agent<br/>Edge TTS + SQLite cache]
+    E --> PC[(Desktop:<br/>apps, files, terminal)]
+    M --> DB[(ChromaDB)]
+    O --> WA[WhatsApp Bridge]
+    subgraph Frontend
+        T[Tauri + Three.js VRM<br/>floating 3D character]
+    end
+    O <--> |WebSocket| T
+```
 
 ## ⚙️ The Technology Behind Her
 
