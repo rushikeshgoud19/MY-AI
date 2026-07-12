@@ -70,8 +70,8 @@ class MainActivity : ComponentActivity() {
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
-        // Handle permissions
+    ) { _ ->
+        // Result handled implicitly; features check permissions at use time.
     }
 
     private val serviceConnection = object : ServiceConnection {
