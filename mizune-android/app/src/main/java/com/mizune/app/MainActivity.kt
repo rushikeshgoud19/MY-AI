@@ -1,5 +1,6 @@
 package com.mizune.app
 
+import android.annotation.SuppressLint
 import android.Manifest
 import android.content.ComponentName
 import android.content.Context
@@ -411,6 +412,9 @@ class MainActivity : ComponentActivity() {
         )
     }
 
+    // VIBRATE is declared in the manifest (install-time permission) and the call is
+    // guarded; Lint can't see the manifest merge so it false-flags MissingPermission.
+    @SuppressLint("MissingPermission")
     private fun vibrateLight() {
         try {
             val vibrator = getSystemService(Vibrator::class.java)
