@@ -346,6 +346,10 @@ def _clean_final_text(text: str) -> str:
     text = _re.sub(r'<[^>]+>', '', text)
     text = _re.sub(r'\{.*?"type".*?"function".*?\}', '', text, flags=_re.DOTALL)
     text = _re.sub(r'\{.*?"name".*?"parameters".*?\}', '', text, flags=_re.DOTALL)
+    # Weak fallback models sometimes EMIT tool calls as text instead of using the
+    # function API (e.g. `{ "tool": "x", "data": {...} }`). Strip from the first such
+    # block to the end so raw JSON never leaks to the user.
+    text = _re.sub(r'\{\s*["\']?(tool|action|function)["\']?\s*:.*', '', text, flags=_re.DOTALL)
     text = text.strip()
     # Strip a dangling unmatched leading `{` or trailing `}` left after JSON removal
     text = _re.sub(r'^\{\s*', '', text)
