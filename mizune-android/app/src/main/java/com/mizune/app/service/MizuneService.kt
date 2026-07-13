@@ -137,14 +137,46 @@ class MizuneService : Service() {
                         "open_url" -> {
                             val url = args["url"] ?: ""
                             if (url.startsWith("http://") || url.startsWith("https://")) {
-                                launchActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)), "open $url")
+                                launchIntent(Intent(Intent.ACTION_VIEW, Uri.parse(url)), "open $url")
                             } else "Refused: only http(s) URLs are allowed."
                         }
                         "open_app" -> {
                             val name = args["app_name"] ?: args["app"] ?: args["name"] ?: ""
                             val launch = resolveLaunchIntent(name)
                             if (launch == null) "Couldn't find an app matching '$name' on the phone."
-                            else launchActivity(launch, "open $name")
+                            else launchIntent(launch, "open $name")
+                        }
+                        "tap" -> {
+                            val text = args["text"] ?: args["target"] ?: ""
+                            if (!MizuneAccessibilityService.isEnabled())
+                                needsAccessibility("tap '$text'")
+                            else if (MizuneAccessibilityService.instance?.tapByText(text) == true)
+                                "Tapped '$text' on the phone."
+                            else "Couldn't find '$text' on the current screen."
+                        }
+                        "type" -> {
+                            val text = args["text"] ?: ""
+                            if (!MizuneAccessibilityService.isEnabled())
+                                needsAccessibility("type text")
+                            else if (MizuneAccessibilityService.instance?.typeText(text) == true)
+                                "Typed the text on the phone."
+                            else "No text field is focused on the phone right now."
+                        }
+                        "press" -> {
+                            val key = args["key"] ?: args["button"] ?: ""
+                            if (!MizuneAccessibilityService.isEnabled())
+                                needsAccessibility("press $key")
+                            else if (MizuneAccessibilityService.instance?.press(key) == true)
+                                "Pressed $key on the phone."
+                            else "Couldn't press '$key' (try: back, home, recents, notifications)."
+                        }
+                        "scroll" -> {
+                            val dir = args["direction"] ?: "down"
+                            if (!MizuneAccessibilityService.isEnabled())
+                                needsAccessibility("scroll")
+                            else if (MizuneAccessibilityService.instance?.scroll(dir) == true)
+                                "Scrolled $dir on the phone."
+                            else "Nothing scrollable on the current screen."
                         }
                         "speak" -> {
                             val text = args["text"] ?: args["message"] ?: ""
@@ -154,7 +186,7 @@ class MizuneService : Service() {
                             if (!isAppInForeground) showAlertNotification("Mizune", text)
                             "Spoken/notified on phone."
                         }
-                        else -> "Unknown action '$action'. Phone supports: notify, open_url, open_app, speak."
+                        else -> "Unknown action '$action'. Phone supports: notify, open_url, open_app, tap, type, press, scroll, speak."
                     }
                 } catch (e: Exception) {
                     Log.e("MizuneService", "Device command failed", e)
@@ -185,32 +217,38 @@ class MizuneService : Service() {
         }
     }
 
+    private fun needsAccessibility(what: String): String =
+        "I need the Accessibility permission to $what. Open the Mizune app once and tap " +
+        "\"Enable Mizune's hands\" (Settings → Accessibility → Mizune → On). Then I can do it every time."
+
     /**
-     * Launch an activity from the background. Android 10+ blocks this silently unless
-     * the app holds the "Display over other apps" (overlay) privilege — so we report
-     * HONESTLY whether the launch could actually happen, and fall back to a tappable
-     * notification when the privilege is missing (instead of pretending it worked).
+     * Launch an app/URL. Preferred path is the AccessibilityService — it's exempt from
+     * the OEM background-launch blocking (OnePlus/OxygenOS etc.) that silently swallows
+     * a plain foreground-service startActivity. Falls back to overlay-based launch, then
+     * to a tappable notification — and reports HONESTLY which happened.
      */
-    private fun launchActivity(intent: Intent, describe: String): String {
+    private fun launchIntent(intent: Intent, describe: String): String {
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        val canLaunch = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ||
-                android.provider.Settings.canDrawOverlays(this)
-        return try {
-            if (canLaunch) {
-                startActivity(intent)
-                "Done — asked the phone to $describe."
-            } else {
-                // No overlay privilege: post a full-screen-intent notification the user
-                // can tap to complete the action, and say so plainly.
-                showLaunchNotification(intent, describe)
-                "I set up '$describe' but Android needs the 'Display over other apps' " +
-                    "permission for me to open it myself — tap the notification, or grant " +
-                    "that permission once in the Mizune app settings."
-            }
-        } catch (e: Exception) {
-            showLaunchNotification(intent, describe)
-            "Android blocked the direct launch ($describe); I sent a tappable notification instead."
+        // 1. Accessibility (reliable everywhere)
+        if (MizuneAccessibilityService.isEnabled() &&
+            MizuneAccessibilityService.instance?.launch(intent) == true) {
+            return "Done — opened it on the phone ($describe)."
         }
+        // 2. Overlay-privileged direct launch (works on stock Android with permission)
+        val canOverlay = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ||
+                android.provider.Settings.canDrawOverlays(this)
+        if (canOverlay) {
+            try {
+                startActivity(intent)
+                // On OEM ROMs this can be silently dropped, so be honest, not boastful.
+                return "Tried to $describe on the phone. If nothing appeared, enable " +
+                    "Mizune's Accessibility permission and I'll do it reliably."
+            } catch (_: Exception) { /* fall through */ }
+        }
+        // 3. Tappable notification fallback
+        showLaunchNotification(intent, describe)
+        return "I couldn't launch it directly (OEM background limits). I sent a tappable " +
+            "notification — or enable Mizune's Accessibility permission for one-tap-free launches."
     }
 
     /** Resolve a spoken app name (e.g. "brave", "spotify") to a launch intent. */

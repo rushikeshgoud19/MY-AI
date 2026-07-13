@@ -289,17 +289,27 @@ class MainActivity : ComponentActivity() {
             requestPermissionLauncher.launch(needed.toTypedArray())
         }
 
-        // "Display over other apps" — required for Mizune to open apps/URLs on the
-        // phone from the background (Android 10+ blocks background launches otherwise).
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
-            !android.provider.Settings.canDrawOverlays(this)) {
+        // Accessibility — Mizune's "hands". This is the RELIABLE way to launch apps,
+        // tap, type and scroll on any phone (exempt from OEM background-launch blocks).
+        // Guide the user to enable it once if it isn't already.
+        if (!isAccessibilityEnabled()) {
             try {
-                startActivity(Intent(
-                    android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                    Uri.parse("package:$packageName")
-                ))
+                startActivity(Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                android.widget.Toast.makeText(
+                    this,
+                    "Enable \"Mizune\" here so she can open apps & do tasks on your phone.",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
             } catch (_: Exception) { }
         }
+    }
+
+    private fun isAccessibilityEnabled(): Boolean {
+        val enabled = android.provider.Settings.Secure.getString(
+            contentResolver, android.provider.Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+        ) ?: return false
+        return enabled.contains("$packageName/.service.MizuneAccessibilityService") ||
+            enabled.contains("$packageName/com.mizune.app.service.MizuneAccessibilityService")
     }
 
     private fun startAndBindService(serverUrl: String) {

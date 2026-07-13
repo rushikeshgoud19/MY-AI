@@ -157,12 +157,12 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "remote_device_command",
-            "description": "Execute actions on Master's other online devices — this IS how you control his phone (device='phone'). Laptop: install_app, download_file, open_app, open_url, run_command, claude_code (opens a Claude Code AI session; args {task, project?}). Phone: open_app (args {app_name}), open_url (args {url}), notify (args {title, message}), speak (args {text}).",
+            "description": "Execute actions on Master's other online devices — this IS how you control his phone (device='phone'). Laptop: install_app, download_file, open_app, open_url, run_command, claude_code (args {task, project?}). Phone: open_app (args {app_name}), open_url (args {url}), tap (args {text} — tap a button/label on screen), type (args {text} — into focused field, for forms), press (args {key: back|home|recents}), scroll (args {direction: up|down}), notify (args {title, message}), speak (args {text}). For multi-step phone tasks, call this several times in sequence (open app → tap → type → tap).",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "device": {"type": "string", "description": "Target device name from the online-devices context (e.g. 'laptop', 'phone'). 'my phone'/'my mobile' → 'phone'."},
-                    "action": {"type": "string", "description": "One of: download_file, open_app, open_url, run_command, claude_code, notify, speak."},
+                    "action": {"type": "string", "description": "One of: download_file, open_app, open_url, run_command, claude_code, tap, type, press, scroll, notify, speak."},
                     "args": {"type": "object", "description": "Action arguments, e.g. {\"url\": \"https://...\", \"filename\": \"setup.exe\"}."}
                 },
                 "required": ["device", "action"]
