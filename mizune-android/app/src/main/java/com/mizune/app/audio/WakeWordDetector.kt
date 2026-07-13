@@ -117,44 +117,66 @@ class WakeWordDetector(private val context: Context, private val listener: WakeW
         if (speechService != null) speechService?.setPause(false) else startListening()
     }
 
-    /** Returns the command text after the wake phrase, or null if no wake detected. */
+    // Two-phase state: after the wake phrase, we stay AWAKE for a few seconds and take
+    // the next spoken sentence as the command — so "Baka Mizune" <pause> "play Shakira"
+    // works, not just a single perfect breath.
+    private var awakeUntil = 0L
+    private val COMMAND_WINDOW_MS = 7000L
+
+    /** Returns command-after-phrase (may be ""), or null if the wake phrase isn't present. */
     private fun detectWake(text: String): String? {
         val tokens = text.split(Regex("\\s+")).filter { it.isNotBlank() }
-        // Look for a BAKA word followed by a MIZU word within the first few tokens.
         val limit = minOf(tokens.size - 1, 4)
         for (i in 0..limit) {
             if (tokens[i] in BAKA && i + 1 < tokens.size && tokens[i + 1] in MIZU) {
-                return tokens.drop(i + 2).joinToString(" ").trim()   // command after the phrase
+                return tokens.drop(i + 2).joinToString(" ").trim()
             }
         }
         return null
     }
 
-    private fun handle(text: String) {
+    private fun handle(text: String, isFinal: Boolean) {
         if (paused || text.isBlank()) return
         val lower = text.lowercase().trim()
-        listener.onHeard(lower)   // live debug: shows the mic IS working + what it hears
-        val command = detectWake(lower) ?: return
-        // Debounce: partials + final can both fire; one trigger per ~2.5s.
+        listener.onHeard(lower)
         val now = System.currentTimeMillis()
-        if (now - lastFired < 2500) return
+
+        // PHASE 2: we're awake and waiting for the command sentence.
+        if (now < awakeUntil) {
+            if (!isFinal) return                       // wait for a complete sentence
+            val afterWake = detectWake(lower)          // in case they repeated the phrase
+            val command = (afterWake ?: lower).trim()
+            if (command.isNotBlank()) {
+                awakeUntil = 0
+                listener.onCommandRecognized(command)
+            }
+            return
+        }
+
+        // PHASE 1: listen for the wake phrase.
+        val cmd = detectWake(lower) ?: return
+        if (now - lastFired < 2000) return
         lastFired = now
         listener.onWakeWordDetected()
-        if (command.isNotEmpty()) listener.onCommandRecognized(command)
+        if (cmd.isNotEmpty()) {
+            listener.onCommandRecognized(cmd)          // same-breath command
+        } else {
+            awakeUntil = now + COMMAND_WINDOW_MS        // wait for the next sentence
+        }
     }
 
     private val recognitionListener = object : RecognitionListener {
         override fun onPartialResult(hypothesis: String?) {
             hypothesis ?: return
-            try { handle(JSONObject(hypothesis).optString("partial")) } catch (_: Exception) {}
+            try { handle(JSONObject(hypothesis).optString("partial"), false) } catch (_: Exception) {}
         }
         override fun onResult(hypothesis: String?) {
             hypothesis ?: return
-            try { handle(JSONObject(hypothesis).optString("text")) } catch (_: Exception) {}
+            try { handle(JSONObject(hypothesis).optString("text"), true) } catch (_: Exception) {}
         }
         override fun onFinalResult(hypothesis: String?) {
             hypothesis ?: return
-            try { handle(JSONObject(hypothesis).optString("text")) } catch (_: Exception) {}
+            try { handle(JSONObject(hypothesis).optString("text"), true) } catch (_: Exception) {}
         }
         override fun onError(exception: Exception?) {
             Log.e("WakeWord", "Vosk error", exception)

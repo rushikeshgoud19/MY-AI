@@ -39,6 +39,7 @@ class MizuneService : Service() {
     private var isAppInForeground = false
     private var lastConnectionState = ConnectionState.DISCONNECTED
     private var wakeWord: com.mizune.app.audio.WakeWordDetector? = null
+    private var serviceTts: com.mizune.app.audio.TtsPlayer? = null
 
     companion object {
         private const val TAG = "MizuneService"
@@ -118,6 +119,8 @@ class MizuneService : Service() {
         super.onDestroy()
         wakeWord?.stopListening()
         wakeWord = null
+        serviceTts?.release()
+        serviceTts = null
         if (::webSocket.isInitialized) {
             webSocket.disconnect()
         }
@@ -167,6 +170,12 @@ class MizuneService : Service() {
             override fun onAudio(base64Mp3: String) {
                 synchronized(listenersLock) {
                     uiListeners.forEach { it.onAudio(base64Mp3) }
+                }
+                // Hands-free: if the app isn't in the foreground (e.g. wake-word command
+                // with the phone locked), the service plays her real voice itself.
+                if (!isAppInForeground) {
+                    if (serviceTts == null) serviceTts = com.mizune.app.audio.TtsPlayer(this@MizuneService)
+                    serviceTts?.playBase64(base64Mp3)
                 }
             }
 
