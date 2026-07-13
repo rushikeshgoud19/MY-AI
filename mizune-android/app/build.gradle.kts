@@ -1,9 +1,18 @@
 
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     kotlin("plugin.serialization") version "1.9.0"
 }
+
+// Picovoice AccessKey from local.properties (gitignored — never committed).
+val localProps = Properties().apply {
+    val f = rootProject.file("local.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+val picovoiceKey: String = localProps.getProperty("picovoice.key", "")
 
 android {
     namespace = "com.mizune.app"
@@ -23,6 +32,7 @@ android {
         vectorDrawables {
             useSupportLibrary = true
         }
+        buildConfigField("String", "PICOVOICE_KEY", "\"$picovoiceKey\"")
     }
 
     buildTypes {
@@ -40,6 +50,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.1"
@@ -69,8 +80,10 @@ dependencies {
     // Networking (OkHttp)
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
-    // Offline wake word + speech (Vosk) — no beep, low power, no network
+    // Offline wake word + speech (Vosk) — command capture after wake
     implementation("com.alphacephei:vosk-android:0.3.47")
+    // Porcupine — purpose-built custom "Baka Mizune" wake word (low-power, accurate)
+    implementation("ai.picovoice:porcupine-android:3.0.2")
     
     // Audio (ExoPlayer)
     implementation("androidx.media3:media3-exoplayer:1.2.1")

@@ -39,6 +39,7 @@ class MizuneService : Service() {
     private var isAppInForeground = false
     private var lastConnectionState = ConnectionState.DISCONNECTED
     private var wakeWord: com.mizune.app.audio.WakeWordDetector? = null
+    private var porcupine: com.mizune.app.audio.PorcupineWakeWord? = null
     private var serviceTts: com.mizune.app.audio.TtsPlayer? = null
 
     companion object {
@@ -74,37 +75,65 @@ class MizuneService : Service() {
 
     override fun onBind(intent: Intent?): IBinder = binder
 
-    /** Always-on "Baka Mizune" listener → routes the spoken command to her brain. */
+    /**
+     * Start the wake word. Prefers Porcupine ("Baka Mizune", accurate, low-power) when
+     * configured (AccessKey + baka_mizune.ppn present); otherwise falls back to Vosk
+     * continuous fuzzy matching so it always does SOMETHING.
+     */
     private fun startWakeWord() {
-        if (wakeWord != null) return
-        wakeWord = com.mizune.app.audio.WakeWordDetector(this, object : com.mizune.app.audio.WakeWordListener {
-            override fun onWakeWordDetected() {
-                vibrateOnce()
-                setWakeStatus("✨ Baka Mizune — heard you!")
-            }
-            override fun onCommandRecognized(command: String) {
-                if (command.isNotBlank() && ::webSocket.isInitialized) {
-                    webSocket.sendMessage(command)
-                    setWakeStatus("▶ running: $command")
+        if (wakeWord == null) {
+            wakeWord = com.mizune.app.audio.WakeWordDetector(this, object : com.mizune.app.audio.WakeWordListener {
+                override fun onWakeWordDetected() {
+                    vibrateOnce()
+                    setWakeStatus("✨ Baka Mizune — heard you!")
                 }
+                override fun onCommandRecognized(command: String) {
+                    if (command.isNotBlank() && ::webSocket.isInitialized) {
+                        webSocket.sendMessage(command)
+                        setWakeStatus("▶ running: $command")
+                    }
+                }
+                override fun onHeard(text: String) {
+                    if (text.isNotBlank()) setWakeStatus("🎙 heard: ${text.take(40)}")
+                }
+                override fun onError(error: String) {
+                    Log.w(TAG, "WakeWord: $error"); setWakeStatus("⚠ wake: $error")
+                }
+                override fun onReadyForSpeech() { setWakeStatus("🎙 Listening for \"Baka Mizune\"…") }
+            })
+        }
+
+        porcupine = com.mizune.app.audio.PorcupineWakeWord(this) { onPorcupineWake() }
+        if (porcupine?.start() == true) {
+            setWakeStatus("🎙 \"Baka Mizune\" ready (Porcupine)")
+            Log.d(TAG, "Wake via Porcupine")
+        } else {
+            porcupine = null
+            wakeWord?.startListening()          // Vosk fallback (until Rushi adds key + .ppn)
+            setWakeStatus("⏳ Loading wake word (Vosk)…")
+            Log.d(TAG, "Wake via Vosk fallback")
+        }
+    }
+
+    /** Porcupine detected the wake word → hand the mic to Vosk to capture the command. */
+    private fun onPorcupineWake() {
+        vibrateOnce()
+        setWakeStatus("✨ Baka Mizune — listening…")
+        porcupine?.stop()                        // release mic
+        wakeWord?.captureCommandOnce(7000) { cmd ->
+            if (!cmd.isNullOrBlank() && ::webSocket.isInitialized) {
+                webSocket.sendMessage(cmd)
+                setWakeStatus("▶ running: $cmd")
+            } else {
+                setWakeStatus("🎙 \"Baka Mizune\" ready")
             }
-            override fun onHeard(text: String) {
-                // Live debug in the notification: proves the mic works + shows transcripts.
-                if (text.isNotBlank()) setWakeStatus("🎙 heard: ${text.take(40)}")
-            }
-            override fun onError(error: String) {
-                Log.w(TAG, "WakeWord: $error")
-                setWakeStatus("⚠ wake: $error")
-            }
-            override fun onReadyForSpeech() { setWakeStatus("🎙 Listening for \"Baka Mizune\"…") }
-        }).also { it.startListening() }
-        setWakeStatus("⏳ Loading wake word…")
-        Log.d(TAG, "Baka-Mizune wake word listening")
+            porcupine?.resume()                  // reclaim mic for the next wake
+        }
     }
 
     /** Pause/resume wake detection so it doesn't fight push-to-talk for the mic. */
-    fun pauseWakeWord() { wakeWord?.pause() }
-    fun resumeWakeWord() { wakeWord?.resume() }
+    fun pauseWakeWord() { porcupine?.stop(); wakeWord?.pause() }
+    fun resumeWakeWord() { if (porcupine != null) porcupine?.resume() else wakeWord?.resume() }
 
     private fun vibrateOnce() {
         try {
@@ -119,6 +148,8 @@ class MizuneService : Service() {
         super.onDestroy()
         wakeWord?.stopListening()
         wakeWord = null
+        porcupine?.release()
+        porcupine = null
         serviceTts?.release()
         serviceTts = null
         if (::webSocket.isInitialized) {

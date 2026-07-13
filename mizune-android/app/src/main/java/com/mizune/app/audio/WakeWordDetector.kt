@@ -106,6 +106,50 @@ class WakeWordDetector(private val context: Context, private val listener: WakeW
         speechService = null
     }
 
+    /**
+     * One-shot command capture (used AFTER Porcupine detects the wake word and releases
+     * the mic). Starts Vosk, returns the first non-blank final transcript (or null on
+     * timeout), then stops — freeing the mic for Porcupine again.
+     */
+    fun captureCommandOnce(timeoutMs: Long = 7000L, onDone: (String?) -> Unit) {
+        val ensureModel: () -> Unit = {
+            if (model == null) {
+                val dir = copyAssetModel(); model = Model(dir.absolutePath)
+            }
+        }
+        Thread {
+            try {
+                ensureModel()
+                val rec = Recognizer(model, 16000.0f)
+                val svc = SpeechService(rec, 16000.0f)
+                val done = java.util.concurrent.atomic.AtomicBoolean(false)
+                val finish: (String?) -> Unit = { result ->
+                    if (done.compareAndSet(false, true)) {
+                        try { svc.stop(); svc.shutdown() } catch (_: Exception) {}
+                        android.os.Handler(android.os.Looper.getMainLooper()).post { onDone(result) }
+                    }
+                }
+                svc.startListening(object : RecognitionListener {
+                    override fun onPartialResult(h: String?) {}
+                    override fun onResult(h: String?) {
+                        val t = try { JSONObject(h ?: "{}").optString("text").trim() } catch (_: Exception) { "" }
+                        if (t.isNotBlank()) finish(t)
+                    }
+                    override fun onFinalResult(h: String?) {
+                        val t = try { JSONObject(h ?: "{}").optString("text").trim() } catch (_: Exception) { "" }
+                        finish(if (t.isNotBlank()) t else null)
+                    }
+                    override fun onError(e: Exception?) { finish(null) }
+                    override fun onTimeout() { finish(null) }
+                })
+                android.os.Handler(android.os.Looper.getMainLooper())
+                    .postDelayed({ finish(null) }, timeoutMs)
+            } catch (e: Throwable) {
+                android.os.Handler(android.os.Looper.getMainLooper()).post { onDone(null) }
+            }
+        }.start()
+    }
+
     fun pause() {
         paused = true
         speechService?.setPause(true)
