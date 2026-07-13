@@ -137,26 +137,24 @@ class MizuneService : Service() {
                         "open_url" -> {
                             val url = args["url"] ?: ""
                             if (url.startsWith("http://") || url.startsWith("https://")) {
-                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
-                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                }
-                                startActivity(intent)
-                                "Opened $url on phone."
-                            } else {
-                                "Refused: only http(s) URLs are allowed."
-                            }
+                                launchActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)), "open $url")
+                            } else "Refused: only http(s) URLs are allowed."
+                        }
+                        "open_app" -> {
+                            val name = args["app_name"] ?: args["app"] ?: args["name"] ?: ""
+                            val launch = resolveLaunchIntent(name)
+                            if (launch == null) "Couldn't find an app matching '$name' on the phone."
+                            else launchActivity(launch, "open $name")
                         }
                         "speak" -> {
                             val text = args["text"] ?: args["message"] ?: ""
-                            // Route through the normal message pipeline: the foreground
-                            // app voices it; if backgrounded, it lands as a notification.
                             synchronized(listenersLock) {
                                 uiListeners.forEach { it.onMessage(text, "neutral") }
                             }
                             if (!isAppInForeground) showAlertNotification("Mizune", text)
                             "Spoken/notified on phone."
                         }
-                        else -> "Unknown action '$action'. Phone supports: notify, open_url, speak."
+                        else -> "Unknown action '$action'. Phone supports: notify, open_url, open_app, speak."
                     }
                 } catch (e: Exception) {
                     Log.e("MizuneService", "Device command failed", e)
@@ -185,6 +183,76 @@ class MizuneService : Service() {
         synchronized(listenersLock) {
             uiListeners.remove(listener)
         }
+    }
+
+    /**
+     * Launch an activity from the background. Android 10+ blocks this silently unless
+     * the app holds the "Display over other apps" (overlay) privilege — so we report
+     * HONESTLY whether the launch could actually happen, and fall back to a tappable
+     * notification when the privilege is missing (instead of pretending it worked).
+     */
+    private fun launchActivity(intent: Intent, describe: String): String {
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val canLaunch = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ||
+                android.provider.Settings.canDrawOverlays(this)
+        return try {
+            if (canLaunch) {
+                startActivity(intent)
+                "Done — asked the phone to $describe."
+            } else {
+                // No overlay privilege: post a full-screen-intent notification the user
+                // can tap to complete the action, and say so plainly.
+                showLaunchNotification(intent, describe)
+                "I set up '$describe' but Android needs the 'Display over other apps' " +
+                    "permission for me to open it myself — tap the notification, or grant " +
+                    "that permission once in the Mizune app settings."
+            }
+        } catch (e: Exception) {
+            showLaunchNotification(intent, describe)
+            "Android blocked the direct launch ($describe); I sent a tappable notification instead."
+        }
+    }
+
+    /** Resolve a spoken app name (e.g. "brave", "spotify") to a launch intent. */
+    private fun resolveLaunchIntent(name: String): Intent? {
+        if (name.isBlank()) return null
+        val pm = packageManager
+        val query = name.trim().lowercase()
+        // Common aliases → package hints
+        val aliases = mapOf(
+            "brave" to "com.brave", "chrome" to "com.android.chrome",
+            "youtube" to "com.google.android.youtube", "yt music" to "com.google.android.apps.youtube.music",
+            "youtube music" to "com.google.android.apps.youtube.music",
+            "spotify" to "com.spotify", "whatsapp" to "com.whatsapp",
+            "instagram" to "com.instagram", "maps" to "com.google.android.apps.maps",
+            "gmail" to "com.google.android.gm"
+        )
+        val hint = aliases.entries.firstOrNull { query.contains(it.key) }?.value
+        val installed = pm.getInstalledApplications(0)
+        val match = installed.firstOrNull { app ->
+            (hint != null && app.packageName.startsWith(hint)) ||
+                pm.getApplicationLabel(app).toString().lowercase() == query ||
+                pm.getApplicationLabel(app).toString().lowercase().contains(query)
+        }
+        return match?.let { pm.getLaunchIntentForPackage(it.packageName) }
+    }
+
+    private fun showLaunchNotification(intent: Intent, describe: String) {
+        val pending = PendingIntent.getActivity(
+            this, describe.hashCode(), intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val notif = NotificationCompat.Builder(this, ALERT_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle("Mizune")
+            .setContentText("Tap to $describe")
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setFullScreenIntent(pending, true)
+            .setContentIntent(pending)
+            .build()
+        getSystemService(NotificationManager::class.java)
+            .notify(describe.hashCode(), notif)
     }
 
     fun sendMessage(text: String) {

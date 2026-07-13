@@ -163,7 +163,7 @@ class MizuneWebSocket(
                     put("device_name", "phone")
                     put("platform", "android")
                     put("capabilities", buildJsonArray {
-                        add("notify"); add("open_url"); add("speak")
+                        add("notify"); add("open_url"); add("open_app"); add("speak")
                     })
                 }
                 webSocket.send(reg.toString())

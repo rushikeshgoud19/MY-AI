@@ -287,6 +287,18 @@ class MainActivity : ComponentActivity() {
         if (needed.isNotEmpty()) {
             requestPermissionLauncher.launch(needed.toTypedArray())
         }
+
+        // "Display over other apps" — required for Mizune to open apps/URLs on the
+        // phone from the background (Android 10+ blocks background launches otherwise).
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+            !android.provider.Settings.canDrawOverlays(this)) {
+            try {
+                startActivity(Intent(
+                    android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:$packageName")
+                ))
+            } catch (_: Exception) { }
+        }
     }
 
     private fun startAndBindService(serverUrl: String) {

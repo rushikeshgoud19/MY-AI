@@ -32,23 +32,9 @@ def get_api_key(config, key_name):
 
 # Phase 1: Native Tools for ReAct Loop
 TOOLS_SCHEMA = [
-    {
-        "type": "function",
-        "function": {
-            "name": "phone_control",
-            "description": "Control the user's Android phone via ADB to fetch messages, location, battery, or take photos.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string", 
-                        "description": "The action to perform. Can be: 'get_messages', 'take_photo', 'get_location', 'get_battery'"
-                    }
-                },
-                "required": ["action"]
-            }
-        }
-    },
+    # NOTE: legacy ADB-based `phone_control` retired — the phone is now a live device
+    # node reached via `remote_device_command` (device='phone'). Removing it from the
+    # schema stops the model from firing a redundant second tool call for phone tasks.
     {
         "type": "function",
         "function": {
@@ -171,11 +157,11 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "remote_device_command",
-            "description": "Execute actions on Master's other online devices. Laptop: install_app, download_file, open_app, open_url, run_command, claude_code (opens a Claude Code AI coding session; args {task: what to work on, project: optional dir}). Phone: notify, open_url, speak.",
+            "description": "Execute actions on Master's other online devices — this IS how you control his phone (device='phone'). Laptop: install_app, download_file, open_app, open_url, run_command, claude_code (opens a Claude Code AI session; args {task, project?}). Phone: open_app (args {app_name}), open_url (args {url}), notify (args {title, message}), speak (args {text}).",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "device": {"type": "string", "description": "Target device name from the online-devices context (e.g. 'laptop', 'phone')."},
+                    "device": {"type": "string", "description": "Target device name from the online-devices context (e.g. 'laptop', 'phone'). 'my phone'/'my mobile' → 'phone'."},
                     "action": {"type": "string", "description": "One of: download_file, open_app, open_url, run_command, claude_code, notify, speak."},
                     "args": {"type": "object", "description": "Action arguments, e.g. {\"url\": \"https://...\", \"filename\": \"setup.exe\"}."}
                 },
