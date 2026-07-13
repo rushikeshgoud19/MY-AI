@@ -933,7 +933,7 @@ def _gemini_response(text: str, history: list, system_prompt: str, config: dict,
             )
             
             # ReAct Loop
-            max_loops = 5
+            max_loops = 6
             executed_tools_meta = []
             response = chat.send_message(text)
             
@@ -997,7 +997,7 @@ def _gemini_response(text: str, history: list, system_prompt: str, config: dict,
                     )
                     fast_track_results.append(str(tool_result))
                 
-                FAST_TRACK_TOOLS = ["schedule_task", "open_app", "close_app", "message_whatsapp", "execute_skill", "notify_master", "play_music", "remote_device_command"]
+                FAST_TRACK_TOOLS = ["schedule_task", "open_app", "close_app", "message_whatsapp", "execute_skill", "notify_master", "play_music"]
                 all_fast_track = all(t["name"] in FAST_TRACK_TOOLS for t in parsed_tools)
                 
                 if all_fast_track and parsed_tools:
@@ -1110,7 +1110,7 @@ def _groq_response(text: str, history: list, system_prompt: str, config: dict, w
             
         messages.append(msg)
 
-        max_loops = 5
+        max_loops = 6
         executed_tools = []
         
         for _ in range(max_loops):
@@ -1143,7 +1143,7 @@ def _groq_response(text: str, history: list, system_prompt: str, config: dict, w
             # open app, schedule, notify...), there's nothing for the model to reason about.
             # Return the tool results directly and skip the second round-trip. This is what
             # keeps WhatsApp replies sub-second on the Groq path.
-            FAST_TRACK_TOOLS = ["schedule_task", "open_app", "close_app", "message_whatsapp", "execute_skill", "notify_master", "play_music", "remote_device_command"]
+            FAST_TRACK_TOOLS = ["schedule_task", "open_app", "close_app", "message_whatsapp", "execute_skill", "notify_master", "play_music"]
             if round_tool_names and all(n in FAST_TRACK_TOOLS for n in round_tool_names):
                 fast_response = " ".join(r for r in round_results if r) or "Action completed."
                 if executed_tools:
@@ -1328,7 +1328,7 @@ def _nvidia_response(text: str, history: list, system_prompt: str, config: dict,
             messages.append({"role": "user", "content": text})
             
         model_name = config.get("nvidia_model", "meta/llama-3.1-70b-instruct")
-        max_loops = 5
+        max_loops = 6
         executed_tools_meta = []
         
         # Determine if we must FORCE a tool (if the ManagerAgent injected a directive)
@@ -1480,7 +1480,7 @@ def _openrouter_response(text: str, history: list, system_prompt: str, config: d
         if text.strip():
             messages.append({"role": "user", "content": text})
             
-        max_loops = 5
+        max_loops = 6
         executed_tools = []
         
         for _ in range(max_loops):
