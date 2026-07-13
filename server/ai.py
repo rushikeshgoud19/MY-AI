@@ -523,8 +523,10 @@ def _execute_tool_call_impl(tool_name: str, args: dict, config: dict, background
                 note = f"(couldn't grab a direct link — opening a search for '{query}')"
             else:
                 note = ""
-            res = device_registry.send_command(device, "open_url", {"url": url})
-            return f"Playing '{query}' on {device}. {note} [{res}]"
+            # Master prefers YT Music in the Brave BROWSER, not the app.
+            browser = args.get("browser") or config.get("music_browser", "brave")
+            res = device_registry.send_command(device, "open_url", {"url": url, "browser": browser})
+            return f"Playing '{query}' on {device} in {browser}. {note} [{res}]"
 
         if tool_name == "remote_device_command":
             from .device_registry import device_registry

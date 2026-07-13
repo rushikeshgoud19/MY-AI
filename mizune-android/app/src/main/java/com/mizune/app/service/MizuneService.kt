@@ -137,7 +137,13 @@ class MizuneService : Service() {
                         "open_url" -> {
                             val url = args["url"] ?: ""
                             if (url.startsWith("http://") || url.startsWith("https://")) {
-                                launchIntent(Intent(Intent.ACTION_VIEW, Uri.parse(url)), "open $url")
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                                // Optional: force a specific browser (e.g. Brave) instead of
+                                // letting the URL deep-link into an app (YT Music app).
+                                val browser = args["browser"] ?: args["package"]
+                                val pkg = if (!browser.isNullOrBlank()) resolveBrowserPackage(browser) else null
+                                if (pkg != null) intent.setPackage(pkg)
+                                launchIntent(intent, "open $url" + if (pkg != null) " in $browser" else "")
                             } else "Refused: only http(s) URLs are allowed."
                         }
                         "open_app" -> {
@@ -254,6 +260,24 @@ class MizuneService : Service() {
         showLaunchNotification(intent, describe)
         return "I couldn't launch it directly (OEM background limits). I sent a tappable " +
             "notification — or enable Mizune's Accessibility permission for one-tap-free launches."
+    }
+
+    /** Resolve a browser name to its installed package (so a URL opens THERE, not in
+     *  an app that claims the link). Falls back to null if the browser isn't installed. */
+    private fun resolveBrowserPackage(name: String): String? {
+        val pm = packageManager
+        val q = name.trim().lowercase()
+        val candidates = when {
+            q.contains("brave") -> listOf("com.brave.browser", "com.brave.browser_beta")
+            q.contains("chrome") -> listOf("com.android.chrome")
+            q.contains("firefox") -> listOf("org.mozilla.firefox")
+            q.contains("edge") -> listOf("com.microsoft.emmx")
+            else -> listOf(q)
+        }
+        for (c in candidates) {
+            try { pm.getPackageInfo(c, 0); return c } catch (_: Exception) {}
+        }
+        return null
     }
 
     /** Resolve a spoken app name (e.g. "brave", "spotify") to a launch intent. */
