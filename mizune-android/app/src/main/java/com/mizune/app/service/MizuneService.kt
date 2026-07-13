@@ -178,6 +178,11 @@ class MizuneService : Service() {
                                 "Scrolled $dir on the phone."
                             else "Nothing scrollable on the current screen."
                         }
+                        "read_screen" -> {
+                            if (!MizuneAccessibilityService.isEnabled())
+                                needsAccessibility("read the screen")
+                            else "SCREEN:\n" + (MizuneAccessibilityService.instance?.dumpScreen() ?: "(unreadable)")
+                        }
                         "speak" -> {
                             val text = args["text"] ?: args["message"] ?: ""
                             synchronized(listenersLock) {
@@ -186,7 +191,7 @@ class MizuneService : Service() {
                             if (!isAppInForeground) showAlertNotification("Mizune", text)
                             "Spoken/notified on phone."
                         }
-                        else -> "Unknown action '$action'. Phone supports: notify, open_url, open_app, tap, type, press, scroll, speak."
+                        else -> "Unknown action '$action'. Phone supports: notify, open_url, open_app, tap, type, press, scroll, read_screen, speak."
                     }
                 } catch (e: Exception) {
                     Log.e("MizuneService", "Device command failed", e)

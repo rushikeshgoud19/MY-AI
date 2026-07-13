@@ -72,6 +72,41 @@ class MizuneAccessibilityService : AccessibilityService() {
         return null
     }
 
+    /**
+     * Read the current screen as a compact list of interactable elements so the brain
+     * can decide the next tap. This is Mizune's "eyes" — turns blind tapping into
+     * sighted operation for multi-step tasks.
+     */
+    fun dumpScreen(): String {
+        val root = rootInActiveWindow ?: return "(screen is empty or not readable)"
+        val lines = mutableListOf<String>()
+        val pkg = root.packageName?.toString() ?: "?"
+        lines.add("app: $pkg")
+        collect(root, lines, 0)
+        val body = lines.take(60).joinToString("\n")   // cap so it never bloats the prompt
+        return body
+    }
+
+    private fun collect(node: AccessibilityNodeInfo?, out: MutableList<String>, depth: Int) {
+        if (node == null || depth > 25) return
+        val text = node.text?.toString()?.trim()
+        val desc = node.contentDescription?.toString()?.trim()
+        val label = when {
+            !text.isNullOrEmpty() -> text
+            !desc.isNullOrEmpty() -> desc
+            else -> null
+        }
+        if (label != null && label.length in 1..80) {
+            val kind = when {
+                node.isEditable -> "field"
+                node.isClickable -> "button"
+                else -> "text"
+            }
+            out.add("[$kind] $label")
+        }
+        for (i in 0 until node.childCount) collect(node.getChild(i), out, depth + 1)
+    }
+
     /** Global navigation: back / home / recents / notifications. */
     fun press(action: String): Boolean {
         val code = when (action.trim().lowercase()) {

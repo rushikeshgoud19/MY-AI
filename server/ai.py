@@ -157,7 +157,7 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "remote_device_command",
-            "description": "Execute actions on Master's other online devices — this IS how you control his phone (device='phone'). Laptop: install_app, download_file, open_app, open_url, run_command, claude_code (args {task, project?}). Phone: open_app (args {app_name}), open_url (args {url}), tap (args {text} — tap a button/label on screen), type (args {text} — into focused field, for forms), press (args {key: back|home|recents}), scroll (args {direction: up|down}), notify (args {title, message}), speak (args {text}). For multi-step phone tasks, call this several times in sequence (open app → tap → type → tap).",
+            "description": "Execute actions on Master's other online devices — this IS how you control his phone (device='phone'). Laptop: install_app, download_file, open_app, open_url, run_command, claude_code (args {task, project?}). Phone: open_app (args {app_name}), open_url (args {url}), read_screen (no args — returns visible buttons/fields so you can SEE the screen before tapping), tap (args {text}), type (args {text} — into focused field, for forms), press (args {key: back|home|recents}), scroll (args {direction: up|down}), notify (args {title, message}), speak (args {text}). For multi-step phone tasks, call in sequence and use read_screen between steps to see what's there (open app → read_screen → tap → type → tap).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -180,6 +180,21 @@ TOOLS_SCHEMA = [
                     "message_to_speak": {"type": "string", "description": "The exact sentence you want to say out loud to Master (e.g., 'Master, John wants you to call him when you are free!')"}
                 },
                 "required": ["message_to_speak"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "play_music",
+            "description": "Play a song by name on one of Master's devices. Resolves the song to a YouTube Music link and opens it (autoplays). Use this whenever Master asks to play/put on a song or artist.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Song and/or artist, e.g. 'VIP by Sid Sriram' or 'blinding lights'."},
+                    "device": {"type": "string", "description": "'phone' (default) or 'laptop'."}
+                },
+                "required": ["query"]
             }
         }
     },
@@ -349,9 +364,28 @@ _SIDE_EFFECT_TOOLS = {
     "remote_device_command", "message_whatsapp", "open_app", "close_app",
     "execute_python", "run_command", "schedule_task", "create_skill",
     "notify_master", "take_note", "store_memory", "add_core_directive",
+    "play_music",
 }
 _recent_tool_calls: dict = {}
 _recent_tool_lock = _dedup_threading.Lock()
+
+
+def _resolve_youtube_music_url(query: str) -> str | None:
+    """Resolve a song query to a YouTube Music WATCH url (autoplays when deep-linked
+    into the YT Music app). Scrapes the top search result — no API key needed."""
+    import urllib.request, urllib.parse, re as _re
+    try:
+        q = urllib.parse.quote(query)
+        req = urllib.request.Request(
+            f"https://www.youtube.com/results?search_query={q}",
+            headers={"User-Agent": "Mozilla/5.0"})
+        html = urllib.request.urlopen(req, timeout=8).read().decode("utf-8", "ignore")
+        m = _re.search(r'"videoId":"([A-Za-z0-9_-]{11})"', html)
+        if m:
+            return f"https://music.youtube.com/watch?v={m.group(1)}"
+    except Exception as e:
+        log_info(f"[MUSIC] YouTube resolve failed: {e}")
+    return None
 
 
 def execute_tool_call(tool_name: str, args: dict, config: dict, background_python: bool = False) -> str:
@@ -476,6 +510,21 @@ def _execute_tool_call_impl(tool_name: str, args: dict, config: dict, background
             if name and code:
                 return str(skill_manager.create_skill(name, desc, code))
             return "Error: skill name and code are required."
+
+        if tool_name == "play_music":
+            from .device_registry import device_registry
+            query = args.get("query", "").strip()
+            device = (args.get("device") or "phone").strip()
+            if not query:
+                return "Error: what song should I play, Master?"
+            url = _resolve_youtube_music_url(query)
+            if not url:
+                url = f"https://music.youtube.com/search?q={query.replace(' ', '+')}"
+                note = f"(couldn't grab a direct link — opening a search for '{query}')"
+            else:
+                note = ""
+            res = device_registry.send_command(device, "open_url", {"url": url})
+            return f"Playing '{query}' on {device}. {note} [{res}]"
 
         if tool_name == "remote_device_command":
             from .device_registry import device_registry
@@ -946,7 +995,7 @@ def _gemini_response(text: str, history: list, system_prompt: str, config: dict,
                     )
                     fast_track_results.append(str(tool_result))
                 
-                FAST_TRACK_TOOLS = ["schedule_task", "open_app", "close_app", "message_whatsapp", "execute_skill", "notify_master"]
+                FAST_TRACK_TOOLS = ["schedule_task", "open_app", "close_app", "message_whatsapp", "execute_skill", "notify_master", "play_music", "remote_device_command"]
                 all_fast_track = all(t["name"] in FAST_TRACK_TOOLS for t in parsed_tools)
                 
                 if all_fast_track and parsed_tools:
@@ -1092,7 +1141,7 @@ def _groq_response(text: str, history: list, system_prompt: str, config: dict, w
             # open app, schedule, notify...), there's nothing for the model to reason about.
             # Return the tool results directly and skip the second round-trip. This is what
             # keeps WhatsApp replies sub-second on the Groq path.
-            FAST_TRACK_TOOLS = ["schedule_task", "open_app", "close_app", "message_whatsapp", "execute_skill", "notify_master"]
+            FAST_TRACK_TOOLS = ["schedule_task", "open_app", "close_app", "message_whatsapp", "execute_skill", "notify_master", "play_music", "remote_device_command"]
             if round_tool_names and all(n in FAST_TRACK_TOOLS for n in round_tool_names):
                 fast_response = " ".join(r for r in round_results if r) or "Action completed."
                 if executed_tools:
