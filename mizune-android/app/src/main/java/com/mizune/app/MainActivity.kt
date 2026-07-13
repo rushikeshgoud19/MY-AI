@@ -224,9 +224,11 @@ class MainActivity : ComponentActivity() {
         pttManager?.release()
         pttManager = PushToTalkManager(this, object : PushToTalkListener {
             override fun onRecordingStarted() {
+                mizuneService?.pauseWakeWord()   // free the mic for push-to-talk
                 runOnUiThread { isRecording.value = true }
             }
             override fun onRecordingStopped() {
+                mizuneService?.resumeWakeWord()
                 runOnUiThread { isRecording.value = false }
             }
             override fun onAmplitude(amplitude: Int) {

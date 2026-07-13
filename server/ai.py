@@ -534,11 +534,12 @@ def _execute_tool_call_impl(tool_name: str, args: dict, config: dict, background
             # PAUSED. Wait for it to load, then tap the play button ourselves.
             play_res = ""
             if device == "phone" and "not online" not in open_res.lower():
-                time.sleep(6)  # let Brave load the player
-                # Brave needs TWO taps: the 1st focuses the tab / dismisses the overlay,
-                # the 2nd actually starts playback.
+                time.sleep(7)  # let Brave fully load the player first
+                # Brave needs TWO SEPARATE taps: 1st focuses the tab / dismisses the
+                # autoplay overlay, 2nd actually starts playback. Give a real gap between
+                # them (each send_command already waits for the device to ack, plus this).
                 device_registry.send_command(device, "tap", {"text": "play"})
-                time.sleep(1)
+                time.sleep(2.5)
                 play_res = device_registry.send_command(device, "tap", {"text": "play"})
             return f"Playing '{query}' on {device} in {browser}. {note} [open: {open_res}] [play: {play_res}]"
 

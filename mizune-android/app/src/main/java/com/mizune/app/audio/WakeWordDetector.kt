@@ -18,7 +18,10 @@ interface WakeWordListener {
 class WakeWordDetector(private val context: Context, private val listener: WakeWordListener) {
     private var speechRecognizer: SpeechRecognizer? = null
     private var isListening = false
-    private val WAKE_WORD = "mizune"
+    private var paused = false
+    // "Baka Mizune" is the wake phrase. SpeechRecognizer transcripts vary, so accept
+    // a few phonetic forms; the 2-word form is preferred to cut false triggers.
+    private val WAKE_PHRASES = listOf("baka mizune", "baka mizu", "baka mizuné", "mizune", "mizu ne")
 
     fun startListening() {
         if (isListening) return
@@ -46,12 +49,19 @@ class WakeWordDetector(private val context: Context, private val listener: WakeW
     }
 
     fun stopListening() {
-        if (!isListening) return
-        speechRecognizer?.stopListening()
-        speechRecognizer?.destroy()
+        speechRecognizer?.let {
+            try { it.stopListening(); it.destroy() } catch (_: Exception) {}
+        }
         speechRecognizer = null
         isListening = false
     }
+
+    /** Pause wake detection (e.g. while push-to-talk uses the mic) without tearing down. */
+    fun pause() { paused = true; stopListening() }
+    fun resume() { if (paused) { paused = false; startListening() } }
+
+    private fun matchedPhrase(text: String): String? =
+        WAKE_PHRASES.firstOrNull { text.contains(it) }
 
     private fun createRecognitionListener() = object : RecognitionListener {
         override fun onReadyForSpeech(params: Bundle?) {
@@ -63,15 +73,18 @@ class WakeWordDetector(private val context: Context, private val listener: WakeW
         override fun onBufferReceived(buffer: ByteArray?) {}
 
         override fun onEndOfSpeech() {
-            // Restart listening if we didn't catch anything, to keep it continuous
             isListening = false
-            startListening()
+            if (!paused) startListening()
         }
 
         override fun onError(error: Int) {
-            // Common errors like no speech input (7) or network timeouts
+            // No-speech (7) / timeout are normal; keep the loop alive unless paused.
             isListening = false
-            startListening() // Keep loop alive
+            if (!paused) {
+                // Tiny backoff avoids a hot restart loop when the recognizer is busy.
+                android.os.Handler(android.os.Looper.getMainLooper())
+                    .postDelayed({ if (!paused) startListening() }, 400)
+            }
         }
 
         override fun onResults(results: Bundle?) {
@@ -79,31 +92,24 @@ class WakeWordDetector(private val context: Context, private val listener: WakeW
             if (!matches.isNullOrEmpty()) {
                 val text = matches[0].lowercase()
                 Log.d("WakeWord", "Recognized: $text")
-                
-                if (text.contains(WAKE_WORD)) {
+                val phrase = matchedPhrase(text)
+                if (phrase != null) {
                     listener.onWakeWordDetected()
-                    // If they said more than just the wake word (e.g., "Mizune what is the time"), process the rest
-                    val command = text.substringAfter(WAKE_WORD).trim()
-                    if (command.isNotEmpty()) {
-                        listener.onCommandRecognized(command)
-                    }
-                } else {
-                    // Just conversational text if already awake, but for now we only act on wake word
-                    listener.onCommandRecognized(text)
+                    // Everything after the wake phrase is the command
+                    // ("baka mizune play shakira" → "play shakira").
+                    val command = text.substringAfter(phrase).trim().trimStart(',', '.').trim()
+                    if (command.isNotEmpty()) listener.onCommandRecognized(command)
                 }
+                // NOTE: non-wake speech is IGNORED — she only acts when addressed.
             }
-            
             isListening = false
-            startListening()
+            if (!paused) startListening()
         }
 
         override fun onPartialResults(partialResults: Bundle?) {
             val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-            if (!matches.isNullOrEmpty()) {
-                val text = matches[0].lowercase()
-                if (text.contains(WAKE_WORD)) {
-                    listener.onWakeWordDetected()
-                }
+            if (!matches.isNullOrEmpty() && matchedPhrase(matches[0].lowercase()) != null) {
+                listener.onWakeWordDetected()
             }
         }
 

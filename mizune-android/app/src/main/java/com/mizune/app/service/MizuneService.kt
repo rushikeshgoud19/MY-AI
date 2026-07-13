@@ -38,6 +38,7 @@ class MizuneService : Service() {
     private val listenersLock = Object()
     private var isAppInForeground = false
     private var lastConnectionState = ConnectionState.DISCONNECTED
+    private var wakeWord: com.mizune.app.audio.WakeWordDetector? = null
 
     companion object {
         private const val TAG = "MizuneService"
@@ -66,13 +67,47 @@ class MizuneService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForeground(NOTIFICATION_ID, createPersistentNotification())
+        startWakeWord()
         return START_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
 
+    /** Always-on "Baka Mizune" listener → routes the spoken command to her brain. */
+    private fun startWakeWord() {
+        if (wakeWord != null) return
+        wakeWord = com.mizune.app.audio.WakeWordDetector(this, object : com.mizune.app.audio.WakeWordListener {
+            override fun onWakeWordDetected() {
+                vibrateOnce()   // subtle "I'm listening" cue
+            }
+            override fun onCommandRecognized(command: String) {
+                if (command.isNotBlank() && ::webSocket.isInitialized) {
+                    webSocket.sendMessage(command)   // → {type:chat} → brain → real-voice reply
+                }
+            }
+            override fun onError(error: String) { Log.w(TAG, "WakeWord: $error") }
+            override fun onReadyForSpeech() {}
+        }).also { it.startListening() }
+        Log.d(TAG, "Baka-Mizune wake word listening")
+    }
+
+    /** Pause/resume wake detection so it doesn't fight push-to-talk for the mic. */
+    fun pauseWakeWord() { wakeWord?.pause() }
+    fun resumeWakeWord() { wakeWord?.resume() }
+
+    private fun vibrateOnce() {
+        try {
+            val v = getSystemService(android.os.Vibrator::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+                v?.vibrate(android.os.VibrationEffect.createOneShot(35, android.os.VibrationEffect.DEFAULT_AMPLITUDE))
+            else @Suppress("DEPRECATION") v?.vibrate(35)
+        } catch (_: Exception) {}
+    }
+
     override fun onDestroy() {
         super.onDestroy()
+        wakeWord?.stopListening()
+        wakeWord = null
         if (::webSocket.isInitialized) {
             webSocket.disconnect()
         }
