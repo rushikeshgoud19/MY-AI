@@ -54,7 +54,9 @@ class MizuneWebSocket(
         } else if (!normalized.startsWith("ws://", ignoreCase = true) && !normalized.startsWith("wss://", ignoreCase = true)) {
             normalized = "wss://$normalized"
         }
-        return "$normalized/ws"
+        // Idempotent: accept URLs entered with or without a trailing /ws —
+        // appending blindly produced /ws/ws → handshake 403 → reconnect flapping.
+        return if (normalized.endsWith("/ws", ignoreCase = true)) normalized else "$normalized/ws"
     }
 
     fun connect() {
