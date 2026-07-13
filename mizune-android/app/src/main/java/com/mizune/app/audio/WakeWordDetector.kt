@@ -32,9 +32,14 @@ class WakeWordDetector(private val context: Context, private val listener: WakeW
     private var paused = false
     private var lastFired = 0L
 
-    // SpeechRecognizer transcribes the phrase a few ways — accept phonetic variants.
-    private val WAKE_PHRASES = listOf("baka mizune", "baka mizu", "baka mizuni",
-        "baka mizuné", "bakamizune", "mizune", "mizu ne")
+    // Vosk's English model doesn't know "baka mizune", so it transcribes it as
+    // similar-sounding English words (e.g. "but came"). We fuzzy-match: a "baka"-ish
+    // word immediately followed by a "mizune"-ish word = the wake phrase. Requiring
+    // BOTH keeps common speech from false-triggering.
+    private val BAKA = setOf("baka", "back", "buck", "but", "bak", "bacca", "bakka",
+        "booka", "barker", "bianca", "vodka", "pucker")
+    private val MIZU = setOf("mizune", "mizu", "mizuni", "mizuné", "museum", "came",
+        "cami", "camy", "kami", "missouri", "amazon", "muzu", "mausam", "mizzou", "misty")
 
     fun startListening() {
         if (model != null) { startService(); return }
@@ -112,20 +117,29 @@ class WakeWordDetector(private val context: Context, private val listener: WakeW
         if (speechService != null) speechService?.setPause(false) else startListening()
     }
 
-    private fun matchedPhrase(text: String): String? =
-        WAKE_PHRASES.firstOrNull { text.contains(it) }
+    /** Returns the command text after the wake phrase, or null if no wake detected. */
+    private fun detectWake(text: String): String? {
+        val tokens = text.split(Regex("\\s+")).filter { it.isNotBlank() }
+        // Look for a BAKA word followed by a MIZU word within the first few tokens.
+        val limit = minOf(tokens.size - 1, 4)
+        for (i in 0..limit) {
+            if (tokens[i] in BAKA && i + 1 < tokens.size && tokens[i + 1] in MIZU) {
+                return tokens.drop(i + 2).joinToString(" ").trim()   // command after the phrase
+            }
+        }
+        return null
+    }
 
     private fun handle(text: String) {
         if (paused || text.isBlank()) return
         val lower = text.lowercase().trim()
         listener.onHeard(lower)   // live debug: shows the mic IS working + what it hears
-        val phrase = matchedPhrase(lower) ?: return
+        val command = detectWake(lower) ?: return
         // Debounce: partials + final can both fire; one trigger per ~2.5s.
         val now = System.currentTimeMillis()
         if (now - lastFired < 2500) return
         lastFired = now
         listener.onWakeWordDetected()
-        val command = lower.substringAfter(phrase).trim().trimStart(',', '.').trim()
         if (command.isNotEmpty()) listener.onCommandRecognized(command)
     }
 
