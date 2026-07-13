@@ -119,6 +119,12 @@ class MizuneService : Service() {
                 }
             }
 
+            override fun onAudio(base64Mp3: String) {
+                synchronized(listenersLock) {
+                    uiListeners.forEach { it.onAudio(base64Mp3) }
+                }
+            }
+
             override fun onDeviceCommand(requestId: String, action: String, args: Map<String, String>) {
                 val result = try {
                     when (action) {

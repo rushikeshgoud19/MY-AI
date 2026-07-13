@@ -21,6 +21,8 @@ interface MizuneWebSocketListener {
     fun onTaskList(tasks: List<TaskItem>) {}
     /** Device-node command from the brain (notify / open_url / speak). */
     fun onDeviceCommand(requestId: String, action: String, args: Map<String, String>) {}
+    /** Server-generated TTS audio for the last reply (base64, one per full reply). */
+    fun onAudio(base64Mp3: String) {}
 }
 
 class MizuneWebSocket(
@@ -208,6 +210,10 @@ class MizuneWebSocket(
                             }
                         }
                         "device_registered" -> Log.d(TAG, "Registered as device node")
+                        "audio" -> {
+                            val b64 = json["b64"]?.jsonPrimitive?.content ?: ""
+                            if (b64.isNotEmpty()) listener.onAudio(b64)
+                        }
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Error parsing message: $text", e)

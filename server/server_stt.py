@@ -85,8 +85,11 @@ def _transcribe_groq(path: str) -> dict:
             response = client.audio.transcriptions.create(
                 file=audio_fh,
                 model=GROQ_MODEL_NAME,
+                # English hint: auto-detect frequently mis-hears Indian English
+                # as other languages and returns garbage transcripts.
+                language=os.environ.get("STT_LANGUAGE", "en"),
             )
-        return {"text": (response.text or "").strip(), "language": None}
+        return {"text": (response.text or "").strip(), "language": "en"}
     except Exception as e:
         logger.warning(f"Groq STT failed: {e}. Falling back to faster-whisper.")
         # If Groq fails, instantly fall back to local faster-whisper
