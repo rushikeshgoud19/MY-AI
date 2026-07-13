@@ -22,7 +22,7 @@ try:
 except ImportError:
     sys.exit("pip install websockets")
 
-CAPABILITIES = ["install_app", "download_file", "open_app", "open_url", "run_command"]
+CAPABILITIES = ["install_app", "download_file", "open_app", "open_url", "run_command", "claude_code"]
 DANGEROUS = ["del ", "rmdir ", "rm -", "format ", "diskpart", "shutdown", "reg delete", "mkfs"]
 DOWNLOADS = os.path.join(os.path.expanduser("~"), "Downloads")
 
@@ -152,12 +152,31 @@ def do_run_command(args: dict) -> str:
     return f"Exit {result.returncode}.\n{out}"
 
 
+def do_claude_code(args: dict) -> str:
+    """Open a Claude Code session on this machine, optionally pre-loaded with a task.
+    Launches a VISIBLE terminal (Master can watch and steer) and returns immediately —
+    Claude tasks run far longer than the 45s device-command timeout."""
+    task = str(args.get("task") or args.get("prompt") or "").strip().replace('"', "'")
+    project = str(args.get("project") or args.get("cwd") or "").strip()
+    workdir = project if project and os.path.isdir(project) else os.path.join(
+        os.path.expanduser("~"), "OneDrive", "Desktop", "my Ai")
+    if not os.path.isdir(workdir):
+        workdir = os.path.expanduser("~")
+    if task:
+        subprocess.Popen(f'start "Claude Code (via Mizune)" cmd /k claude "{task}"',
+                         shell=True, cwd=workdir)
+        return f"Claude Code opened on the laptop (in {workdir}) with task: {task[:120]}"
+    subprocess.Popen('start "Claude Code (via Mizune)" cmd /k claude', shell=True, cwd=workdir)
+    return f"Claude Code opened on the laptop (in {workdir})."
+
+
 ACTIONS = {
     "install_app": do_install_app,
     "download_file": do_download,
     "open_app": do_open_app,
     "open_url": do_open_url,
     "run_command": do_run_command,
+    "claude_code": do_claude_code,
 }
 
 
