@@ -16,6 +16,9 @@ android {
         versionCode = 1
         versionName = "1.0"
 
+        // Modern phones are arm64 — ship only that ABI to keep the Vosk-bearing APK lean.
+        ndk { abiFilters += "arm64-v8a" }
+
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
             useSupportLibrary = true
@@ -46,6 +49,11 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+
+    // Vosk reads model files directly from assets — they must NOT be compressed.
+    androidResources {
+        noCompress += listOf("vosk-model-en")
+    }
 }
 
 dependencies {
@@ -60,6 +68,9 @@ dependencies {
     
     // Networking (OkHttp)
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
+    // Offline wake word + speech (Vosk) — no beep, low power, no network
+    implementation("com.alphacephei:vosk-android:0.3.47")
     
     // Audio (ExoPlayer)
     implementation("androidx.media3:media3-exoplayer:1.2.1")

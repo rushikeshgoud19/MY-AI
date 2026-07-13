@@ -96,3 +96,6 @@ local.properties
 build/
 app/build/
 
+
+# Vosk offline wake-word model (local asset, ~45MB — bundled into APK at build, not committed)
+mizune-android/app/src/main/assets/vosk-model-en/

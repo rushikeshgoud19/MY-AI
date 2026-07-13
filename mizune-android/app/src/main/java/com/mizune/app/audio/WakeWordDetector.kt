@@ -1,12 +1,13 @@
 package com.mizune.app.audio
 
 import android.content.Context
-import android.content.Intent
-import android.os.Bundle
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
 import android.util.Log
+import org.json.JSONObject
+import org.vosk.Model
+import org.vosk.Recognizer
+import org.vosk.android.RecognitionListener
+import org.vosk.android.SpeechService
+import org.vosk.android.StorageService
 
 interface WakeWordListener {
     fun onWakeWordDetected()
@@ -15,104 +16,105 @@ interface WakeWordListener {
     fun onReadyForSpeech()
 }
 
+/**
+ * Offline "Baka Mizune" wake word via Vosk. Reads the raw microphone through
+ * AudioRecord — so it does NOT play the system recognition beep, doesn't need the
+ * network, and is far lighter than a continuous SpeechRecognizer restart loop.
+ *
+ * The model is bundled in assets/vosk-model-en and unpacked to filesDir on first use.
+ */
 class WakeWordDetector(private val context: Context, private val listener: WakeWordListener) {
-    private var speechRecognizer: SpeechRecognizer? = null
-    private var isListening = false
+
+    private var model: Model? = null
+    private var speechService: SpeechService? = null
     private var paused = false
-    // "Baka Mizune" is the wake phrase. SpeechRecognizer transcripts vary, so accept
-    // a few phonetic forms; the 2-word form is preferred to cut false triggers.
-    private val WAKE_PHRASES = listOf("baka mizune", "baka mizu", "baka mizuné", "mizune", "mizu ne")
+    private var lastFired = 0L
+
+    // SpeechRecognizer transcribes the phrase a few ways — accept phonetic variants.
+    private val WAKE_PHRASES = listOf("baka mizune", "baka mizu", "baka mizuni",
+        "baka mizuné", "bakamizune", "mizune", "mizu ne")
 
     fun startListening() {
-        if (isListening) return
-        
-        try {
-            if (SpeechRecognizer.isRecognitionAvailable(context)) {
-                speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context)
-                speechRecognizer?.setRecognitionListener(createRecognitionListener())
+        if (model == null) {
+            // Unpack the bundled model, then start. Until it's ready, we're silent
+            // (no beep, no false triggers).
+            StorageService.unpack(context, "vosk-model-en", "vosk-model",
+                { m ->
+                    model = m
+                    startService()
+                    Log.d("WakeWord", "Vosk model ready — Baka Mizune listening")
+                },
+                { e ->
+                    Log.e("WakeWord", "Vosk model unpack failed", e)
+                    listener.onError("Wake model failed to load: ${e.message}")
+                })
+        } else {
+            startService()
+        }
+    }
 
-                val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                    putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
-                    putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-                }
-                
-                speechRecognizer?.startListening(intent)
-                isListening = true
-            } else {
-                listener.onError("Speech recognition not available on this device")
-            }
+    private fun startService() {
+        if (speechService != null) return
+        val m = model ?: return
+        try {
+            val rec = Recognizer(m, 16000.0f)
+            speechService = SpeechService(rec, 16000.0f)
+            speechService?.startListening(recognitionListener)
+            paused = false
         } catch (e: Exception) {
-            Log.e("WakeWord", "Failed to start listening", e)
-            listener.onError(e.message ?: "Unknown error")
+            Log.e("WakeWord", "Vosk start failed", e)
+            listener.onError(e.message ?: "wake start failed")
         }
     }
 
     fun stopListening() {
-        speechRecognizer?.let {
-            try { it.stopListening(); it.destroy() } catch (_: Exception) {}
-        }
-        speechRecognizer = null
-        isListening = false
+        speechService?.let { try { it.stop(); it.shutdown() } catch (_: Exception) {} }
+        speechService = null
     }
 
-    /** Pause wake detection (e.g. while push-to-talk uses the mic) without tearing down. */
-    fun pause() { paused = true; stopListening() }
-    fun resume() { if (paused) { paused = false; startListening() } }
+    fun pause() {
+        paused = true
+        speechService?.setPause(true)
+    }
+
+    fun resume() {
+        if (!paused) return
+        paused = false
+        if (speechService != null) speechService?.setPause(false) else startListening()
+    }
 
     private fun matchedPhrase(text: String): String? =
         WAKE_PHRASES.firstOrNull { text.contains(it) }
 
-    private fun createRecognitionListener() = object : RecognitionListener {
-        override fun onReadyForSpeech(params: Bundle?) {
-            listener.onReadyForSpeech()
+    private fun handle(text: String) {
+        if (paused || text.isBlank()) return
+        val lower = text.lowercase().trim()
+        val phrase = matchedPhrase(lower) ?: return
+        // Debounce: partials + final can both fire; one trigger per ~2.5s.
+        val now = System.currentTimeMillis()
+        if (now - lastFired < 2500) return
+        lastFired = now
+        listener.onWakeWordDetected()
+        val command = lower.substringAfter(phrase).trim().trimStart(',', '.').trim()
+        if (command.isNotEmpty()) listener.onCommandRecognized(command)
+    }
+
+    private val recognitionListener = object : RecognitionListener {
+        override fun onPartialResult(hypothesis: String?) {
+            hypothesis ?: return
+            try { handle(JSONObject(hypothesis).optString("partial")) } catch (_: Exception) {}
         }
-
-        override fun onBeginningOfSpeech() {}
-        override fun onRmsChanged(rmsdB: Float) {}
-        override fun onBufferReceived(buffer: ByteArray?) {}
-
-        override fun onEndOfSpeech() {
-            isListening = false
-            if (!paused) startListening()
+        override fun onResult(hypothesis: String?) {
+            hypothesis ?: return
+            try { handle(JSONObject(hypothesis).optString("text")) } catch (_: Exception) {}
         }
-
-        override fun onError(error: Int) {
-            // No-speech (7) / timeout are normal; keep the loop alive unless paused.
-            isListening = false
-            if (!paused) {
-                // Tiny backoff avoids a hot restart loop when the recognizer is busy.
-                android.os.Handler(android.os.Looper.getMainLooper())
-                    .postDelayed({ if (!paused) startListening() }, 400)
-            }
+        override fun onFinalResult(hypothesis: String?) {
+            hypothesis ?: return
+            try { handle(JSONObject(hypothesis).optString("text")) } catch (_: Exception) {}
         }
-
-        override fun onResults(results: Bundle?) {
-            val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-            if (!matches.isNullOrEmpty()) {
-                val text = matches[0].lowercase()
-                Log.d("WakeWord", "Recognized: $text")
-                val phrase = matchedPhrase(text)
-                if (phrase != null) {
-                    listener.onWakeWordDetected()
-                    // Everything after the wake phrase is the command
-                    // ("baka mizune play shakira" → "play shakira").
-                    val command = text.substringAfter(phrase).trim().trimStart(',', '.').trim()
-                    if (command.isNotEmpty()) listener.onCommandRecognized(command)
-                }
-                // NOTE: non-wake speech is IGNORED — she only acts when addressed.
-            }
-            isListening = false
-            if (!paused) startListening()
+        override fun onError(exception: Exception?) {
+            Log.e("WakeWord", "Vosk error", exception)
         }
-
-        override fun onPartialResults(partialResults: Bundle?) {
-            val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-            if (!matches.isNullOrEmpty() && matchedPhrase(matches[0].lowercase()) != null) {
-                listener.onWakeWordDetected()
-            }
-        }
-
-        override fun onEvent(eventType: Int, params: Bundle?) {}
+        override fun onTimeout() {}
     }
 }
