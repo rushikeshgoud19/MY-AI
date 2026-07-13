@@ -531,10 +531,11 @@ def _execute_tool_call_impl(tool_name: str, args: dict, config: dict, background
             play_res = ""
             if device == "phone" and "not online" not in open_res.lower():
                 time.sleep(6)  # let Brave load the player
+                # Brave needs TWO taps: the 1st focuses the tab / dismisses the overlay,
+                # the 2nd actually starts playback.
+                device_registry.send_command(device, "tap", {"text": "play"})
+                time.sleep(1)
                 play_res = device_registry.send_command(device, "tap", {"text": "play"})
-                if "couldn't find" in play_res.lower() or "need the accessibility" in play_res.lower():
-                    # Fallback: tap the centre of the video area to start playback.
-                    play_res += " | " + device_registry.send_command(device, "tap", {"text": "Play"})
             return f"Playing '{query}' on {device} in {browser}. {note} [open: {open_res}] [play: {play_res}]"
 
         if tool_name == "remote_device_command":
