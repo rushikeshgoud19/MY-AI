@@ -41,17 +41,46 @@ class MizuneAccessibilityService : AccessibilityService() {
         Log.e(TAG, "launch failed", e); false
     }
 
-    /** Tap the first clickable element whose text/description contains [text]. */
+    /** Tap the first element whose text OR content-description matches [text]. Falls
+     *  back to a coordinate gesture-tap when the node reports non-clickable (common for
+     *  media play buttons, which are icons with a contentDescription but no text). */
     fun tapByText(text: String): Boolean {
         val root = rootInActiveWindow ?: return false
-        val query = text.trim()
-        val matches = root.findAccessibilityNodeInfosByText(query) ?: emptyList()
-        for (node in matches) {
-            var target: AccessibilityNodeInfo? = node
-            while (target != null && !target.isClickable) target = target.parent
-            if (target?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true) return true
+        val query = text.trim().lowercase()
+        val candidate = findByLabel(root, query) ?: return false
+        // 1. Try a real click on the node or its nearest clickable ancestor.
+        var target: AccessibilityNodeInfo? = candidate
+        while (target != null && !target.isClickable) target = target.parent
+        if (target?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true) return true
+        // 2. Fallback: tap the centre of the matched node's bounds.
+        return tapNodeCenter(candidate)
+    }
+
+    private fun findByLabel(node: AccessibilityNodeInfo?, query: String): AccessibilityNodeInfo? {
+        if (node == null) return null
+        val t = node.text?.toString()?.trim()?.lowercase()
+        val d = node.contentDescription?.toString()?.trim()?.lowercase()
+        if ((t != null && t.contains(query)) || (d != null && d.contains(query))) return node
+        for (i in 0 until node.childCount) {
+            findByLabel(node.getChild(i), query)?.let { return it }
         }
-        return false
+        return null
+    }
+
+    private fun tapNodeCenter(node: AccessibilityNodeInfo): Boolean {
+        val rect = android.graphics.Rect()
+        node.getBoundsInScreen(rect)
+        if (rect.width() <= 0 || rect.height() <= 0) return false
+        return tapXY(rect.exactCenterX(), rect.exactCenterY())
+    }
+
+    /** Dispatch a raw tap at screen coordinates — the last-resort, works on anything. */
+    fun tapXY(x: Float, y: Float): Boolean {
+        val path = android.graphics.Path().apply { moveTo(x, y) }
+        val gesture = android.accessibilityservice.GestureDescription.Builder()
+            .addStroke(android.accessibilityservice.GestureDescription.StrokeDescription(path, 0, 60))
+            .build()
+        return dispatchGesture(gesture, null, null)
     }
 
     /** Type into the currently focused editable field (e.g. a form field). */

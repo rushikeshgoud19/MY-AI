@@ -525,8 +525,17 @@ def _execute_tool_call_impl(tool_name: str, args: dict, config: dict, background
                 note = ""
             # Master prefers YT Music in the Brave BROWSER, not the app.
             browser = args.get("browser") or config.get("music_browser", "brave")
-            res = device_registry.send_command(device, "open_url", {"url": url, "browser": browser})
-            return f"Playing '{query}' on {device} in {browser}. {note} [{res}]"
+            open_res = device_registry.send_command(device, "open_url", {"url": url, "browser": browser})
+            # Browsers block autoplay-with-sound until a gesture, so the web player loads
+            # PAUSED. Wait for it to load, then tap the play button ourselves.
+            play_res = ""
+            if device == "phone" and "not online" not in open_res.lower():
+                time.sleep(6)  # let Brave load the player
+                play_res = device_registry.send_command(device, "tap", {"text": "play"})
+                if "couldn't find" in play_res.lower() or "need the accessibility" in play_res.lower():
+                    # Fallback: tap the centre of the video area to start playback.
+                    play_res += " | " + device_registry.send_command(device, "tap", {"text": "Play"})
+            return f"Playing '{query}' on {device} in {browser}. {note} [open: {open_res}] [play: {play_res}]"
 
         if tool_name == "remote_device_command":
             from .device_registry import device_registry
