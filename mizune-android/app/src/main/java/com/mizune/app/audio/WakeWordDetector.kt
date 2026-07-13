@@ -7,7 +7,7 @@ import org.vosk.Model
 import org.vosk.Recognizer
 import org.vosk.android.RecognitionListener
 import org.vosk.android.SpeechService
-import org.vosk.android.StorageService
+import java.io.File
 
 interface WakeWordListener {
     fun onWakeWordDetected()
@@ -37,22 +37,48 @@ class WakeWordDetector(private val context: Context, private val listener: WakeW
         "baka mizuné", "bakamizune", "mizune", "mizu ne")
 
     fun startListening() {
-        if (model == null) {
-            // Unpack the bundled model, then start. Until it's ready, we're silent
-            // (no beep, no false triggers).
-            StorageService.unpack(context, "vosk-model-en", "vosk-model",
-                { m ->
-                    model = m
+        if (model != null) { startService(); return }
+        // Load on a background thread; surface the REAL error if anything goes wrong.
+        Thread {
+            try {
+                val dir = copyAssetModel()
+                model = Model(dir.absolutePath)
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
                     startService()
                     listener.onReadyForSpeech()
-                    Log.d("WakeWord", "Vosk model ready — Baka Mizune listening")
-                },
-                { e ->
-                    Log.e("WakeWord", "Vosk model unpack failed", e)
-                    listener.onError("Wake model failed to load: ${e.message}")
-                })
+                }
+                Log.d("WakeWord", "Vosk model loaded from ${dir.absolutePath}")
+            } catch (e: Throwable) {
+                Log.e("WakeWord", "Vosk model load failed", e)
+                val msg = "${e.javaClass.simpleName}: ${e.message}"
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    listener.onError(msg)
+                }
+            }
+        }.start()
+    }
+
+    /** Copy the bundled model from assets/vosk-model-en → filesDir (once). Returns the dir. */
+    private fun copyAssetModel(): File {
+        val dest = File(context.filesDir, "vosk-model-en")
+        val marker = File(dest, "conf/model.conf")
+        if (marker.exists()) return dest   // already copied
+        copyAssetDir("vosk-model-en", dest)
+        if (!marker.exists()) throw IllegalStateException("model incomplete after copy (missing conf/model.conf)")
+        return dest
+    }
+
+    private fun copyAssetDir(assetPath: String, dest: File) {
+        val children = context.assets.list(assetPath) ?: emptyArray()
+        if (children.isEmpty()) {
+            // It's a file — copy it.
+            dest.parentFile?.mkdirs()
+            context.assets.open(assetPath).use { input ->
+                dest.outputStream().use { input.copyTo(it) }
+            }
         } else {
-            startService()
+            dest.mkdirs()
+            for (child in children) copyAssetDir("$assetPath/$child", File(dest, child))
         }
     }
 
