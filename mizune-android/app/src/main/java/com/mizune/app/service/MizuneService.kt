@@ -78,16 +78,26 @@ class MizuneService : Service() {
         if (wakeWord != null) return
         wakeWord = com.mizune.app.audio.WakeWordDetector(this, object : com.mizune.app.audio.WakeWordListener {
             override fun onWakeWordDetected() {
-                vibrateOnce()   // subtle "I'm listening" cue
+                vibrateOnce()
+                setWakeStatus("✨ Baka Mizune — heard you!")
             }
             override fun onCommandRecognized(command: String) {
                 if (command.isNotBlank() && ::webSocket.isInitialized) {
-                    webSocket.sendMessage(command)   // → {type:chat} → brain → real-voice reply
+                    webSocket.sendMessage(command)
+                    setWakeStatus("▶ running: $command")
                 }
             }
-            override fun onError(error: String) { Log.w(TAG, "WakeWord: $error") }
-            override fun onReadyForSpeech() {}
+            override fun onHeard(text: String) {
+                // Live debug in the notification: proves the mic works + shows transcripts.
+                if (text.isNotBlank()) setWakeStatus("🎙 heard: ${text.take(40)}")
+            }
+            override fun onError(error: String) {
+                Log.w(TAG, "WakeWord: $error")
+                setWakeStatus("⚠ wake: $error")
+            }
+            override fun onReadyForSpeech() { setWakeStatus("🎙 Listening for \"Baka Mizune\"…") }
         }).also { it.startListening() }
+        setWakeStatus("⏳ Loading wake word…")
         Log.d(TAG, "Baka-Mizune wake word listening")
     }
 
@@ -408,13 +418,24 @@ class MizuneService : Service() {
         )
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Mizune is awake")
+            .setContentTitle(wakeStatus)
             .setContentText("Status: ${lastConnectionState.label}")
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setOngoing(true)
             .setContentIntent(pendingIntent)
             .setOnlyAlertOnce(true)
             .build()
+    }
+
+    @Volatile private var wakeStatus = "Mizune is awake"
+    private var lastWakeUpdate = 0L
+    private fun setWakeStatus(s: String) {
+        wakeStatus = s
+        val now = System.currentTimeMillis()
+        if (now - lastWakeUpdate > 700) {   // throttle notification updates
+            lastWakeUpdate = now
+            updatePersistentNotification()
+        }
     }
 
     private fun updatePersistentNotification() {

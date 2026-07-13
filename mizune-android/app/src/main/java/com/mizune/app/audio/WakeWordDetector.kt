@@ -14,6 +14,8 @@ interface WakeWordListener {
     fun onCommandRecognized(command: String)
     fun onError(error: String)
     fun onReadyForSpeech()
+    /** Any transcript the mic picks up — used for a live on-screen debug readout. */
+    fun onHeard(text: String) {}
 }
 
 /**
@@ -42,6 +44,7 @@ class WakeWordDetector(private val context: Context, private val listener: WakeW
                 { m ->
                     model = m
                     startService()
+                    listener.onReadyForSpeech()
                     Log.d("WakeWord", "Vosk model ready — Baka Mizune listening")
                 },
                 { e ->
@@ -89,6 +92,7 @@ class WakeWordDetector(private val context: Context, private val listener: WakeW
     private fun handle(text: String) {
         if (paused || text.isBlank()) return
         val lower = text.lowercase().trim()
+        listener.onHeard(lower)   // live debug: shows the mic IS working + what it hears
         val phrase = matchedPhrase(lower) ?: return
         // Debounce: partials + final can both fire; one trigger per ~2.5s.
         val now = System.currentTimeMillis()
