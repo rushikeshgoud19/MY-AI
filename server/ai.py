@@ -1080,17 +1080,28 @@ def _gemini_response(text: str, history: list, system_prompt: str, config: dict,
         raise last_err
     return ("I'm having trouble thinking right now.", [])
 
+def _groq_keys(config) -> list:
+    val = config.get("groq_api_key")
+    if isinstance(val, list):
+        return [k for k in val if k]
+    if isinstance(val, str) and val:
+        return [k.strip() for k in val.split(",") if k.strip()]
+    return []
+
+
 def _groq_response(text: str, history: list, system_prompt: str, config: dict, ws_broadcast_func=None) -> tuple:
     """Fetch response from Groq (Llama/Mixtral). Returns (text, tool_calls)."""
-    api_key = get_api_key(config, "groq_api_key")
-    if not api_key:
+    import random as _rnd
+    _keys = _groq_keys(config)
+    if not _keys:
         return ("Groq API key is not configured, Master.", [])
-        
+    _rnd.shuffle(_keys)   # spread daily load across the key pool
+
     try:
         from openai import OpenAI
         import json
         client = OpenAI(
-            api_key=api_key,
+            api_key=_keys[0],
             base_url="https://api.groq.com/openai/v1",
             timeout=10.0, # fast failover — the cascade is the retry mechanism
             max_retries=0  # the provider cascade IS the retry mechanism
@@ -1113,16 +1124,29 @@ def _groq_response(text: str, history: list, system_prompt: str, config: dict, w
         
         model = config.get("groq_model", "llama-3.3-70b-versatile")
         
+        def _create():
+            # On a per-key daily/rate cap (429), rotate to a sibling key before we give
+            # up and fall to a slower provider. Keeps Groq usable while ANY key has budget.
+            last_err = None
+            for idx, k in enumerate(_keys):
+                try:
+                    c = client if idx == 0 else OpenAI(
+                        api_key=k, base_url="https://api.groq.com/openai/v1",
+                        timeout=10.0, max_retries=0)
+                    return c.chat.completions.create(
+                        model=model, messages=messages, temperature=0.7, max_tokens=256,
+                        tools=_active_tools_schema(config), tool_choice="auto",
+                        parallel_tool_calls=False)
+                except Exception as ex:
+                    last_err = ex
+                    if "rate_limit" in str(ex).lower() or "429" in str(ex):
+                        log_info(f"[AI] Groq key {idx+1}/{len(_keys)} capped, trying next…")
+                        continue
+                    raise
+            raise last_err
+
         try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=0.7,
-                max_tokens=256,
-                tools=_active_tools_schema(config),
-                tool_choice="auto",
-                parallel_tool_calls=False
-            )
+            response = _create()
         except Exception as e:
             if "tool_use_failed" in str(e) or "400" in str(e):
                 log_info("[AI] LLaMA-3 hallucinatory tool call detected (400 Bad Request). Retrying WITHOUT tools...")
