@@ -1043,7 +1043,7 @@ def _gemini_response(text: str, history: list, system_prompt: str, config: dict,
                     )
                     fast_track_results.append(str(tool_result))
                 
-                FAST_TRACK_TOOLS = ["schedule_task", "open_app", "close_app", "message_whatsapp", "execute_skill", "notify_master", "play_music"]
+                FAST_TRACK_TOOLS = ["schedule_task", "open_app", "close_app", "message_whatsapp", "execute_skill", "notify_master", "play_music", "google_workspace"]
                 all_fast_track = all(t["name"] in FAST_TRACK_TOOLS for t in parsed_tools)
                 
                 if all_fast_track and parsed_tools:
@@ -1189,7 +1189,7 @@ def _groq_response(text: str, history: list, system_prompt: str, config: dict, w
             # open app, schedule, notify...), there's nothing for the model to reason about.
             # Return the tool results directly and skip the second round-trip. This is what
             # keeps WhatsApp replies sub-second on the Groq path.
-            FAST_TRACK_TOOLS = ["schedule_task", "open_app", "close_app", "message_whatsapp", "execute_skill", "notify_master", "play_music"]
+            FAST_TRACK_TOOLS = ["schedule_task", "open_app", "close_app", "message_whatsapp", "execute_skill", "notify_master", "play_music", "google_workspace"]
             if round_tool_names and all(n in FAST_TRACK_TOOLS for n in round_tool_names):
                 fast_response = " ".join(r for r in round_results if r) or "Action completed."
                 if executed_tools:
