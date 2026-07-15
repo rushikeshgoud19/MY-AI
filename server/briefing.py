@@ -55,18 +55,25 @@ def _important_emails() -> str:
         return ""
     con = sqlite3.connect("cortex.db")
     since = mizune_now().timestamp() - 24 * 3600
+    rows = []
     try:
+        # Prefer high-importance; if none, fall back to most-recent so the briefing
+        # always has something useful instead of coming up empty.
         rows = list(con.execute(
             "SELECT sender, subject, importance_score FROM gmail_messages "
-            "WHERE timestamp > ? AND importance_score >= 7 "
-            "ORDER BY importance_score DESC LIMIT 3", (since,)))
+            "WHERE timestamp > ? AND importance_score >= 5 "
+            "ORDER BY importance_score DESC LIMIT 4", (since,)))
+        if not rows:
+            rows = list(con.execute(
+                "SELECT sender, subject, importance_score FROM gmail_messages "
+                "ORDER BY timestamp DESC LIMIT 4"))
     except sqlite3.OperationalError:
         rows = []
     con.close()
     if not rows:
         return ""
-    lines = [f"- [{imp}/10] {snd[:40]}: {subj[:70]}" for snd, subj, imp in rows]
-    return "IMPORTANT EMAILS (24h):\n" + "\n".join(lines)
+    lines = [f"- {str(snd)[:40]}: {str(subj)[:70]}" for snd, subj, imp in rows]
+    return "RECENT EMAILS:\n" + "\n".join(lines)
 
 
 def _important_whatsapp() -> str:

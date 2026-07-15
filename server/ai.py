@@ -217,11 +217,12 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "google_workspace",
-            "description": "Interact with Google Calendar and Gmail (Morning Briefing).",
+            "description": "Gmail + Calendar. Use 'list_emails' to SHOW Master his recent emails (reliable, from local store); 'read_unread_emails' for live unread; 'get_todays_calendar' for schedule; 'get_morning_briefing' for the digest.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "enum": ["get_todays_calendar", "read_unread_emails", "get_morning_briefing"], "description": "What to do"}
+                    "action": {"type": "string", "enum": ["list_emails", "get_todays_calendar", "read_unread_emails", "get_morning_briefing"], "description": "What to do"},
+                    "count": {"type": "number", "description": "For list_emails: how many recent emails to show (default 10)."}
                 },
                 "required": ["action"]
             }
@@ -598,6 +599,30 @@ def _execute_tool_call_impl(tool_name: str, args: dict, config: dict, background
 
         if tool_name == "google_workspace":
             action = args.get("action", "")
+            if action == "list_emails":
+                # Reliable: read from the locally-synced Gmail store (no live-API flakiness).
+                import sqlite3, os as _os, datetime as _dt
+                n = int(args.get("count", 10) or 10)
+                if not _os.path.exists("cortex.db"):
+                    return "My email store isn't ready yet, Master."
+                con = sqlite3.connect("cortex.db")
+                try:
+                    rows = list(con.execute(
+                        "SELECT sender, subject, snippet, is_read, timestamp FROM gmail_messages "
+                        "ORDER BY timestamp DESC LIMIT ?", (n,)))
+                except sqlite3.OperationalError:
+                    rows = []
+                con.close()
+                if not rows:
+                    return "No emails found in your inbox store, Master."
+                lines = []
+                for snd, subj, snip, read, ts in rows:
+                    when = ""
+                    try: when = _dt.datetime.fromtimestamp(ts).strftime("%b %d %H:%M")
+                    except Exception: pass
+                    flag = "" if read else "🔵 "
+                    lines.append(f"{flag}[{when}] {str(snd)[:35]} — {str(subj)[:60]}\n   {str(snip)[:90]}")
+                return f"Here are your {len(rows)} most recent emails, Master:\n\n" + "\n\n".join(lines)
             from server.integrations.google_api import global_google_api
             if action == "get_todays_calendar": return str(global_google_api.get_todays_calendar())
             if action == "read_unread_emails": return str(global_google_api.read_unread_emails())
@@ -717,6 +742,12 @@ def get_ai_response(text: str, history: list, config: dict, system_prompt_overri
             "SCHEDULING HONESTY: never SAY a task/reminder was scheduled unless you actually CALLED the "
             "schedule_task tool in this turn. A text reply alone schedules NOTHING — if you didn't call "
             "the tool, call it now instead of claiming success.\n"
+            "MEETINGS: when Master asks you to schedule a MEETING or appointment, FIRST ask him what "
+            "time/day works and when he's free — do NOT pick a time yourself. Only after he tells you a "
+            "time, confirm it back and schedule it with schedule_task (as a reminder for that time). "
+            "Never book a meeting without asking his availability first.\n"
+            "EMAILS: when Master asks to see/show/check his emails, use google_workspace with "
+            "action 'list_emails' and show him the list — don't just say you'll check.\n"
         )
         try:
             from .skills import skill_manager
