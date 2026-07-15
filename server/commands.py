@@ -237,7 +237,8 @@ def whatsapp_automation(contact: str, message: str = None) -> str:
     """Use the Node.js headless bridge to send a WhatsApp message securely and instantly."""
     from server.platforms.whatsapp.core import send_whatsapp_message
     
-    if contact.lower() in ["me", "myself", "self"]:
+    # Mizune runs on Master's own WhatsApp, so "Master"/"Rushi"/"me" all mean send-to-self.
+    if contact.lower().strip() in ["me", "myself", "self", "master", "rushi", "rushikesh", "master rushi"]:
         target = None # Default to self
         contact = "yourself"
     else:
