@@ -217,12 +217,16 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "google_workspace",
-            "description": "Gmail + Calendar. Use 'list_emails' to SHOW Master his recent emails (reliable, from local store); 'read_unread_emails' for live unread; 'get_todays_calendar' for schedule; 'get_morning_briefing' for the digest.",
+            "description": "Gmail + Google Calendar. 'list_emails' shows recent emails; 'get_todays_calendar' shows today's events; 'list_upcoming' shows upcoming events; 'create_event' SCHEDULES a real calendar event (use after Master tells you the time — args: title, start_iso like '2026-07-16T15:00:00', optional end_iso, description).",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "enum": ["list_emails", "get_todays_calendar", "read_unread_emails", "get_morning_briefing"], "description": "What to do"},
-                    "count": {"type": "number", "description": "For list_emails: how many recent emails to show (default 10)."}
+                    "action": {"type": "string", "enum": ["list_emails", "get_todays_calendar", "list_upcoming", "create_event", "read_unread_emails", "get_morning_briefing"], "description": "What to do"},
+                    "count": {"type": "number", "description": "For list_emails/list_upcoming: how many to show."},
+                    "title": {"type": "string", "description": "For create_event: the meeting/event title."},
+                    "start_iso": {"type": "string", "description": "For create_event: start datetime ISO, e.g. '2026-07-16T15:00:00'."},
+                    "end_iso": {"type": "string", "description": "For create_event: optional end datetime ISO (defaults to +1 hour)."},
+                    "description": {"type": "string", "description": "For create_event: optional details."}
                 },
                 "required": ["action"]
             }
@@ -625,6 +629,11 @@ def _execute_tool_call_impl(tool_name: str, args: dict, config: dict, background
                 return f"Here are your {len(rows)} most recent emails, Master:\n\n" + "\n\n".join(lines)
             from server.integrations.google_api import global_google_api
             if action == "get_todays_calendar": return str(global_google_api.get_todays_calendar())
+            if action == "list_upcoming": return str(global_google_api.list_upcoming(int(args.get("count", 10) or 10)))
+            if action == "create_event":
+                return str(global_google_api.create_event(
+                    args.get("title") or args.get("summary", ""),
+                    args.get("start_iso", ""), args.get("end_iso"), args.get("description", "")))
             if action == "read_unread_emails": return str(global_google_api.read_unread_emails())
             if action == "get_morning_briefing": return str(global_google_api.get_morning_briefing())
             return "Invalid action"
@@ -743,9 +752,10 @@ def get_ai_response(text: str, history: list, config: dict, system_prompt_overri
             "schedule_task tool in this turn. A text reply alone schedules NOTHING — if you didn't call "
             "the tool, call it now instead of claiming success.\n"
             "MEETINGS: when Master asks you to schedule a MEETING or appointment, FIRST ask him what "
-            "time/day works and when he's free — do NOT pick a time yourself. Only after he tells you a "
-            "time, confirm it back and schedule it with schedule_task (as a reminder for that time). "
-            "Never book a meeting without asking his availability first.\n"
+            "time/day works and when he's free — do NOT pick a time yourself. Only AFTER he gives a time, "
+            "confirm it, then create a REAL calendar event with google_workspace action 'create_event' "
+            "(title + start_iso). Also set a schedule_task reminder ~10 min before. Never book without "
+            "asking his availability first.\n"
             "EMAILS: when Master asks to see/show/check his emails, use google_workspace with "
             "action 'list_emails' and show him the list — don't just say you'll check.\n"
         )

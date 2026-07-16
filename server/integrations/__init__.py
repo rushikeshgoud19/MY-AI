@@ -48,7 +48,7 @@ class IntegrationsManager:
                 "auth_url": "https://accounts.google.com/o/oauth2/v2/auth",
                 "token_url": "https://oauth2.googleapis.com/token",
                 "scopes": [
-                    "https://www.googleapis.com/auth/calendar.readonly",
+                    "https://www.googleapis.com/auth/calendar.events",
                     "https://www.googleapis.com/auth/gmail.readonly"
                 ]
             },
