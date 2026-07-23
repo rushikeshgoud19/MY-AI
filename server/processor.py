@@ -74,22 +74,116 @@ def _scheduler_callback(task_description):
     config = load_config()
     log_info(f"[SCHEDULER WAKEUP] Processing task: {task_description}")
 
-    # Morning briefing: deterministic data, one LLM call only to voice it.
-    if task_description == "MIZUNE_MORNING_BRIEFING":
-        from server.briefing import build_briefing_sitrep
-        sitrep = build_briefing_sitrep()
-        log_info(f"[BRIEFING] Sitrep built ({len(sitrep)} chars).")
-        prompt = (
-            f"[MORNING BRIEFING] Here is today's data:\n{sitrep}\n\n"
-            f"Summarize this warmly in-persona for Master in under 150 words, then send that "
-            f"summary to 'Master' on WhatsApp using the message_whatsapp tool. Facts must come "
-            f"from the data above only — do not invent weather, emails, or tasks."
-        )
-        wm = _seal_watermark()
-        def _brief():
-            process_command(prompt, config, ws_manager.broadcast_sync, 'main')
-            _report_seal_failures(wm, ws_manager.broadcast_sync)
-        threading.Thread(target=_brief, daemon=True).start()
+    # 07:45 bug report — pure DB read + WhatsApp send (no LLM, no quota).
+    if task_description == "MIZUNE_BUG_REPORT":
+        from server.self_review import send_bug_report
+        threading.Thread(target=lambda: log_info(
+            f"[SELF_REVIEW] morning bug report -> {send_bug_report(config)}"), daemon=True).start()
+        return
+
+    # Briefing/digest: deterministic data + GUARANTEED delivery. The old design let
+    # the LLM both voice AND send (via the message_whatsapp tool) — on 2026-07-20 the
+    # 8AM voicing hung on a provider mid-cascade and the briefing silently died.
+    # Now: LLM only voices (override call, no tools); OUR code always sends; if every
+    # provider fails, Master gets the raw sitrep — data over silence, always.
+    if task_description in ("MIZUNE_MORNING_BRIEFING", "MIZUNE_EVENING_DIGEST"):
+        morning = task_description == "MIZUNE_MORNING_BRIEFING"
+        tag = "BRIEFING" if morning else "DIGEST"
+
+        def _deliver():
+            try:
+                from server.briefing import build_briefing_sitrep, build_evening_sitrep
+                sitrep = build_briefing_sitrep() if morning else build_evening_sitrep()
+                log_info(f"[{tag}] Sitrep built ({len(sitrep)} chars).")
+                persona = (
+                    "You are Mizune, Master Rushi's warm AI companion. Rewrite the data as a "
+                    + ("morning briefing (under 150 words)" if morning
+                       else "SHORT calm evening recap (under 80 words), ending with a goodnight")
+                    + ". Facts must come from the data only. Output ONLY the message text.")
+                text = ""
+                try:
+                    from server.ai import get_ai_response
+                    res, _ = get_ai_response(sitrep, [], config, system_prompt_override=persona)
+                    text = str(res or "").strip()
+                except Exception as e:
+                    log_info(f"[{tag}] Voicing failed ({e}) — sending raw sitrep.")
+                if len(text) < 30:
+                    text = sitrep          # raw fallback beats silence
+                # NOTE: send_message() already prepends the "✨ Mizune" header —
+                # adding it here printed it TWICE (caught 2026-07-20).
+                from server.commands import whatsapp_automation
+                sent = str(whatsapp_automation("Master", text))
+                log_info(f"[{tag}] Delivery result: {sent[:120]}")
+                if any(k in sent.lower() for k in ("error", "failed", "not connected")):
+                    time.sleep(120)        # bridge may be reconnecting — one retry
+                    sent = str(whatsapp_automation("Master", text))
+                    log_info(f"[{tag}] Retry delivery result: {sent[:120]}")
+                ws_manager.broadcast_sync({"type": "speak", "text": text, "emotion": "neutral"})
+            except Exception as e:
+                log_info(f"[{tag}] Delivery thread error: {e}")
+        threading.Thread(target=_deliver, daemon=True).start()
+        return
+
+    # Z2 NIGHT SHIFT — start the queued shift at 22:00. The shift runs in its own
+    # daemon thread until deadline/budget; it reports NOTHING until morning (silent).
+    if task_description == "MIZUNE_SHIFT_START":
+        def _start_shift():
+            try:
+                from server.night_shift import start_shift
+                log_info(f"[SHIFT] cron start -> {start_shift(config)}")
+            except Exception as e:
+                log_info(f"[SHIFT] start error: {e}")
+        threading.Thread(target=_start_shift, daemon=True).start()
+        return
+
+    # Z2 NIGHT SHIFT — 07:40 proof-of-work. CODE reads the report from the DB (built from
+    # verified mission outcomes, Rule 8) and sends it. The LLM only VOICES it; if voicing
+    # fails, Master gets the raw report — data over silence (same contract as the briefing).
+    if task_description == "MIZUNE_SHIFT_REPORT":
+        def _deliver_shift():
+            try:
+                from server.night_shift import latest_report
+                report = latest_report()
+                if not report:
+                    log_info("[SHIFT] no report to deliver.")
+                    return
+                text = ""
+                try:
+                    from server.ai import get_ai_response
+                    persona = (
+                        "You are Mizune, Master Rushi's warm AI companion. Below is the "
+                        "verified result of the overnight work shift you just finished. "
+                        "Retell it warmly in-persona in under 130 words. Report failures and "
+                        "unfinished items HONESTLY — do not pretend they succeeded. Keep the "
+                        "'verified N/M' honesty. Output ONLY the message text.")
+                    res, _ = get_ai_response(report, [], config, system_prompt_override=persona)
+                    text = str(res or "").strip()
+                except Exception as e:
+                    log_info(f"[SHIFT] voicing failed ({e}) — sending raw report.")
+                if len(text) < 30:
+                    text = report
+                from server.commands import whatsapp_automation
+                sent = str(whatsapp_automation("Master", text))
+                log_info(f"[SHIFT] delivery: {sent[:120]}")
+                if any(k in sent.lower() for k in ("error", "failed", "not connected")):
+                    time.sleep(120)
+                    sent = str(whatsapp_automation("Master", text))
+                    log_info(f"[SHIFT] retry delivery: {sent[:120]}")
+                ws_manager.broadcast_sync({"type": "speak", "text": text, "emotion": "neutral"})
+            except Exception as e:
+                log_info(f"[SHIFT] delivery thread error: {e}")
+        threading.Thread(target=_deliver_shift, daemon=True).start()
+        return
+
+    if task_description == "MIZUNE_NIGHTLY_REVIEW":
+        def _run_review():
+            try:
+                from server.self_review import run_nightly
+                res = run_nightly(config)
+                log_info(f"[NIGHTLY_REVIEW] Outcome: {res}")
+            except Exception as e:
+                log_info(f"[NIGHTLY_REVIEW] Delivery thread error: {e}")
+        threading.Thread(target=_run_review, daemon=True).start()
         return
 
     # Deterministic path: if the stored action is literal python (she schedules
@@ -137,6 +231,24 @@ try:
     ensure_briefing_scheduled(_lc(), global_cron_manager)
 except Exception as _e:
     log_info(f"[BRIEFING] Registration skipped: {_e}")
+
+# Resume missions that were mid-flight when she restarted (H2 mission engine).
+# Delayed a bit so providers/bridges finish booting before steps execute.
+try:
+    from server.missions import resume_active_missions as _ram
+    from server.config import load_config as _lc2
+    threading.Timer(45.0, _ram, args=(_lc2(),)).start()
+except Exception as _e:
+    log_info(f"[MISSION] Resume hook skipped: {_e}")
+
+# Z2: resume a night shift that was mid-flight at restart (persistence claim of Z2).
+# A bit after missions, and only touched if the module is present.
+try:
+    from server.night_shift import resume_running_shift as _rrs
+    from server.config import load_config as _lc3
+    threading.Timer(60.0, _rrs, args=(_lc3(),)).start()
+except Exception as _e:
+    log_info(f"[SHIFT] Resume hook skipped: {_e}")
 
 _processing_lock = threading.Lock()
 # Per-session locks so a slow WhatsApp reply doesn't drop the user's desktop input
@@ -200,6 +312,71 @@ def _process_command_internal(text: str, config: dict, broadcast_sync_fn, sessio
             lower_text = text.lower().strip()
             break
             
+    # ── MISSION fast-path: "mission: <goal>" is a GUARANTEED trigger for the
+    # H2 mission engine (the LLM otherwise sometimes handles small compound goals
+    # directly and skips the engine). Strips WhatsApp wrapper/context lines first.
+    _mission_m = re.search(r"(?:start a |begin a |new )?mission\s*[:\-]\s*(.+)", lower_text)
+    if _mission_m and "[mission" not in lower_text:
+        from server.missions import start_mission
+        # Recover the goal with original casing from the raw text
+        _goal_raw = text[text.lower().find(_mission_m.group(1)):].strip()
+        _goal_raw = _goal_raw.split("\n(SYSTEM:")[0].strip()
+        log_info(f"[MISSION] fast-path trigger: {_goal_raw[:80]}")
+        return start_mission(_goal_raw, session_id, config)
+
+    # ── NIGHT SHIFT fast-path (Z2): queuing an overnight shift MUST be deterministic —
+    # the model otherwise just chats ("I don't have any shift info") instead of calling
+    # the tool (observed live 2026-07-24). Read-only status/report also routed here.
+    #   "night shift status" / "shift report"  → status/report
+    #   "tonight: A. B. C" / "overnight work on X and Y" / "while I sleep, do X"
+    # "night shift"/"overnight"/"while I sleep" are unambiguous shift phrasing; bare
+    # "tonight" is NOT (it appears in ordinary chat) so it only counts alongside a work verb.
+    _WORK = r"work on|do|handle|tackle|research|finish|prepare|build|write|organi[sz]e|review|draft|plan"
+    _shift_phrase = re.search(r"\bnight\s*shift\b|\bovernight\b|\bwhile i (?:sleep|am asleep|'m asleep)\b", lower_text)
+    _tonight_work = re.search(r"\btonight\b[^\.]*\b(?:" + _WORK + r")\b", lower_text)
+    if (_shift_phrase or _tonight_work) and "[mission" not in lower_text and not text.startswith("[SYSTEM"):
+        # status / report first (read-only, no queue)
+        if re.search(r"\b(status|how(?:'s| is) (?:the|my)? ?shift)\b", lower_text) \
+                and not re.search(r"\b(" + _WORK + r"|queue)\b", lower_text):
+            from server.ai import execute_tool_call
+            log_info("[SHIFT] fast-path: status")
+            return execute_tool_call("night_shift", {"action": "status"}, config)
+        if re.search(r"\b(report|proof of work|what did you (?:do|get done))\b", lower_text):
+            from server.ai import execute_tool_call
+            log_info("[SHIFT] fast-path: report")
+            return execute_tool_call("night_shift", {"action": "report"}, config)
+        # queue: pull the task list after the trigger phrase
+        _q = re.search(
+            r"(?:night\s*shift|overnight|while i (?:sleep|am asleep|'m asleep)|tonight)\s*[:,\-]?\s*"
+            r"(?:you (?:can|should) )?(?:please )?(?:" + _WORK + r")?\s*[:,\-]?\s*(.+)",
+            text, re.IGNORECASE | re.DOTALL)
+        if _q:
+            _body = _q.group(1).split("\n(SYSTEM:")[0].strip()
+            # split into ordered tasks on newlines, semicolons, ' and ', ' then ', or ', '
+            parts = re.split(r"\s*(?:\n|;|,| and | then )\s*", _body)
+            tasks = [p.strip(" .") for p in parts if len(p.strip(" .")) > 3]
+            if tasks:
+                from server.ai import execute_tool_call
+                log_info(f"[SHIFT] fast-path: queue {len(tasks)} task(s)")
+                return execute_tool_call("night_shift",
+                                         {"action": "queue", "tasks": tasks}, config)
+
+    # ── LEARN fast-path: "learn this: <url/text>" / "/learn <x>" / "remember this: <x>"
+    # MUST be deterministic — the model happily answers ABOUT a link from its own
+    # knowledge and claims it learned, while the knowledge base stays empty
+    # (caught 2026-07-20: DB had 0 rows after she said "I've learned about X").
+    _learn_m = re.search(
+        r"(?:^|\b)(?:/learn|learn this|learn about this|remember this|save this to (?:your )?(?:knowledge|memory)|add this to (?:your )?knowledge)\s*[:\-]?\s*(.+)",
+        lower_text, re.DOTALL)
+    if _learn_m and "[mission" not in lower_text:
+        _src_lower = _learn_m.group(1).strip()
+        _src = text[text.lower().rfind(_src_lower[:40]):].strip() if _src_lower else ""
+        _src = _src.split("\n(SYSTEM:")[0].strip()
+        if _src:
+            from server.knowledge import learn as _learn_fn
+            log_info(f"[KNOWLEDGE] fast-path learn: {_src[:80]}")
+            return _learn_fn(_src, config)
+
     # ── CRAZY COMMANDS ──
     if lower_text == "/nuke_cache":
         log_info("[COMMAND] Executing /nuke_cache...")
@@ -884,57 +1061,20 @@ You are looking at Master through your webcam camera RIGHT NOW. Describe what yo
         return "I'm sorry Master, all my AI connections are down right now. Please check your API keys or internet connection!"
 
 def process_mobile_vision(image_bytes: bytes, config: dict) -> str:
-    """Process image captured from mobile app using Llama 3.2 Vision on Groq (fallback to Gemini)."""
+    """Process image captured from mobile app using describe_image (Gemini REST API)."""
     import base64
-    from openai import OpenAI
+    from .ai import save_latest_image, describe_image
     
     log_info("[MOBILE VISION] Processing shared image/photo...")
     prompt = "Master just showed you this image through the mobile app. Look closely and tell Master what you see. Be excited, natural, and brief (2-3 sentences). Use cute anime expressions."
     
-    groq_key = config.get("groq_api_key", "")
-    if groq_key:
-        try:
-            b64_img = base64.b64encode(image_bytes).decode("utf-8")
-            groq_client = OpenAI(api_key=groq_key, base_url="https://api.groq.com/openai/v1")
-            
-            # Using Meta's Open Source Vision model via Groq!
-            resp = groq_client.chat.completions.create(
-                model="llama-3.2-11b-vision-preview",
-                messages=[{"role": "user", "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"}}
-                ]}],
-                max_tokens=250
-            )
-            result = (resp.choices[0].message.content or "").strip()
-            if result:
-                log_info("[MOBILE VISION] Groq Llama 3.2 Vision success!")
-                # Strip reasoning tokens if any
-                import re
-                result = re.sub(r"<think>.*?</think>", "", result, flags=re.IGNORECASE | re.DOTALL).strip()
-                return result
-        except Exception as e:
-            log_info(f"[MOBILE VISION] Groq vision failed, falling back to Gemini: {e}")
-
-    # Fallback to Gemini
-    api_key = config.get("gemini_api_key", "")
-    if api_key:
-        try:
-            from google import genai
-            from google.genai import types
-            client = genai.Client(api_key=api_key)
-            response = client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=[
-                    types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
-                    types.Part.from_text(text=prompt)
-                ]
-            )
-            result = (response.text or "").strip()
-            if result:
-                log_info("[MOBILE VISION] Gemini fallback success!")
-                return result
-        except Exception as e:
-            log_info(f"[MOBILE VISION] Gemini failed: {e}")
-            
+    try:
+        b64_img = base64.b64encode(image_bytes).decode("utf-8")
+        save_latest_image(b64_img)
+        res = describe_image(b64_img, prompt, config)
+        if res:
+            return res
+    except Exception as e:
+        log_info(f"[MOBILE VISION] Processing failed: {e}")
+        
     return "I tried to look at the picture, Master, but my eyes are a bit blurry right now! Please check your API keys."

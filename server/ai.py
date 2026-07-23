@@ -1,15 +1,120 @@
 """
 AI LLM routing and response generation module for Mizune.
 """
+import os
 import logging
 import time
 
-__all__ = ["get_ai_response"]
+__all__ = ["get_ai_response", "save_latest_image", "describe_image"]
 
 
 from .config import log_info
 
 logger = logging.getLogger("mizune.ai")
+
+_LATEST_IMAGE_B64 = None
+
+def save_latest_image(b64_str: str):
+    global _LATEST_IMAGE_B64
+    if not b64_str:
+        return
+    _LATEST_IMAGE_B64 = b64_str
+    try:
+        os.makedirs(".data", exist_ok=True)
+        with open(os.path.join(".data", "last_image.b64"), "w", encoding="utf-8") as f:
+            f.write(b64_str)
+    except Exception as e:
+        log_info(f"[VISION] Error saving last_image.b64: {e}")
+
+def _get_latest_image() -> str:
+    global _LATEST_IMAGE_B64
+    if _LATEST_IMAGE_B64:
+        return _LATEST_IMAGE_B64
+    path = os.path.join(".data", "last_image.b64")
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                _LATEST_IMAGE_B64 = f.read().strip()
+                return _LATEST_IMAGE_B64
+        except Exception:
+            pass
+    return ""
+
+def _process_image_b64(b64_str: str) -> tuple:
+    """Ensure image base64 is <= 4MB, downscale if larger. Returns (b64_str, mime_type)."""
+    import base64
+    from io import BytesIO
+    try:
+        from PIL import Image
+    except ImportError:
+        Image = None
+
+    mime_type = "image/jpeg"
+    if b64_str.startswith("data:"):
+        header, b64_str = b64_str.split(",", 1)
+        if "image/png" in header:
+            mime_type = "image/png"
+        elif "image/webp" in header:
+            mime_type = "image/webp"
+
+    try:
+        img_bytes = base64.b64decode(b64_str)
+        if len(img_bytes) > 4 * 1024 * 1024 and Image is not None:
+            img = Image.open(BytesIO(img_bytes))
+            img.thumbnail((1600, 1600))
+            buf = BytesIO()
+            if img.mode in ("RGBA", "P"):
+                img = img.convert("RGB")
+            img.save(buf, format="JPEG", quality=85)
+            img_bytes = buf.getvalue()
+            mime_type = "image/jpeg"
+            b64_str = base64.b64encode(img_bytes).decode("utf-8")
+    except Exception as e:
+        log_info(f"[VISION] Image resize error: {e}")
+        
+    return b64_str, mime_type
+
+def describe_image(b64: str, prompt: str = None, config: dict = None) -> str:
+    """Analyze image using Gemini multimodal REST API via urllib."""
+    if not b64:
+        return "No image found to analyze, Master."
+    config = config or {}
+    gkey = get_api_key(config, "gemini_api_key")
+    if not gkey:
+        return "Vision unavailable: no Gemini key configured, Master."
+    
+    prompt_text = prompt or "Describe what you see in this image in detail, Master."
+    clean_b64, mime_type = _process_image_b64(b64)
+    
+    import urllib.request as _ur, json as _json
+    body = _json.dumps({
+        "contents": [{
+            "parts": [
+                {"inline_data": {"mime_type": mime_type, "data": clean_b64}},
+                {"text": prompt_text}
+            ]
+        }]
+    }).encode()
+    
+    models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+    last_err = None
+    for model in models:
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+            req = _ur.Request(url, data=body, headers={"Content-Type": "application/json", "x-goog-api-key": gkey})
+            res_data = _json.loads(_ur.urlopen(req, timeout=30).read())
+            text = "".join(
+                p.get("text", "")
+                for p in res_data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+            ).strip()
+            if text:
+                return text
+        except Exception as e:
+            last_err = e
+            continue
+            
+    return f"I couldn't analyze the image, Master: {last_err}"
+
 
 import random
 
@@ -32,6 +137,49 @@ def get_api_key(config, key_name):
 
 # Phase 1: Native Tools for ReAct Loop
 TOOLS_SCHEMA = [
+    {
+        "type": "function",
+        "function": {
+            "name": "check_legit",
+            "description": "Analyze an email, job offer, recruitment message, or payment request for fraud, scams, or security threats.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "The message, email text, job description, or URL to analyze."}
+                },
+                "required": ["text"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "index_files",
+            "description": "Index files from a local directory on Master's laptop into Mizune's knowledge base.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "root": {"type": "string", "description": "The local folder path to index (e.g. 'Desktop' or 'Documents')."},
+                    "pattern": {"type": "string", "description": "Optional file pattern to filter by (e.g. '*.pdf' or '*.txt')."}
+                },
+                "required": ["root"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "see_image",
+            "description": "Analyze the most recent image sent by Master (from camera or upload) and answer questions about it.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question": {"type": "string", "description": "Specific question about the image (e.g. 'what does this say?')."}
+                },
+                "required": []
+            }
+        }
+    },
     # NOTE: legacy ADB-based `phone_control` retired — the phone is now a live device
     # node reached via `remote_device_command` (device='phone'). Removing it from the
     # schema stops the model from firing a redundant second tool call for phone tasks.
@@ -140,6 +288,107 @@ TOOLS_SCHEMA = [
     {
         "type": "function",
         "function": {
+            "name": "start_mission",
+            "description": "Start a MISSION: a multi-step goal Mizune plans, executes step-by-step (possibly over hours/days), VERIFIES each step objectively, and reports progress to Master. Use when Master gives a big/compound goal ('mission: ...', 'plan and do X', anything needing several dependent actions).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "goal": {"type": "string", "description": "The full goal in Master's words."}
+                },
+                "required": ["goal"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "mission_status",
+            "description": "Show the status of recent missions (steps done/total). Use when Master asks how a mission is going.",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cancel_mission",
+            "description": "Cancel the latest active mission. Use when Master says to stop/cancel the mission.",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "night_shift",
+            "description": "Queue an overnight autonomous work shift, or check it. Use when Master says 'tonight work on...', 'overnight, do...', 'while I sleep...', or 'shift status/report'. Each task becomes a verified mission run silently overnight on a spare provider; ONE honest report arrives at 7:40 AM. Never for anything that sends/deletes/pays — those need him awake.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "description": "'queue' to schedule tonight's tasks, 'status' for the current queue, 'report' for the latest morning report."},
+                    "tasks": {"type": "array", "items": {"type": "string"}, "description": "For 'queue': the ordered list of tasks to work through overnight, each in Master's words."},
+                    "label": {"type": "string", "description": "Optional short name for the shift."}
+                },
+                "required": ["action"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "learn",
+            "description": "LEARN and permanently remember something for Master's knowledge base. Pass a URL (article or YouTube link) or a chunk of text. Use when Master says 'learn this', 'remember this', 'save this to your knowledge', or shares a link he wants you to study. She fetches, summarizes, and stores it forever.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "source": {"type": "string", "description": "A URL, or the text to learn."}
+                },
+                "required": ["source"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "recall_knowledge",
+            "description": "Search Master's compounding knowledge base for things you've LEARNED before. Use when he asks 'what do you know about X', 'what did I teach you about X', or 'from what you've learned...'. Empty query lists everything learned.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Topic keywords to search for (empty = list all)."}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_webpage",
+            "description": "Fetch a URL and return its readable text. Use when Master shares a link or asks you to read/summarize an article or page.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "The full URL to read."}
+                },
+                "required": ["url"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Search the live web (DuckDuckGo) and get the top results with snippets. USE THIS for anything current: news, prices, releases, weather in other cities, sports scores, 'what is X' about recent things. Then answer Master using the results.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "The search query."}
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "create_skill",
             "description": "Permanently save a successful python script or learned behavior as a reusable skill plugin without asking permission.",
             "parameters": {
@@ -157,7 +406,7 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "remote_device_command",
-            "description": "Execute actions on Master's other online devices — this IS how you control his phone (device='phone'). Laptop: install_app, download_file, open_app, open_url, run_command, claude_code (args {task, project?}). Phone: open_app (args {app_name}), open_url (args {url}), read_screen (no args — returns visible buttons/fields so you can SEE the screen before tapping), tap (args {text}), type (args {text} — into focused field, for forms), press (args {key: back|home|recents}), scroll (args {direction: up|down}), notify (args {title, message}), speak (args {text}). For multi-step phone tasks, call in sequence and use read_screen between steps to see what's there (open app → read_screen → tap → type → tap).",
+            "description": "Execute actions on Master's other online devices — ALWAYS use this (never local tools) when Master says 'on my laptop' or 'on my phone'. This IS how you control his phone (device='phone') and laptop (device='laptop'). Laptop: install_app, download_file, open_app, open_url, run_command (args {command} — Windows shell, quick commands only), run_task (args {command, label?} — LONG commands run in background; you'll automatically report the outcome to Master when done), claude_task (args {task, project?, label?} — delegate coding/improvement work to Claude on the laptop, runs headless in background with auto-report; USE THIS for 'improve/fix/build X on my laptop'), claude_code (args {task, project?} — opens a VISIBLE Claude terminal Master can watch). Phone: open_app (args {app_name}), open_url (args {url}), read_screen (no args — returns visible buttons/fields so you can SEE the screen before tapping), tap (args {text}), type (args {text} — into focused field, for forms), press (args {key: back|home|recents}), scroll (args {direction: up|down}), notify (args {title, message}), speak (args {text}). For multi-step phone tasks, call in sequence and use read_screen between steps to see what's there (open app → read_screen → tap → type → tap).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -201,6 +450,28 @@ TOOLS_SCHEMA = [
     {
         "type": "function",
         "function": {
+            "name": "control_music",
+            "description": "Control whatever is playing on Master's phone: pause, resume/play, or skip to the next track. Use when Master says 'pause the music', 'resume', 'next song', 'skip this'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["pause", "resume", "next"], "description": "What to do with playback."}
+                },
+                "required": ["action"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "find_my_phone",
+            "description": "Help Master locate his phone: fires a burst of loud alert notifications on it. Use when Master says he can't find / lost his phone.",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "schedule_task",
             "description": "Schedule a future reminder or task (include 'VIA_WHATSAPP' in action_to_take if requested on WhatsApp).",
             "parameters": {
@@ -217,11 +488,11 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "google_workspace",
-            "description": "Gmail + Google Calendar. 'list_emails' shows recent emails; 'get_todays_calendar' shows today's events; 'list_upcoming' shows upcoming events; 'create_event' SCHEDULES a real calendar event (use after Master tells you the time — args: title, start_iso like '2026-07-16T15:00:00', optional end_iso, description).",
+            "description": "Gmail + Google Calendar. 'list_emails' shows recent emails; 'get_todays_calendar' shows today's events; 'list_upcoming' shows upcoming events; 'create_event' SCHEDULES a real calendar event (use after Master tells you the time — args: title, start_iso like '2026-07-16T15:00:00', optional end_iso, description); 'delete_event' CANCELS an upcoming event by name (args: title).",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "enum": ["list_emails", "get_todays_calendar", "list_upcoming", "create_event", "read_unread_emails", "get_morning_briefing"], "description": "What to do"},
+                    "action": {"type": "string", "enum": ["list_emails", "get_todays_calendar", "list_upcoming", "create_event", "delete_event", "read_unread_emails", "get_morning_briefing"], "description": "What to do"},
                     "count": {"type": "number", "description": "For list_emails/list_upcoming: how many to show."},
                     "title": {"type": "string", "description": "For create_event: the meeting/event title."},
                     "start_iso": {"type": "string", "description": "For create_event: start datetime ISO, e.g. '2026-07-16T15:00:00'."},
@@ -373,7 +644,8 @@ _SIDE_EFFECT_TOOLS = {
     "remote_device_command", "message_whatsapp", "open_app", "close_app",
     "execute_python", "run_command", "schedule_task", "create_skill",
     "notify_master", "take_note", "store_memory", "add_core_directive",
-    "play_music",
+    "play_music", "control_music", "find_my_phone", "start_mission", "cancel_mission", "learn",
+    "night_shift",
 }
 _recent_tool_calls: dict = {}
 _recent_tool_lock = _dedup_threading.Lock()
@@ -397,12 +669,63 @@ def _resolve_youtube_music_url(query: str) -> str | None:
     return None
 
 
+# Background utility calls (memory-worker seals, planner, reformatting — anything
+# using system_prompt_override) must NEVER execute tools. Observed 2026-07-19: a
+# seal job summarizing briefing chunks decided to message_whatsapp Master a fresh
+# "Good morning" — 3 duplicate briefings at noon. get_ai_response sets this flag.
+_bg_guard = _dedup_threading.local()
+
+# Provider health for the circuit breaker: {provider: [failure epoch, ...]}
+_provider_fails = {}
+_CB_WINDOW = 600.0      # look back 10 minutes
+_CB_THRESHOLD = 3       # 3 failures in that window ⇒ demote to last resort
+
+
+# HB.2 PARALLEL TOOL CALLS. "What's my calendar + any unread mail + weather in Dubai?"
+# used to run strictly one-after-another. Read-only tools have no ordering semantics,
+# so when a round asks for 2+ of them we fan them out on threads and keep the results
+# in the model's requested order. Side-effect tools (send, open, schedule, mission...)
+# stay STRICTLY SEQUENTIAL — ordering and the dedup guard matter there.
+_PARALLEL_SAFE = {
+    "google_workspace", "web_search", "read_webpage", "recall_knowledge",
+    "search_memory", "system_info", "mission_status", "read_screen",
+}
+_PARALLEL_MAX_WORKERS = 4
+
+
+def execute_tools_batch(calls: list, config: dict, background_python: bool = False) -> list:
+    """calls = [(tool_name, args), ...] → results in the SAME order."""
+    if len(calls) <= 1:
+        return [execute_tool_call(n, a, config, background_python) for n, a in calls]
+    if not all(n in _PARALLEL_SAFE for n, _ in calls):
+        return [execute_tool_call(n, a, config, background_python) for n, a in calls]
+
+    log_info(f"[AI] Running {len(calls)} read-only tools IN PARALLEL: {[n for n, _ in calls]}")
+    from concurrent.futures import ThreadPoolExecutor
+    results = [None] * len(calls)
+
+    def _run(i_call):
+        i, (n, a) = i_call
+        try:
+            return i, execute_tool_call(n, a, config, background_python)
+        except Exception as e:                       # never let one tool sink the batch
+            return i, f"Error executing {n}: {e}"
+
+    with ThreadPoolExecutor(max_workers=_PARALLEL_MAX_WORKERS) as pool:
+        for i, res in pool.map(_run, list(enumerate(calls))):
+            results[i] = res
+    return results
+
+
 def execute_tool_call(tool_name: str, args: dict, config: dict, background_python: bool = False) -> str:
     """Single tool dispatcher shared by every provider path (Gemini, Groq, NVIDIA, OpenRouter).
 
     Always returns a human-readable result string and never raises.
     Side-effect tools are deduplicated for _TOOL_DEDUP_TTL_SECONDS.
     """
+    if getattr(_bg_guard, "no_tools", False):
+        log_info(f"[GUARD] blocked tool '{tool_name}' from a background utility call")
+        return f"(tool '{tool_name}' is disabled in background mode — just output the requested text)"
     dedup_key = None
     if tool_name in _SIDE_EFFECT_TOOLS:
         import json as _dj
@@ -450,7 +773,21 @@ def _execute_tool_call_impl(tool_name: str, args: dict, config: dict, background
 
         if tool_name == "open_app":
             app_name = args.get("app_name", "")
-            if app_name: launch_app(app_name)
+            if not app_name:
+                return "Error: no app name given."
+            # The cloud brain is HEADLESS (linux VM) — "open X" always means one of
+            # Master's devices. Route to the laptop (or phone) node instead of lying
+            # with a local launch that can't be seen. Local launch stays for the
+            # desktop brain (win32).
+            import sys as _sys
+            if _sys.platform.startswith("linux"):
+                from .device_registry import device_registry
+                online = device_registry.list_devices()
+                target = args.get("device") or ("laptop" if "laptop" in online else "phone" if "phone" in online else None)
+                if not target:
+                    return "None of your devices are online right now, Master — I can't open it here on the server."
+                return device_registry.send_command(target, "open_app", {"app_name": app_name})
+            launch_app(app_name)
             return f"Launched {app_name}"
 
         if tool_name == "close_app":
@@ -468,9 +805,18 @@ def _execute_tool_call_impl(tool_name: str, args: dict, config: dict, background
             return str(search_memory(args.get("keyword", "")))
 
         if tool_name == "message_whatsapp":
+            _wmsg = str(args.get("message", ""))
+            # Truncation guard: some models cut the JSON arg at the first apostrophe
+            # ("Good morning, Master! You" ← was "You've..."). Don't SEND fragments —
+            # bounce them back so the model rewrites without apostrophes.
+            _stripped = _wmsg.rstrip()
+            if _stripped and len(_stripped) < 45 and not _stripped.endswith((".", "!", "?", "~", "…", ")", "]")) \
+                    and not _stripped[-1:].isdigit():
+                return ("Error: your 'message' argument arrived TRUNCATED (it ends mid-sentence: "
+                        f"'{_stripped[-25:]}'). Rewrite the full message WITHOUT apostrophes and call again.")
             # Use the real return value so a missing contact / disconnected bridge
             # short-circuits with an honest message instead of a false "Messaged X".
-            return str(whatsapp_automation(args.get("contact", ""), args.get("message", "")))
+            return str(whatsapp_automation(args.get("contact", ""), _wmsg))
 
         if tool_name == "execute_python":
             code = args.get("code", "")
@@ -546,7 +892,162 @@ def _execute_tool_call_impl(tool_name: str, args: dict, config: dict, background
                 device_registry.send_command(device, "tap", {"text": "play"})
                 time.sleep(2.5)
                 play_res = device_registry.send_command(device, "tap", {"text": "play"})
-            return f"Playing '{query}' on {device} in {browser}. {note} [open: {open_res}] [play: {play_res}]"
+                # Belt-and-braces: a media-key event drives the page's media session
+                # directly — starts playback even when the play-button tap missed.
+                time.sleep(1.5)
+                media_res = device_registry.send_command(device, "media_play", {})
+                if "unknown action" not in media_res.lower():
+                    play_res = f"{play_res} / {media_res}"
+            # Diagnostics go to the LOG — play_music is fast-tracked, so whatever we
+            # return here is SPOKEN to Master verbatim. Keep it human.
+            log_info(f"[MUSIC] '{query}' on {device}/{browser} [open: {open_res}] [play: {play_res}]")
+            if "not online" in open_res.lower():
+                return f"I couldn't reach your {device}, Master — it's offline right now."
+            return f"Playing '{query}' on your {device}, Master! 🎵 {note}".strip()
+
+        if tool_name == "start_mission":
+            from .missions import start_mission
+            return start_mission(args.get("goal", ""), "chat", config)
+
+        if tool_name == "mission_status":
+            from .missions import mission_status
+            return mission_status(config)
+
+        if tool_name == "cancel_mission":
+            from .missions import cancel_mission
+            return cancel_mission(config)
+
+        if tool_name == "night_shift":
+            from .night_shift import queue_shift, build_proof_of_work, latest_report
+            action = (args.get("action") or "").lower()
+            if action == "queue":
+                tasks = args.get("tasks") or []
+                if isinstance(tasks, str):
+                    tasks = [tasks]
+                if not tasks:
+                    return "What should I work on tonight, Master? Give me the list."
+                sid = queue_shift(args.get("label") or "Night shift", tasks, config)
+                if not sid:
+                    return "I couldn't queue that shift, Master — the task list came through empty."
+                return (f"Shift queued, Master — {len(tasks)} task(s). I'll start at 10 PM, work "
+                        f"through them silently, verify each, and give you ONE honest report at "
+                        f"7:40 AM. Sleep well. 🌙")
+            if action == "report":
+                rep = latest_report()
+                return rep or "No shift report yet, Master."
+            # status (default)
+            import sqlite3, os
+            p = os.path.join(".data", "night_shift.db")
+            if not os.path.exists(p):
+                return "No night shift set up yet, Master."
+            con = sqlite3.connect(p)
+            row = con.execute("SELECT id,label,status FROM shifts ORDER BY id DESC LIMIT 1").fetchone()
+            con.close()
+            if not row:
+                return "No night shift queued, Master."
+            return build_proof_of_work(row[0]) or f"Shift #{row[0]} '{row[1]}' [{row[2]}]"
+
+        if tool_name == "learn":
+            from .knowledge import learn as _learn
+            return _learn(args.get("source", ""), config)
+
+        if tool_name == "recall_knowledge":
+            from .knowledge import recall as _recall
+            return _recall(args.get("query", ""), config)
+
+        if tool_name == "read_webpage":
+            url = args.get("url", "").strip()
+            if not url.startswith(("http://", "https://")):
+                url = "https://" + url if "." in url else ""
+            if not url:
+                return "Error: no valid URL."
+            try:
+                import urllib.request as _ur, re as _re2, html as _html
+                req = _ur.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+                page = _ur.urlopen(req, timeout=15).read(600_000).decode("utf-8", "replace")
+                # Strip scripts/styles/tags → readable text
+                page = _re2.sub(r"(?is)<(script|style|noscript|svg|header|footer|nav)[^>]*>.*?</\1>", " ", page)
+                text = _html.unescape(_re2.sub(r"<[^>]+>", " ", page))
+                text = _re2.sub(r"\s+", " ", text).strip()
+                if len(text) < 80:
+                    return f"That page had no readable text (maybe JS-only or blocked): {url}"
+                return f"Content of {url}:\n{text[:3000]}"
+            except Exception as e:
+                return f"Couldn't read {url}: {e}"
+
+        if tool_name == "web_search":
+            query = args.get("query", "").strip()
+            if not query:
+                return "Error: empty search query."
+            # Gemini with Google-Search grounding: real live web answers, no scraping
+            # (DuckDuckGo/Bing anomaly-block the Azure datacenter IP).
+            try:
+                import urllib.request as _ur, json as _json
+                gkey = get_api_key(config, "gemini_api_key")
+                if not gkey:
+                    return "Web search unavailable: no Gemini key configured."
+                body = _json.dumps({
+                    "contents": [{"parts": [{"text":
+                        f"Search the web and answer concisely with facts and dates: {query}"}]}],
+                    "tools": [{"google_search": {}}],
+                }).encode()
+                req = _ur.Request(
+                    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+                    data=body, headers={"Content-Type": "application/json", "x-goog-api-key": gkey})
+                data = _json.loads(_ur.urlopen(req, timeout=25).read())
+                text = "".join(
+                    p.get("text", "")
+                    for p in data.get("candidates", [{}])[0].get("content", {}).get("parts", []))
+                if not text.strip():
+                    return f"No web results for '{query}'."
+                return f"Live web findings for '{query}':\n{text.strip()[:1500]}"
+            except Exception as e:
+                return f"Web search failed: {e}"
+
+        if tool_name == "control_music":
+            from .device_registry import device_registry
+            action = args.get("action", "pause")
+            mapped = {"pause": "media_pause", "resume": "media_play", "next": "media_next"}.get(action, "media_pause")
+            res = device_registry.send_command("phone", mapped, {})
+            log_info(f"[MUSIC] control {action} -> {res}")
+            if "not online" in res.lower():
+                return "Your phone isn't reachable right now, Master."
+            if "unknown action" in res.lower():
+                return "Your phone's app is too old for playback control, Master — rebuild it once and I can."
+            return {"pause": "Paused the music, Master.",
+                    "resume": "Resumed the music, Master! 🎵",
+                    "next": "Skipped to the next track, Master! ⏭️"}[action] if action in ("pause", "resume", "next") else res
+
+        if tool_name == "find_my_phone":
+            from .device_registry import device_registry
+            res = ""
+            for i in range(3):
+                res = device_registry.send_command("phone", "notify", {
+                    "title": "📢 MASTER IS LOOKING FOR ME!",
+                    "message": f"I'm right here, Master! ({i + 1}/3)"})
+                if "not online" in res.lower():
+                    return "Your phone isn't connected right now, Master — I can't ring it."
+                time.sleep(1.5)
+            log_info(f"[FIND] phone ping -> {res}")
+            return "I'm making your phone shout, Master — follow the pings! 📢"
+
+        if tool_name == "see_image":
+            question = args.get("question", "")
+            last_b64 = _get_latest_image()
+            if not last_b64:
+                return "I haven't received any image from you yet, Master!"
+            return describe_image(last_b64, question, config)
+
+        if tool_name == "index_files":
+            from .knowledge import index_files as _index_files
+            root = args.get("root", "Desktop")
+            pattern = args.get("pattern")
+            return _index_files(root, pattern, config)
+
+        if tool_name == "check_legit":
+            from .guardian import investigate_query
+            query_text = args.get("text") or args.get("query") or ""
+            return investigate_query(query_text)
 
         if tool_name == "remote_device_command":
             from .device_registry import device_registry
@@ -634,6 +1135,9 @@ def _execute_tool_call_impl(tool_name: str, args: dict, config: dict, background
                 return str(global_google_api.create_event(
                     args.get("title") or args.get("summary", ""),
                     args.get("start_iso", ""), args.get("end_iso"), args.get("description", "")))
+            if action == "delete_event":
+                return str(global_google_api.delete_event(
+                    args.get("title") or args.get("query") or args.get("summary", "")))
             if action == "read_unread_emails": return str(global_google_api.read_unread_emails())
             if action == "get_morning_briefing": return str(global_google_api.get_morning_briefing())
             return "Invalid action"
@@ -661,6 +1165,20 @@ def _execute_tool_call_impl(tool_name: str, args: dict, config: dict, background
             cmd = args.get("command", "")
             if not cmd:
                 return "No command provided."
+            # Safety net: on the headless linux brain, a Windows-flavoured command
+            # ("C:\...", %VAR%, powershell...) means Master said "on my laptop" but
+            # the model picked the local tool — reroute to the laptop node instead
+            # of running it on the VM and pretending it worked.
+            import sys as _sys
+            if _sys.platform.startswith("linux"):
+                windowsy = (":\\" in cmd or "%USERPROFILE%" in cmd.upper() or "%APPDATA%" in cmd.upper()
+                            or cmd.lower().startswith(("powershell", "start ", "explorer", "notepad", "taskkill")))
+                if windowsy:
+                    from .device_registry import device_registry
+                    if "laptop" in device_registry.list_devices():
+                        log_info(f"[AI] run_command looks Windows-flavoured; rerouting to laptop: {cmd}")
+                        return device_registry.send_command("laptop", "run_command", {"command": cmd})
+                    return "That looks like a laptop command, Master, but your laptop isn't online right now."
             import subprocess
             dangerous = ["del ", "rmdir ", "rm -", "format ", "diskpart"]
             if any(d in cmd.lower() for d in dangerous):
@@ -692,6 +1210,19 @@ from server.tracing import observe
 # capture_input=False: `config` holds live API keys — keep them out of TraceRoot.
 @observe(name="AI.Router", type="llm", capture_input=False)
 def get_ai_response(text: str, history: list, config: dict, system_prompt_override: str = None, hints: dict = None, ws_broadcast_func=None) -> tuple:
+    """Tool-guard wrapper: utility calls (override prompts — seals, planning, reformat)
+    may not run tools. Save/RESTORE the flag so a nested override call (intent
+    classification, priming...) can't leave no_tools=True behind and block the
+    OUTER user request's tools (observed: start_mission blocked)."""
+    _prev_no_tools = getattr(_bg_guard, "no_tools", False)
+    _bg_guard.no_tools = bool(system_prompt_override)
+    try:
+        return _get_ai_response_body(text, history, config, system_prompt_override, hints, ws_broadcast_func)
+    finally:
+        _bg_guard.no_tools = _prev_no_tools
+
+
+def _get_ai_response_body(text: str, history: list, config: dict, system_prompt_override: str = None, hints: dict = None, ws_broadcast_func=None) -> tuple:
     """Router function to send prompt to the optimal LLM. Returns (text_response, tool_calls_list)."""
     from server.tokenjuice import TokenJuice
     text = TokenJuice.compress(text)
@@ -703,6 +1234,14 @@ def get_ai_response(text: str, history: list, config: dict, system_prompt_overri
         
     from server.model_router import get_model_router
     model_choice = get_model_router(config).route(text, history, hints)
+    # HARD GUARD: nvidia's model rejects any conversation carrying MULTIPLE tool calls
+    # ("only supports single tool-calls at once", HTTP 400), which breaks parallel
+    # multi-tool answers — and it timed out 126x in one log sweep. Never let it be the
+    # PRIMARY when a capable provider is configured (it stays reachable as a last resort).
+    if model_choice == "nvidia" and config.get("groq_api_key"):
+        log_info("[ROUTER] nvidia can't do multi-tool — using groq as primary instead")
+        model_choice = "groq"
+
     log_info(f"[ROUTER] Selected provider: {model_choice}")
 
     if system_prompt_override:
@@ -725,16 +1264,25 @@ def get_ai_response(text: str, history: list, config: dict, system_prompt_overri
             tz = zoneinfo.ZoneInfo(tz_str)
         except Exception:
             tz = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
-        current_time = datetime.datetime.now(tz).strftime("%I:%M %p, %A %B %d, %Y")
-        
+        _now = datetime.datetime.now(tz)
+        current_time = _now.strftime("%I:%M %p, %A %B %d, %Y")
+        _h = _now.hour
+        daypart = "morning" if _h < 12 else "afternoon" if _h < 17 else "evening" if _h < 22 else "night"
+
         context_layer = (
             "\n\n[CONTEXT LAYER]\n"
-            f"Current Time: {current_time}\n"
+            f"Current Time: {current_time} — it is {daypart}. When you greet Master, the "
+            f"greeting MUST match: 'Good {daypart}' (never 'Good morning' in the {daypart}).\n"
             "CRITICAL TIME BOUNDARY: The Current Time provided above is the absolute source of truth. Ignore any contradictory timestamps in the chat history.\n"
             "If the user's greeting contradicts the current time (like saying 'Good morning' at 2 AM), playfully correct them. Otherwise, don't mention the time unless asked.\n"
             "You have full control over the user's PC via native function calling. "
             "IMPORTANT FOR execute_python: Include `time.sleep(1)` between UI actions so Windows renders! "
             "CRITICAL: Do NOT use tools if the user is just saying hello, greeting you, or chatting casually. ONLY use tools if you are directly commanded to perform a task. If no tools are needed, just reply with text.\n"
+            "PARALLEL TOOLS: when Master asks for SEVERAL INDEPENDENT things in one message "
+            "(e.g. 'check my calendar AND the weather AND my emails'), emit ALL of those tool "
+            "calls TOGETHER in the SAME response — they are executed simultaneously, so this is "
+            "much faster. Only chain them one-at-a-time when a later step genuinely needs an "
+            "earlier step's result.\n"
             "\n[CAPABILITY GROUNDING - READ CAREFULLY]\n"
             "You MUST be honest about what you can and cannot do. Your REAL capabilities are:\n"
             "- open_app / close_app: Launch or close apps on Master's PC\n"
@@ -862,6 +1410,8 @@ def get_ai_response(text: str, history: list, config: dict, system_prompt_overri
         "openrouter": _openrouter_response,
         "opencode": _opencode_response,
         "groq": _groq_response,
+        "cerebras": _cerebras_response,
+        "mistral": _mistral_response,
         "ollama": _ollama_response,
         "local": _ollama_response,
         "nvidia": _nvidia_response,
@@ -873,10 +1423,21 @@ def get_ai_response(text: str, history: list, config: dict, system_prompt_overri
         "openrouter": "openrouter_api_key",
         "opencode": "opencode_api_key",
         "groq": "groq_api_key",
+        "cerebras": "cerebras_api_key",
+        "mistral": "mistral_api_key",
         "nvidia": "nvidia_api_key",
         "gemini": "gemini_api_key",
     }
-    CASCADE = ["groq", "gemini", "openrouter", "nvidia"]
+    # NVIDIA sits LAST on purpose: its model rejects conversations containing multiple
+    # tool calls ("only supports single tool-calls at once", HTTP 400) and it timed out
+    # 126x in one log sweep — so it must never be primary. But dropping it entirely left
+    # NO last resort: on 2026-07-23 groq+gemini+openrouter all failed at once (gemini
+    # free tier is only 20 req/day) and Master got "my brain is a little tangled".
+    # A flawed provider that answers plain text beats total silence.
+    # Order = fast+generous first. Cerebras (~1M tok/day) and Mistral (~1B tok/month)
+    # sit high because gemini's free tier is only 20 requests/DAY — too small to be early
+    # (that exhaustion is what produced "my brain is a little tangled" on 2026-07-23).
+    CASCADE = ["groq", "cerebras", "mistral", "gemini", "openrouter", "nvidia"]
 
     def _has_key(provider):
         # ollama/local need no key; everyone else must have one configured
@@ -901,6 +1462,20 @@ def get_ai_response(text: str, history: list, config: dict, system_prompt_overri
     attempt_order = [model_choice] + [p for p in CASCADE if p != model_choice]
     attempt_order = [p for p in attempt_order if _has_key(p)]
 
+    # CIRCUIT BREAKER (2026-07-20 audit: nvidia timed out 126x as primary — every
+    # such request burned a 10s timeout before falling back). A provider with 3+
+    # failures in the last 10 minutes gets demoted to the END of the order until it
+    # cools off, so a sick provider costs one probe, not every request.
+    _now_cb = time.time()
+    healthy, sick = [], []
+    for p in attempt_order:
+        fails = [t for t in _provider_fails.get(p, []) if _now_cb - t < _CB_WINDOW]
+        _provider_fails[p] = fails
+        (sick if len(fails) >= _CB_THRESHOLD else healthy).append(p)
+    if healthy and sick:
+        log_info(f"[AI] Circuit breaker: demoting {sick} (recent failures)")
+        attempt_order = healthy + sick
+
     last_err = None
     for idx, provider in enumerate(attempt_order):
         try:
@@ -910,11 +1485,16 @@ def get_ai_response(text: str, history: list, config: dict, system_prompt_overri
         except Exception as e:
             last_err = e
             log_info(f"[AI] Provider '{provider}' failed: {e}")
+            _provider_fails.setdefault(provider, []).append(time.time())
             error_str = str(e).lower()
             # Only keep cascading on transient/quota/auth errors; hard bugs re-raise.
             retriable = any(k in error_str for k in
                             ("empty", "quota", "exhausted", "429", "503", "500",
-                             "time", "timeout", "401", "auth", "rate", "overload"))
+                             "time", "timeout", "401", "auth", "rate", "overload",
+                             # Some models reject a conversation containing several tool
+                             # calls ("only supports single tool-calls at once", HTTP 400)
+                             # — that's a CAPABILITY gap, so cascade to one that can.
+                             "single tool", "400"))
             if not retriable:
                 raise e
             continue
@@ -925,6 +1505,16 @@ def get_ai_response(text: str, history: list, config: dict, system_prompt_overri
     if last_err:
         log_info(f"[AI] All providers failed. Last error: {last_err}")
     return ("Maa, Master, my brain is a little tangled right now~ Give me a moment and ask me again, okay?", [])
+
+def _cerebras_response(text, history, system_prompt, config, ws_broadcast_func=None):
+    """Cerebras — Groq-class speed, ~1M tokens/day free. Same driver, same behaviour."""
+    return _groq_response(text, history, system_prompt, config, ws_broadcast_func, _provider="cerebras")
+
+
+def _mistral_response(text, history, system_prompt, config, ws_broadcast_func=None):
+    """Mistral — ~1B tokens/month free tier. Same driver, same behaviour."""
+    return _groq_response(text, history, system_prompt, config, ws_broadcast_func, _provider="mistral")
+
 
 def _gemini_response(text: str, history: list, system_prompt: str, config: dict, ws_broadcast_func=None) -> tuple:
     """Fetch response from Google Gemini with fallback models. Returns (text, tool_calls)."""
@@ -1038,23 +1628,20 @@ def _gemini_response(text: str, history: list, system_prompt: str, config: dict,
                 tool_responses = []
                 fast_track_results = []
                 log_info(f"[AI] Gemini requested {len(parsed_tools)} native tool calls. Executing...")
-                for t in parsed_tools:
-                    tool_name = t["name"]
-                    args = t["args"]
-                    tool_result = execute_tool_call(tool_name, args, config)
-
-                    executed_tools_meta.append({"name": tool_name, "args": args})
-                    
+                _gbatch = [(t["name"], t["args"]) for t in parsed_tools]
+                for t, tool_result in zip(parsed_tools, execute_tools_batch(_gbatch, config)):
+                    executed_tools_meta.append({"name": t["name"], "args": t["args"]})
                     tool_responses.append(
                         types.Part.from_function_response(
-                            name=tool_name,
+                            name=t["name"],
                             response={"result": str(tool_result)}
                         )
                     )
                     fast_track_results.append(str(tool_result))
                 
-                FAST_TRACK_TOOLS = ["schedule_task", "open_app", "close_app", "message_whatsapp", "execute_skill", "notify_master", "play_music", "google_workspace"]
-                all_fast_track = all(t["name"] in FAST_TRACK_TOOLS for t in parsed_tools)
+                FAST_TRACK_TOOLS = ["schedule_task", "open_app", "close_app", "message_whatsapp", "execute_skill", "notify_master", "play_music", "control_music", "find_my_phone", "google_workspace", "start_mission", "mission_status", "cancel_mission", "learn", "recall_knowledge", "see_image", "index_files", "check_legit", "night_shift"]
+                all_fast_track = (len(parsed_tools) == 1
+                                  and all(t["name"] in FAST_TRACK_TOOLS for t in parsed_tools))
                 
                 if all_fast_track and parsed_tools:
                     fast_response = " ".join(fast_track_results)
@@ -1090,8 +1677,10 @@ def _gemini_response(text: str, history: list, system_prompt: str, config: dict,
         raise last_err
     return ("I'm having trouble thinking right now.", [])
 
-def _groq_keys(config) -> list:
-    val = config.get("groq_api_key")
+def _provider_keys(config, cfg_key: str) -> list:
+    """Read one-or-many API keys for a provider. Accepts a list or a comma-separated
+    string, so every provider gets the same key-rotation behaviour Groq has."""
+    val = config.get(cfg_key)
     if isinstance(val, list):
         return [k for k in val if k]
     if isinstance(val, str) and val:
@@ -1099,31 +1688,65 @@ def _groq_keys(config) -> list:
     return []
 
 
-def _groq_response(text: str, history: list, system_prompt: str, config: dict, ws_broadcast_func=None) -> tuple:
-    """Fetch response from Groq (Llama/Mixtral). Returns (text, tool_calls)."""
+def _groq_keys(config) -> list:
+    return _provider_keys(config, "groq_api_key")
+
+
+# OpenAI-compatible providers all share _groq_response's logic (same tool loop, same
+# persona handling) so Mizune behaves and SOUNDS identical no matter who answers.
+# Verified live 2026-07-23: all three do real tool calling.
+_OPENAI_COMPAT = {
+    "groq": {
+        "base_url": "https://api.groq.com/openai/v1", "keys": "groq_api_key",
+        "model_cfg": "groq_model", "model": "llama-3.3-70b-versatile",
+        "timeout": 10.0, "max_tokens": 256, "headers": None,
+    },
+    "cerebras": {
+        "base_url": "https://api.cerebras.ai/v1", "keys": "cerebras_api_key",
+        "model_cfg": "cerebras_model", "model": "gpt-oss-120b",
+        # Cloudflare 403s ("error code: 1010") without a browser UA.
+        # gpt-oss emits a `reasoning` field that eats the budget — needs room or
+        # `content` comes back empty and the cascade fails over for nothing.
+        "timeout": 20.0, "max_tokens": 2048,
+        "headers": {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                  "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"},
+    },
+    "mistral": {
+        "base_url": "https://api.mistral.ai/v1", "keys": "mistral_api_key",
+        "model_cfg": "mistral_model", "model": "mistral-medium-2508",
+        "timeout": 15.0, "max_tokens": 512, "headers": None,
+    },
+}
+
+
+def _groq_response(text: str, history: list, system_prompt: str, config: dict,
+                   ws_broadcast_func=None, _provider: str = "groq") -> tuple:
+    """Shared driver for every OpenAI-compatible provider (groq / cerebras / mistral).
+    One implementation = one behaviour: same tool loop, same system prompt, same
+    persona, whoever is answering. Returns (text, tool_calls)."""
     import random as _rnd
-    _keys = _groq_keys(config)
+    prof = _OPENAI_COMPAT.get(_provider, _OPENAI_COMPAT["groq"])
+    _keys = _provider_keys(config, prof["keys"])
     if not _keys:
-        return ("Groq API key is not configured, Master.", [])
+        return (f"{_provider.title()} API key is not configured, Master.", [])
     _rnd.shuffle(_keys)   # spread daily load across the key pool
 
     try:
         from openai import OpenAI
         import json
-        client = OpenAI(
-            api_key=_keys[0],
-            base_url="https://api.groq.com/openai/v1",
-            timeout=10.0, # fast failover — the cascade is the retry mechanism
-            max_retries=0  # the provider cascade IS the retry mechanism
-        )
+        _mk = lambda k: OpenAI(api_key=k, base_url=prof["base_url"],
+                               timeout=prof["timeout"], max_retries=0,
+                               **({"default_headers": prof["headers"]} if prof["headers"] else {}))
+        client = _mk(_keys[0])
+        _MAXTOK = prof["max_tokens"]
         
-        groq_system = system_prompt + (
+        provider_system = system_prompt + (
             "\n\nCRITICAL TOOL CALLING RULE: You must use the built-in JSON tool calling API perfectly. "
             "DO NOT output XML tags like <function=...>. DO NOT embed JSON inside the tool 'name' field. "
             "The tool 'name' must be exactly the string name of the tool (e.g. 'open_app')."
         )
         
-        messages = [{"role": "system", "content": groq_system}]
+        messages = [{"role": "system", "content": provider_system}]
         for turn in history:
             role = "assistant" if turn["role"] == "model" else "user"
             content = turn["parts"][0]["text"]
@@ -1132,40 +1755,41 @@ def _groq_response(text: str, history: list, system_prompt: str, config: dict, w
                 
         messages.append({"role": "user", "content": text})
         
-        model = config.get("groq_model", "llama-3.3-70b-versatile")
+        model = config.get(prof["model_cfg"], prof["model"])
         
-        def _create():
-            # On a per-key daily/rate cap (429), rotate to a sibling key before we give
-            # up and fall to a slower provider. Keeps Groq usable while ANY key has budget.
+        _key_idx = [0]   # index of the key `client` is currently built on
+
+        def _api(**kw):
+            # EVERY completions call goes through here. On a per-key daily/rate cap (429),
+            # rotate to a sibling key before giving up and falling to a slower provider.
+            # This used to guard only the FIRST call: a key that hit its cap mid-tool-loop
+            # raised, failed the whole provider, and threw away tool work already done —
+            # while three sibling keys still had budget.
+            nonlocal client
             last_err = None
-            for idx, k in enumerate(_keys):
+            for idx in range(_key_idx[0], len(_keys)):
                 try:
-                    c = client if idx == 0 else OpenAI(
-                        api_key=k, base_url="https://api.groq.com/openai/v1",
-                        timeout=10.0, max_retries=0)
-                    return c.chat.completions.create(
-                        model=model, messages=messages, temperature=0.7, max_tokens=256,
-                        tools=_active_tools_schema(config), tool_choice="auto",
-                        parallel_tool_calls=False)
+                    c = client if idx == _key_idx[0] else _mk(_keys[idx])
+                    res = c.chat.completions.create(model=model, **kw)
+                    if idx != _key_idx[0]:
+                        client, _key_idx[0] = c, idx   # stick to the key that worked
+                    return res
                 except Exception as ex:
                     last_err = ex
                     if "rate_limit" in str(ex).lower() or "429" in str(ex):
-                        log_info(f"[AI] Groq key {idx+1}/{len(_keys)} capped, trying next…")
+                        log_info(f"[AI] {_provider} key {idx+1}/{len(_keys)} capped, trying next…")
                         continue
                     raise
             raise last_err
 
         try:
-            response = _create()
+            response = _api(messages=messages, temperature=0.7, max_tokens=_MAXTOK,
+                            tools=_active_tools_schema(config), tool_choice="auto",
+                            parallel_tool_calls=False)
         except Exception as e:
             if "tool_use_failed" in str(e) or "400" in str(e):
-                log_info("[AI] LLaMA-3 hallucinatory tool call detected (400 Bad Request). Retrying WITHOUT tools...")
-                response = client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    temperature=0.7,
-                    max_tokens=256
-                )
+                log_info(f"[AI] {_provider}: hallucinatory tool call / 400. Retrying WITHOUT tools...")
+                response = _api(messages=messages, temperature=0.7, max_tokens=_MAXTOK)
             else:
                 raise e
                 
@@ -1201,16 +1825,16 @@ def _groq_response(text: str, history: list, system_prompt: str, config: dict, w
 
             round_tool_names = []
             round_results = []
+            _batch = []
             for t in msg.tool_calls:
-                tool_name = t.function.name
-                round_tool_names.append(tool_name)
                 try:
                     args = json.loads(t.function.arguments) if t.function.arguments else {}
                 except Exception:
                     args = {}
-                executed_tools.append({"name": tool_name, "args": args})
-                tool_result = execute_tool_call(tool_name, args, config)
-
+                round_tool_names.append(t.function.name)
+                executed_tools.append({"name": t.function.name, "args": args})
+                _batch.append((t.function.name, args))
+            for t, tool_result in zip(msg.tool_calls, execute_tools_batch(_batch, config)):
                 # Feed the tool result back into the LLM context!
                 messages.append({
                     "role": "tool",
@@ -1223,35 +1847,28 @@ def _groq_response(text: str, history: list, system_prompt: str, config: dict, w
             # open app, schedule, notify...), there's nothing for the model to reason about.
             # Return the tool results directly and skip the second round-trip. This is what
             # keeps WhatsApp replies sub-second on the Groq path.
-            FAST_TRACK_TOOLS = ["schedule_task", "open_app", "close_app", "message_whatsapp", "execute_skill", "notify_master", "play_music", "google_workspace"]
-            if round_tool_names and all(n in FAST_TRACK_TOOLS for n in round_tool_names):
+            FAST_TRACK_TOOLS = ["schedule_task", "open_app", "close_app", "message_whatsapp", "execute_skill", "notify_master", "play_music", "control_music", "find_my_phone", "google_workspace", "start_mission", "mission_status", "cancel_mission", "learn", "recall_knowledge", "see_image", "index_files", "check_legit", "night_shift"]
+            # Only short-circuit a SINGLE terminal action. A multi-tool round (parallel
+            # "do these 3 things") must go back to the model so it can SYNTHESIZE all
+            # the results — fast-tracking there answered only the first tool.
+            if (round_tool_names and len(round_tool_names) == 1
+                    and all(n in FAST_TRACK_TOOLS for n in round_tool_names)):
                 fast_response = " ".join(r for r in round_results if r) or "Action completed."
                 if executed_tools:
                     from .trajectory_logger import trajectory_logger
                     trajectory_logger.log_trajectory(text, history, executed_tools, fast_response)
-                log_info("[AI] Groq fast-tracking response (bypassing 2nd round-trip).")
+                log_info(f"[AI] {_provider} fast-tracking response (bypassing 2nd round-trip).")
                 return (fast_response, [])
 
             # Request next generation with tool results included
             try:
-                response = client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    temperature=0.7,
-                    max_tokens=256,
-                    tools=_active_tools_schema(config),
-                    tool_choice="auto",
-                    parallel_tool_calls=False
-                )
+                response = _api(messages=messages, temperature=0.7, max_tokens=_MAXTOK,
+                                tools=_active_tools_schema(config), tool_choice="auto",
+                                parallel_tool_calls=False)
             except Exception as e:
                 if "tool_use_failed" in str(e) or "400" in str(e):
-                    log_info("[AI] Groq hallucinated on loop. Forcing text summary...")
-                    response = client.chat.completions.create(
-                        model=model,
-                        messages=messages,
-                        temperature=0.7,
-                        max_tokens=256
-                    )
+                    log_info(f"[AI] {_provider} hallucinated on loop. Forcing text summary...")
+                    response = _api(messages=messages, temperature=0.7, max_tokens=_MAXTOK)
                 else:
                     raise e
                     
@@ -1271,7 +1888,7 @@ def _groq_response(text: str, history: list, system_prompt: str, config: dict, w
         # Return empty list for parsed_tools because we executed them internally in the ReAct loop
         return (text_response, [])
     except Exception as e:
-        log_info(f"[AI] Groq Error: {e}")
+        log_info(f"[AI] {_provider} Error: {e}")
         raise e
 
 def _ollama_response(text: str, history: list, system_prompt: str, config: dict) -> tuple:
@@ -1452,19 +2069,20 @@ def _nvidia_response(text: str, history: list, system_prompt: str, config: dict,
                 break
                 
             log_info(f"[AI] Model requested {len(msg.tool_calls)} native tool calls. Executing...")
+            _batch = []
             for t in msg.tool_calls:
-                tool_name = t.function.name
                 try:
                     args = json.loads(t.function.arguments) if t.function.arguments else {}
                 except Exception:
                     args = {}
-                tool_result = execute_tool_call(tool_name, args, config, background_python=True)
-
-                executed_tools_meta.append({"name": tool_name, "args": args})
+                executed_tools_meta.append({"name": t.function.name, "args": args})
+                _batch.append((t.function.name, args))
+            for t, tool_result in zip(msg.tool_calls,
+                                      execute_tools_batch(_batch, config, background_python=True)):
                 messages.append({
                     "role": "tool",
                     "tool_call_id": t.id,
-                    "name": tool_name,
+                    "name": t.function.name,
                     "content": str(tool_result)
                 })
                 
@@ -1606,19 +2224,20 @@ def _openrouter_response(text: str, history: list, system_prompt: str, config: d
                 break
                 
             log_info(f"[AI] Model requested {len(msg.tool_calls)} native tool calls. Executing...")
+            _batch = []
             for t in msg.tool_calls:
-                tool_name = t.function.name
                 try:
                     args = json.loads(t.function.arguments) if t.function.arguments else {}
                 except Exception:
                     args = {}
-                tool_result = execute_tool_call(tool_name, args, config, background_python=True)
-
-                executed_tools.append({"name": tool_name, "args": args})
+                executed_tools.append({"name": t.function.name, "args": args})
+                _batch.append((t.function.name, args))
+            for t, tool_result in zip(msg.tool_calls,
+                                      execute_tools_batch(_batch, config, background_python=True)):
                 messages.append({
                     "role": "tool",
                     "tool_call_id": t.id,
-                    "name": tool_name,
+                    "name": t.function.name,
                     "content": str(tool_result)
                 })
                 
