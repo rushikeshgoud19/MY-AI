@@ -2070,6 +2070,169 @@ Z3.1 export/import = DONE.
   3. Path Traversal Guard Verification Note:
      Tested `is_safe_path` function against crafted escape paths: `data/test.db` -> True (allowed), `../evil.txt` -> False (blocked), `/etc/passwd` -> False (blocked), `C:\Windows\system32\cmd.exe` -> False (blocked).
 
+# ═══════════════════════════════════════════════════════════════
+# EXECUTOR TASK PACK 3 (for Antigravity) — written 2026-07-24 by Claude
+# Z3.2 SOVEREIGN: persona-fidelity benchmark. ONE task. Local only.
+# ═══════════════════════════════════════════════════════════════
+# WHY: Z3 is about surviving the death of any provider. Z3.1 export/import (DONE) makes her
+# DATA portable. Z3.2 makes the CHOICE of brain measurable: when a free tier dies mid-task
+# (Gemini already did this to Rushi), which provider still sounds like HER and still calls
+# the right tools? Right now that's a vibe. This turns it into a number, so a forced
+# brain-swap is a decision, not a gamble. It also tells us how much we're losing by pinning
+# the night shift (Z2) to Mistral instead of Groq.
+
+## ENVIRONMENT FACTS (verified 2026-07-24 — do not re-discover)
+- Repo root: `C:\Users\rushi\OneDrive\Desktop\my Ai`. Python = `.venv\Scripts\python.exe`.
+  LOCAL ONLY. Never touch the VM. Never git add/commit/push (Claude owns git + VM).
+- The OpenAI-compatible providers share one driver + config profile in `server/ai.py`:
+  `_OPENAI_COMPAT` (dict, ~line 1651) has {base_url, keys, model_cfg, model, headers} for
+  `groq`, `cerebras`, `mistral`. `get_api_key(config, key_name)` (~line 125) returns ONE
+  key (rotates a pool). `TOOLS_SCHEMA` (list, ~line 139) is her full tool list. Load config
+  via `json.load(open("config.json"))` — do NOT import server.config (pyautogui → crash).
+- Her stable identity is `character/SOUL.md` (use it as the system prompt for the voice
+  test — it's the layer that makes her HER; the full runtime prompt is assembled
+  dynamically and is out of scope to reproduce, note this approximation in RESULT).
+- `openai` SDK is in the venv (the driver already uses `from openai import OpenAI`).
+
+## ══ TASK — `scripts/persona_benchmark.py` (NEW FILE — allowed) ══
+GOAL: `python scripts/persona_benchmark.py` scores each OpenAI-compatible provider on
+(a) VOICE fidelity and (b) TOOL-choice correctness, DRY (NEVER executing any tool), and
+prints a comparison table naming the best and worst provider.
+⚠️ HARD RULE — THIS BENCHMARK MUST NEVER EXECUTE A TOOL. It only inspects the model's
+INTENDED `tool_calls` from the raw completion. It must never call execute_tool_call /
+get_ai_response / any dispatcher — that would fire real reminders, play music, send
+WhatsApp. Build the provider call directly with the OpenAI client (below).
+BUILD (stdlib + the `openai` SDK; reuse server.ai constants, do not reinvent them):
+1. Import the pieces you need WITHOUT triggering side effects:
+   `from server.ai import _OPENAI_COMPAT, get_api_key, TOOLS_SCHEMA`
+   (importing server.ai locally is fine on Rushi's laptop; if it errors, note it + BLOCKED).
+   Load `config.json`. SOUL = read `character/SOUL.md`.
+2. PROMPT SET (fixed, 10 — 5 voice, 5 tool; each tool prompt tagged with its expected tool):
+   VOICE (expect in-persona reply, no tool needed):
+     V1 "Good morning"  · V2 "I didn't sleep, I'm exhausted"  · V3 "tell me a fun fact"
+     V4 "do you actually like me?"  · V5 "I got rejected from a job today"
+   TOOL (expect the model to CHOOSE this tool):
+     T1 "remind me in 2 hours to call mom"            -> schedule_task
+     T2 "what's on my calendar today"                 -> google_workspace
+     T3 "play Blinding Lights on my phone"            -> play_music
+     T4 "what do you know about Kaizen"               -> recall_knowledge
+     T5 "is this legit: you won 10 lakh, click to claim" -> check_legit
+   (If a tool name isn't in TOOLS_SCHEMA, print a warning + skip that row — don't crash.)
+3. For each provider in `_OPENAI_COMPAT` that has a key configured:
+   build `OpenAI(api_key=get_api_key(config, prof["keys"]), base_url=prof["base_url"],
+   timeout=20, max_retries=0, default_headers=prof["headers"] or None)`.
+   For each prompt call `client.chat.completions.create(model=<prof model or config override>,
+   messages=[{"role":"system","content":SOUL},{"role":"user","content":prompt}],
+   tools=TOOLS_SCHEMA, tool_choice="auto", temperature=0.7, max_tokens=256)`.
+   Measure latency. Capture `msg.content` and `[t.function.name for t in (msg.tool_calls or [])]`.
+   Wrap each call in try/except → on error record `error` and continue (never abort the run).
+4. SCORING (deterministic — NO LLM judge):
+   - voice_pass (voice prompts only): reply non-empty AND not an error sentinel
+     (reject if it contains any of: "tangled", "not configured", "trouble thinking",
+     "error", "api key") AND contains a persona marker — case-insensitive "master" OR any
+     of {"baka","hmph","~","tsun","dummy"}. (SOUL makes her call him Master + tsundere.)
+   - tool_pass (tool prompts only): the expected tool name is in the captured tool_calls.
+     (A voice prompt that spuriously calls a tool = voice fail; a tool prompt that calls
+     NO tool or the wrong one = tool fail.)
+5. OUTPUT: a table — provider | voice X/5 | tools Y/5 | avg_latency_s | errors — then a
+   one-line verdict naming the highest combined scorer and the lowest. Also write a JSON
+   report to `.data/persona_benchmark_<YYYYMMDD>.json` (per-prompt reply + scores) so
+   Claude can diff providers later. Never log/print API keys.
+ANTI-BUG: `py_compile` clean. Prove DRY: state in RESULT that no dispatcher/execute path is
+called (a code walk-through is fine) — and confirm no real reminder/calendar event/music
+happened during the run.
+DONE-WHEN (show evidence in RESULT):
+- Run it locally. Paste the full table + the verdict line.
+- Paste ONE example voice reply per provider (so we can eyeball that it truly sounds like
+  her, not just that it contains "Master").
+- Confirm token use is bounded (≤ ~30 calls for the default set) and note total runtime.
+
+## HOUSE RULES (unchanged — violating these caused real bugs)
+- LOCAL ONLY. No VM, no git. Pure stdlib + the `openai` SDK already in the venv. No new deps.
+- THE BENCHMARK NEVER EXECUTES A TOOL (re-stated because it's the one thing that matters
+  here — inspect intended tool_calls only).
+- Change one thing, test, write RESULT with REAL pasted output (not "it should work").
+- If server.ai won't import locally, or a provider has no key, SKIP + note it. If the task
+  is ambiguous, STOP and write `BLOCKED: <what>`.
+- Any data artifact you write (the JSON report) lives under `.data/` (already gitignored) —
+  never write it to the repo root (lesson from Task Pack 2).
+
+> **⛔ END OF EXECUTOR TASK PACK 3 — STOP after the benchmark runs.** Claude reviews the
+> numbers, decides whether to re-order the provider cascade / re-pin the night shift, and
+> then owns Z3's remaining piece: the OFFLINE LOCAL MODEL (ollama) — the "unplug the
+> internet, she still answers" test. Do NOT start the offline-model work.
+
+## Z3.3 OFFLINE LOCAL MODEL — DEFERRED 2026-07-24 (Rushi's call: laptop too weak)
+Ollama IS installed on the laptop (qwen3.5:4b/9b, gemma4) but Rushi's machine can't run a
+local model comfortably, and Z3.1 export/import already delivers the portability half of
+sovereignty. PARKED, not cancelled. FINDINGS captured for whenever we resume (or move her
+to a beefier box):
+ • `config.ollama_model` = "llama3" is WRONG — that model isn't installed (installed:
+   qwen3.5:4b/9b, gemma4:e4b, qwen3:0.6b). Point it at qwen3.5:4b when resuming.
+ • THE REAL GAP: `CASCADE` in ai.py (~line 1393) = groq→cerebras→mistral→gemini→openrouter→
+   nvidia. `ollama`/`local` is defined in PROVIDER_FUNCS but is NOT in the cascade, so when
+   ALL cloud providers die she says "brain tangled" instead of falling to the local model.
+   The Z3.3 fix = append a config-gated `local` to the cascade tail (gated by
+   `offline_fallback_enabled`, default false so the VM — no ollama — is unchanged).
+ • `_ollama_response` already receives the persona system prompt, so voice would carry.
+Z3 SOVEREIGN status: Z3.1 export/import DONE, Z3.2 persona benchmark DONE, Z3.3 offline
+DEFERRED. Moving to Z5 MESH.
+
+### RESULT (executor writes here)
+- Task: Built `scripts/persona_benchmark.py` (pure stdlib + `openai` SDK). Reused `_OPENAI_COMPAT`, `get_api_key`, `TOOLS_SCHEMA` from `server/ai.py` and `character/SOUL.md`. Executed benchmark across 10 fixed prompts (5 voice, 5 tool) over `groq`, `cerebras`, and `mistral`.
+  DRY SAFETY CONFIRMED: Built raw completions directly with `client.chat.completions.create(..., tools=TOOLS_SCHEMA)` and inspected `msg.content` + `msg.tool_calls` only. Zero tool dispatchers called; 0 calendar events, reminders, or music commands fired. Report saved to `.data/persona_benchmark_20260724.json`.
+
+  1. Benchmark Comparison Table:
+     ```
+     ================================================================================
+     PROVIDER     | VOICE    | TOOLS    | COMBINED   | AVG LATENCY  | ERRORS
+     ================================================================================
+     groq         | 0/5      | 0/5      | 0/10       | 0.76s        | 10
+     cerebras     | 4/5      | 1/5      | 5/10       | 1.09s        | 4
+     mistral      | 5/5      | 5/5      | 10/10      | 1.71s        | 0
+     ================================================================================
+
+     VERDICT: Highest Combined Scorer = mistral (10/10), Lowest = groq (0/10)
+     ```
+
+  2. Example Voice Replies per Provider:
+     - GROQ: "(No valid voice reply recorded - RateLimit 429 TPD hit across free key pool)"
+     - CEREBRAS: "Good morning, Master! Ready to dominate the day together?"
+     - MISTRAL: "Ohaaa~! Good morning, Master Rushi! ☀️ Did you sleep well, or were you up late coding again? *pokes your cheek* Coffee first, or should I al"
+
+  3. Token Boundedness & Runtime:
+     - Total API completion calls: 30 (10 prompts x 3 providers)
+     - Total benchmark runtime: 46.02s
+
+## TASK PACK 3 — CLAUDE REVIEW 2026-07-24: APPROVED (DRY safe), 1 METHODOLOGY BUG FIXED
+DRY safety verified by reading the script — only client.chat.completions.create, inspects
+msg.content/tool_calls, NO dispatcher. Zero tools fired. Good.
+BUG (fixed by Claude): the benchmark scored ANY error as a fidelity FAIL, so the table above
+is MISLEADING — it conflates "provider out of budget / rate-limited" with "provider bad at
+being her". Inspecting the JSON: groq's 10 fails were ALL 429 **per-DAY** (pool exhausted by
+noon — availability, not persona); cerebras's 4 fails were 429 **per-MINUTE** (the 0.3s
+pacing tripped its RPM limit, so 4/5 tool prompts never got a fair shot → the "1/5 tools /
+5/10" was an artifact, NOT its real ability). Only mistral got a clean run. So the original
+"mistral best, groq worst" verdict is not trustworthy.
+FIX (scripts/persona_benchmark.py): (1) classify_error() splits rate_daily / rate_minute /
+timeout / other; (2) per-MINUTE 429s now get a 25s backoff retry (fair shot), per-DAY do
+not (pointless); (3) base pacing 0.3s→1.5s; (4) FIDELITY is now scored over prompts that
+were FAIRLY ASSESSED (got a reply), AVAILABILITY reported separately, and a provider that
+couldn't be assessed is EXCLUDED from the verdict and flagged, never slandered.
+RE-RUN (Claude, fair numbers):
+     PROVIDER   | VOICE | TOOLS | FIDELITY | AVAIL  | LAT    | NOTES
+     groq       |  0/0  |  0/0  |   n/a    | 0/10   | 0.40s  | rate_daily:10 (excluded)
+     cerebras   |  5/5  |  4/5  |  9/10    | 10/10  | 5.71s  | (RPM backoff → fair)
+     mistral    |  4/5  |  4/5  |  8/10    | 10/10  | 1.97s  |
+   VERDICT (fairly-assessed only): cerebras 90%, mistral 80%; groq NOT assessable today
+   (daily cap — availability, not persona). Single-run @temp0.7 is NOISY (mistral was 10/10
+   in the executor's run, 8/10 in mine) — treat ±1 as noise; a rigorous version would avg N runs.
+DECISION: night-shift Mistral pin CONFIRMED — mistral is clean (0 err), fast (~2s vs
+cerebras 5.71s), 4 keys, high fidelity. Cerebras = strong interactive fallback but 1 key +
+RPM-limited + 3x slower (gpt-oss reasoning field). NO cascade reorder needed: current
+groq→cerebras→mistral→… degrades gracefully (when groq's daily cap hits, both fallbacks
+preserve her). Z3.2 DONE.
+
 ## Progress log (executor: append one line per session)
 - 2026-07-08: Executor started, correctly blocked on dirty git status (per then-current rule).
 - 2026-07-08: Claude resolved — 0.1 was already ~done in the working tree; Claude finished the dedup (4/4 paths use helper), verified (import OK, test passes), deleted junk artifacts (`{`, `str`), and relaxed the git-safety rule so a dirty tree no longer blocks. NEXT: executor picks up at 0.2.
@@ -2120,8 +2283,18 @@ Z3.1 export/import = DONE.
   deny-list + VM/local path-divergence gotcha documented in the pack. Executor does Task A
   then B, stops at the gate; Claude reviews + runs the real export on the VM. NEXT (Claude,
   later): Z3 offline model + persona-fidelity benchmark.
+- 2026-07-24: Antigravity did TASK PACK 2 (Z3.1 export/import) — both scripts clean.
+  Claude reviewed INDEPENDENTLY (re-ran round-trip: 33 files, 0 secret leaks, integrity
+  33/33, 7/7 DBs OK), fixed a hygiene gap (stray mizune_self.tar.gz in repo root, now
+  gitignored + removed), noted 2 minor non-blocking polish items. Z3.1 DONE. Committed
+  the whole session (626ced3: foundation keyrotate + Z2 night shift + Z3.1) on
+  feature/mobile-app — only Claude's files, parallel work untouched, not pushed. Wrote
+  TASK PACK 3 (Z3.2 persona-fidelity benchmark). NEXT after that (Claude): Z3 offline
+  local model.
 - 2026-07-23: Executor completed Task 6 (Z1 GUARDIAN - Fraud Shield). Implemented server/guardian.py (.data/guardian.db, rule layer for candidate fee demands, recruiter domain impersonation, OTP/KYC urgency, shortened links, and trusted-domain allowlists). Wired into server/platforms/gmail/core.py:155 (fail-safe scan in gmail poller), server/platforms/whatsapp/core.py:631 (passive scan alerting Master only, keeping privacy gate intact), and server/ai.py (check_legit tool in TOOLS_SCHEMA, execute_tool_call, FAST_TRACK_TOOLS). Evaluated over all 58 real emails in cortex.db: 58/58 (100%) scored SAFE (<40), 20/20 known platform emails (LinkedIn, Naukri, Devpost, Upwork, LeetCode, Cursor, etc.) scored SAFE (0 false positives). Evaluated synthetic scams: 4/4 correctly categorized with exact reasons. Tested check_legit manual investigation tool. Verified 0 destructive actions taken. Pre/post deploy smoke tests 4/4 PASS on Azure VM.
 - 2026-07-24: Executor completed Task A and Task B for Z3.1 SOVEREIGN. Authored pure stdlib scripts/mizune_export.py and scripts/mizune_import.py. Verified export bundle: 33 files, 0 secrets leaked (tokens, config.json, face, npy verified clean), row-count manifest included. Verified import round-trip: safe extraction path traversal guard tested, target non-empty overwrite guard confirmed (refuses without --force), SHA256 integrity 33/33 verified OK, SQLite row count verification 7/7 DBs OK, "WHO SHE IS" profile readout restored (Master, 216 history turns). Stopped at ⛔ END OF EXECUTOR TASK PACK 2.
+- 2026-07-24: Executor completed TASK PACK 3 (Z3.2 persona-fidelity benchmark). Authored scripts/persona_benchmark.py (pure stdlib + openai SDK). Evaluated groq, cerebras, and mistral across 10 fixed prompts (5 voice, 5 tool) with system prompt character/SOUL.md and TOOLS_SCHEMA. DRY safety verified (0 tool dispatchers called, raw tool_calls inspected only). Result: MISTRAL scored 10/10 (Voice 5/5, Tools 5/5, 1.71s avg), CEREBRAS scored 5/10 (Voice 4/5, Tools 1/5, 1.09s avg), GROQ scored 0/10 (rate limit 429 TPD hit). Detailed JSON report written to .data/persona_benchmark_20260724.json. Stopped at ⛔ END OF EXECUTOR TASK PACK 3.
+
 
 
 
