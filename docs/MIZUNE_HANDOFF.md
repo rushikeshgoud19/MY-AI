@@ -2233,6 +2233,97 @@ RPM-limited + 3x slower (gpt-oss reasoning field). NO cascade reorder needed: cu
 groq→cerebras→mistral→… degrades gracefully (when groq's daily cap hits, both fallbacks
 preserve her). Z3.2 DONE.
 
+# ═══════════════════════════════════════════════════════════════
+# EXECUTOR TASK PACK 4 (for Antigravity) — written 2026-07-24 by Claude
+# Z5 MESH: many of her, cross-verified. ONE task (build the engine + a test). Local only.
+# ═══════════════════════════════════════════════════════════════
+# WHY (the Phase Z thesis): a rented per-token agent can't afford to answer the same question
+# with several models and have a DIFFERENT model check the result — it's too expensive. Mizune
+# runs on SEVEN free tiers with key rotation, so continuous multi-model cognition is nearly
+# free for her. CROSS-MODEL VERIFICATION (the checker is a different model than the producer)
+# is the real anti-hallucination move, and it's only possible because she owns her routing.
+# Z3.2 just PROVED mistral + cerebras both answer well and sit on SEPARATE rate limits — so
+# fanning out across them doesn't share a limit. That is the foundation this builds on.
+
+## ENVIRONMENT FACTS (verified 2026-07-24 — do not re-discover)
+- Repo root: `C:\Users\rushi\OneDrive\Desktop\my Ai`. Python = `.venv\Scripts\python.exe`.
+  LOCAL ONLY. Never touch the VM. Never git add/commit/push (Claude owns git + VM deploy).
+- Provider pinning ALREADY EXISTS: `get_ai_response(text, history, config, hints=..., ...)`
+  in server/ai.py routes to a specific provider when you pass
+  `hints={"force_provider": "<name>"}` (the model_router honours it first). Providers that
+  answer well + sit on separate limits (per Z3.2): **mistral** and **cerebras** (groq is
+  daily-capped by noon — usable but don't rely on it as a mesh member).
+- TOOL SUPPRESSION: passing `system_prompt_override=...` to get_ai_response sets a
+  thread-local `_bg_guard` that BLOCKS all tools for that call. MESH answers must be
+  pure text (no tools firing K times in parallel), so ALWAYS use the override form.
+- THREADING: parallel `get_ai_response` calls in SEPARATE threads are safe (`_bg_guard` is
+  thread-local, per-thread). Do NOT nest get_ai_response calls inside one another.
+
+## ══ TASK — `server/mesh.py` (NEW FILE) + `scripts/test_mesh.py` (NEW FILE) ══
+GOAL: `mesh_answer(question, config)` fans the SAME question to K distinct providers IN
+PARALLEL, then a DIFFERENT model reconciles their answers into one verified answer that
+flags any disagreement. Read-only (no tools, no side effects). Prove it with a real run.
+BUILD `server/mesh.py`:
+1. `mesh_answer(question: str, config: dict, providers: list = None, verifier: str = None) -> dict`
+   - providers default = ["mistral", "cerebras"] + a third if a key exists ("gemini" or
+     "openrouter"). Only keep providers whose key is configured. If fewer than 2 usable
+     providers → return a single plain answer with `{"mesh": False, "reason": "need >=2 providers"}`
+     (mesh needs at least two voices to cross-check).
+   - FAN OUT in parallel (threading.Thread or concurrent.futures): each provider answers the
+     SAME question via
+     `get_ai_response(question, [], config, hints={"force_provider": P},
+        system_prompt_override="You are a careful analyst. Answer the question factually and
+        concisely. If you are unsure, say so.")`.
+     Capture (provider, answer, ok/err, latency). A provider that errors is dropped, noted.
+   - If <2 providers actually answered → return the one answer + `{"mesh": False}`.
+2. VERIFY (cross-model): choose a `verifier` provider that is NOT among the ones that
+   answered if possible (else reuse the strongest available). Give it the question + the K
+   labelled answers via a no-tools override prompt that asks it to:
+   (a) state where the answers AGREE, (b) flag any claim only ONE model makes or where they
+   CONTRADICT each other, (c) output a single best consolidated answer. Parse its reply into
+   `{consolidated, agreement: "high"|"mixed"|"conflict", notes}` — keep parsing lenient
+   (if you can't parse structure, put the whole verifier text in `consolidated` + agreement
+   "unknown"). NEVER let a parse failure crash the call.
+3. Return a dict: `{mesh: True, question, providers_used, verifier, answers: {P: text},
+   consolidated, agreement, notes, latencies}`. Never raise to the caller — on total failure
+   return an honest `{mesh: False, consolidated: "<in-persona 'I couldn't cross-check that'>"}`.
+BUILD `scripts/test_mesh.py`:
+- A FACTUAL agreement case: e.g. "What is the capital of Australia?" → expect agreement high,
+  consolidated names Canberra. Paste the result.
+- A DISAGREEMENT/uncertain case that forces the verifier to catch a split: e.g. a
+  near-future or contested-fact question, or a deliberately false premise ("Which is larger,
+  a kilobyte or a kibibyte, and by exactly how much?") where models often differ — show the
+  verifier FLAGGING the disagreement (the handoff DONE-WHEN: "a verifier disagreeing at
+  least once and being right"). Paste it.
+ANTI-BUG: `py_compile` clean on both. Wrap every provider call in try/except (one slow/dead
+provider must never hang or crash the mesh — use a per-call timeout via the existing 20s
+provider timeout, and skip a thread that errors).
+DONE-WHEN (paste evidence in RESULT):
+- Run `scripts/test_mesh.py`. Paste: providers_used, each provider's short answer, the
+  verifier's consolidated answer + agreement label, for BOTH cases.
+- The disagreement case must show agreement != "high" and the verifier correctly identifying
+  which answer is right (or that they conflict). State token cost (≈ K+1 calls/question).
+- Confirm NO tool fired and NO side effect happened (mesh is read-only).
+
+## HOUSE RULES (unchanged)
+- LOCAL ONLY. No VM, no git. Pure stdlib + reuse server.ai. No new deps, nothing torch-adjacent.
+- Mesh is READ-ONLY: always use the system_prompt_override form so tools are blocked. Never
+  wire mesh into the default reply path (it's K+1 calls — for explicit high-stakes use only).
+- Do NOT edit server/ai.py or server/processor.py. Build ONLY the two new files. Claude wires
+  the deterministic trigger (a "mesh:" / "verify this:" fast-path in processor.py) + deploys
+  during review — that's the risky core edit and it's Claude's.
+- Change one thing, test, write RESULT with REAL pasted output. If a provider set is
+  unavailable or the task is ambiguous, SKIP+note or `BLOCKED: <what>`.
+- Any data artifact goes under `.data/` (gitignored), never the repo root.
+
+> **⛔ END OF EXECUTOR TASK PACK 4 — STOP after the test runs.** Claude reviews the mesh
+> output, wires the processor.py fast-path trigger, deploys to the VM, and decides whether
+> mesh should auto-engage for flagged high-stakes questions. Do NOT edit ai.py/processor.py
+> or deploy.
+
+### RESULT (executor writes here)
+- Task:
+
 ## Progress log (executor: append one line per session)
 - 2026-07-08: Executor started, correctly blocked on dirty git status (per then-current rule).
 - 2026-07-08: Claude resolved — 0.1 was already ~done in the working tree; Claude finished the dedup (4/4 paths use helper), verified (import OK, test passes), deleted junk artifacts (`{`, `str`), and relaxed the git-safety rule so a dirty tree no longer blocks. NEXT: executor picks up at 0.2.
@@ -2291,6 +2382,14 @@ preserve her). Z3.2 DONE.
   feature/mobile-app — only Claude's files, parallel work untouched, not pushed. Wrote
   TASK PACK 3 (Z3.2 persona-fidelity benchmark). NEXT after that (Claude): Z3 offline
   local model.
+- 2026-07-24: Antigravity did TASK PACK 3 (Z3.2 persona benchmark) — script DRY-safe + good.
+  Claude reviewed independently, found + fixed a scoring bug (errors scored as fidelity
+  fails → rate-limited providers looked "bad at being her"; groq's 0/10 was daily-cap,
+  cerebras undersampled by RPM). Fixed to separate fidelity from availability + RPM backoff;
+  fair re-run cerebras 9/10, mistral 8/10, groq n/a. Night-shift Mistral pin confirmed.
+  Committed 4c1d315. Z3.3 offline model DEFERRED (Rushi: laptop too weak). Wrote TASK PACK 4
+  (Z5 MESH cross-model verification). Z4 HANDS parked (needs a real vulnerable user + safety
+  review — not a code-execution task). NEXT after Z5: Claude wires mesh trigger + deploys.
 - 2026-07-23: Executor completed Task 6 (Z1 GUARDIAN - Fraud Shield). Implemented server/guardian.py (.data/guardian.db, rule layer for candidate fee demands, recruiter domain impersonation, OTP/KYC urgency, shortened links, and trusted-domain allowlists). Wired into server/platforms/gmail/core.py:155 (fail-safe scan in gmail poller), server/platforms/whatsapp/core.py:631 (passive scan alerting Master only, keeping privacy gate intact), and server/ai.py (check_legit tool in TOOLS_SCHEMA, execute_tool_call, FAST_TRACK_TOOLS). Evaluated over all 58 real emails in cortex.db: 58/58 (100%) scored SAFE (<40), 20/20 known platform emails (LinkedIn, Naukri, Devpost, Upwork, LeetCode, Cursor, etc.) scored SAFE (0 false positives). Evaluated synthetic scams: 4/4 correctly categorized with exact reasons. Tested check_legit manual investigation tool. Verified 0 destructive actions taken. Pre/post deploy smoke tests 4/4 PASS on Azure VM.
 - 2026-07-24: Executor completed Task A and Task B for Z3.1 SOVEREIGN. Authored pure stdlib scripts/mizune_export.py and scripts/mizune_import.py. Verified export bundle: 33 files, 0 secrets leaked (tokens, config.json, face, npy verified clean), row-count manifest included. Verified import round-trip: safe extraction path traversal guard tested, target non-empty overwrite guard confirmed (refuses without --force), SHA256 integrity 33/33 verified OK, SQLite row count verification 7/7 DBs OK, "WHO SHE IS" profile readout restored (Master, 216 history turns). Stopped at ⛔ END OF EXECUTOR TASK PACK 2.
 - 2026-07-24: Executor completed TASK PACK 3 (Z3.2 persona-fidelity benchmark). Authored scripts/persona_benchmark.py (pure stdlib + openai SDK). Evaluated groq, cerebras, and mistral across 10 fixed prompts (5 voice, 5 tool) with system prompt character/SOUL.md and TOOLS_SCHEMA. DRY safety verified (0 tool dispatchers called, raw tool_calls inspected only). Result: MISTRAL scored 10/10 (Voice 5/5, Tools 5/5, 1.71s avg), CEREBRAS scored 5/10 (Voice 4/5, Tools 1/5, 1.09s avg), GROQ scored 0/10 (rate limit 429 TPD hit). Detailed JSON report written to .data/persona_benchmark_20260724.json. Stopped at ⛔ END OF EXECUTOR TASK PACK 3.
