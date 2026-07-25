@@ -2003,7 +2003,8 @@ def _nvidia_response(text: str, history: list, system_prompt: str, config: dict,
         client = OpenAI(
             base_url="https://integrate.api.nvidia.com/v1",
             api_key=api_key,
-            timeout=10.0, # Fast failover to prevent hanging!
+            timeout=6.0, # Fast failover: NVIDIA is the LAST-RESORT backstop and times out often;
+                         # 6s caps how long she hangs before the honest "brain tangled" fallback.
             max_retries=0  # the provider cascade IS the retry mechanism
         )
         

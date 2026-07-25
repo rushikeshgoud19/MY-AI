@@ -4,10 +4,19 @@ from .config import log_info
 # Global model state
 _df_model = None
 _df_state = None
+# Init is attempted ONCE per process. Without this guard the VM (torch deliberately
+# blocked) re-attempted on every audio session and spammed a full traceback 52x in the
+# logs. Cache the outcome and never retry.
+_init_done = False
+_init_result = False
 
 def init_noise_cancellation():
-    """Initializes the DeepFilterNet AI model into memory for zero-latency cleaning."""
-    global _df_model, _df_state
+    """Initializes the DeepFilterNet AI model into memory for zero-latency cleaning.
+    Runs at most once per process; subsequent calls return the cached result."""
+    global _df_model, _df_state, _init_done, _init_result
+    if _init_done:
+        return _init_result
+    _init_done = True
     try:
         # DeepFilterNet is incompatible with newer Torchaudio. We monkeypatch the missing type hint module so it loads perfectly.
         import sys
@@ -25,17 +34,23 @@ def init_noise_cancellation():
         log_info("[AUDIO] Initializing DeepFilterNet AI Model...")
         _df_model, _df_state, _ = init_df()
         log_info("[AUDIO] DeepFilterNet loaded successfully!")
+        _init_result = True
         return True
-    except ModuleNotFoundError as e:
-        if 'torchaudio' in str(e) or 'torch' in str(e):
-            log_info(f"[AUDIO] DeepFilterNet failed to initialize: No module named '{e.name}'. Noise cancellation disabled.")
+    except ImportError as e:
+        # EXPECTED on the VM: torch is deliberately blocked (898MB box) → torchaudio import
+        # raises. This is not an error, so log ONE clean line and never dump a traceback.
+        msg = str(e)
+        if 'torch' in msg.lower():
+            log_info("[AUDIO] DeepFilterNet disabled (torch blocked on this host) — noise cancellation off, using raw audio.")
         else:
-            log_info(f"[AUDIO] DeepFilterNet missing dependency: {e}")
+            log_info(f"[AUDIO] DeepFilterNet missing dependency: {msg}. Noise cancellation disabled.")
+        _init_result = False
         return False
     except Exception as e:
         log_info(f"[AUDIO] DeepFilterNet failed to initialize: {e}")
         import traceback
         log_info(f"[AUDIO] DeepFilterNet Trace: {traceback.format_exc()}")
+        _init_result = False
         return False
 
 def clean_audio(audio_bytes: bytes, sample_rate: int) -> bytes:
