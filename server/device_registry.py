@@ -11,12 +11,63 @@ asyncio.run_coroutine_threadsafe and wait on a threading.Event.
 """
 import asyncio
 import json
+import re
 import threading
 import time
 import uuid
 from typing import Any, Dict, Optional
 
 from .config import log_info
+
+
+def _posix_to_windows(cmd: str) -> str:
+    """Translate the handful of POSIX-isms an LLM reliably emits into cmd.exe equivalents.
+
+    Deliberately CONSERVATIVE: only rewrites unambiguous leading-utility cases and /tmp/ paths,
+    and bails out entirely if the command already looks Windows/PowerShell-flavoured. A wrong
+    translation is worse than none, so anything unrecognised passes through untouched.
+    """
+    if not cmd or not cmd.strip():
+        return cmd
+    s = cmd.strip()
+    low = s.lower()
+
+    # Already Windows-y or explicitly a shell we shouldn't rewrite → leave alone.
+    if (low.startswith(("powershell", "pwsh", "cmd ", "cmd.exe", "type ", "dir", "del ",
+                        "copy ", "move ", "ren ", "start ", "tasklist", "taskkill", "where ",
+                        "findstr", "wmic", "reg ", "sc ", "net ", "python", "py ", "pip",
+                        "npm", "git", "code ", "explorer"))
+            or ":\\" in s or "%" in s):
+        return cmd
+
+    out = s
+    # Leading-utility swaps (only at the start of the command — safe, unambiguous).
+    leading = [
+        (r"^cat\s+", "type "),
+        (r"^ls\s*$", "dir"),
+        (r"^ls\s+", "dir "),
+        (r"^rm\s+-rf\s+", "rmdir /s /q "),
+        (r"^rm\s+-f\s+", "del /q "),
+        (r"^rm\s+", "del "),
+        (r"^grep\s+", "findstr "),
+        (r"^which\s+", "where "),
+        (r"^mkdir\s+-p\s+", "mkdir "),
+        (r"^touch\s+(\S+)", r"type nul > \1"),
+        (r"^ps\s+aux\s*$", "tasklist"),
+    ]
+    for pat, rep in leading:
+        new = re.sub(pat, rep, out, count=1, flags=re.IGNORECASE)
+        if new != out:
+            out = new
+            break
+
+    # /tmp/foo  ->  %TEMP%\foo   (the single most common path mistake)
+    out = re.sub(r"/tmp/([\w.\-]+)", r"%TEMP%\\\1", out)
+    # bare /tmp -> %TEMP%  (otherwise cmd.exe parses "/tmp" as a switch)
+    out = re.sub(r"(?<![\w/])/tmp(?![\w/])", "%TEMP%", out)
+    # $HOME / ~ -> %USERPROFILE%
+    out = out.replace("$HOME", "%USERPROFILE%").replace(" ~/", " %USERPROFILE%\\")
+    return out
 
 
 class DeviceRegistry:
@@ -59,20 +110,37 @@ class DeviceRegistry:
                 for name, d in self._devices.items()
             }
 
+    def is_online(self, device_name: str) -> bool:
+        with self._lock:
+            return device_name in self._devices
+
     def context_line(self, origin_platform: str) -> str:
         """One line of situational context for the system prompt."""
         devices = self.list_devices()
         origin = f"Master is messaging from: {origin_platform}."
         if not devices:
             return f"{origin} No remote devices are online; actions run on this server."
+        # PLATFORM IS PART OF THE CONTRACT: without it the brain emitted POSIX commands
+        # (`cat`, `echo x > /tmp/f`) at a WINDOWS laptop node and they silently failed
+        # ("'cat' is not recognized as an internal or external command" — 2026-07-26).
+        # The model can only pick correct syntax if it knows the target OS.
         listing = "; ".join(
-            f"{name} (can: {', '.join(d['capabilities']) or 'basic actions'})"
+            f"{name} [{d.get('platform') or 'unknown'} OS] "
+            f"(can: {', '.join(d['capabilities']) or 'basic actions'})"
             for name, d in devices.items()
         )
+        oses = {(d.get("platform") or "").lower() for d in devices.values()}
+        shell_hint = ""
+        if any(o.startswith("win") for o in oses):
+            shell_hint = (
+                " IMPORTANT: for a windows device use WINDOWS shell syntax — `type file` (not cat), "
+                "`dir` (not ls), `del` (not rm), `%TEMP%\\name.txt` or `C:\\Users\\...` paths "
+                "(never /tmp/...), and `echo text > C:\\path\\file.txt`."
+            )
         return (
             f"{origin} Online devices: {listing}. "
             f"Use the remote_device_command tool to run actions on a specific device "
-            f"(e.g. downloads on Master's laptop)."
+            f"(e.g. downloads on Master's laptop).{shell_hint}"
         )
 
     # ── Command routing (called from dispatcher worker threads) ──
@@ -85,6 +153,19 @@ class DeviceRegistry:
             return f"Device '{device_name}' is not online. Online devices: {online}."
         if not self._loop:
             return "Device routing unavailable: server event loop not ready."
+
+        # DETERMINISTIC SHELL FIX (Design Law 1 — the prompt hint above is not enough on its own;
+        # a weak provider still emits `cat`/`/tmp/...` at a Windows box and the command fails
+        # silently while the model reports success). Translate at the choke point so EVERY path
+        # (chat, mission, scheduled task) is covered.
+        if action == "run_command" and (device.get("platform") or "").lower().startswith("win"):
+            args = dict(args or {})
+            original = str(args.get("command", ""))
+            fixed = _posix_to_windows(original)
+            if fixed != original:
+                log_info(f"[DEVICES] translated POSIX->Windows for '{device_name}': "
+                         f"{original[:70]!r} -> {fixed[:70]!r}")
+                args["command"] = fixed
 
         request_id = uuid.uuid4().hex[:12]
         done = threading.Event()
