@@ -63,7 +63,7 @@ class ActionExecutorAgent(BaseAgent):
         task_input: JSON string of the step to execute
         context: Must contain "vision_elements" from VisionPerceptionAgent
         """
-        update_current_span({
+        update_current_span(metadata={
             "task_input_preview": str(task_input)[:100],
             "intent": None,
         })

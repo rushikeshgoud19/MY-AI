@@ -143,7 +143,7 @@ Use the same JSON format as before. Start from the current screen state."""
           - "next": Get the next step in current plan
           - "status": Get current plan status
         """
-        update_current_span({"task_input": task_input[:100]})
+        update_current_span(metadata={"task_input": task_input[:100]})
         if task_input.startswith("plan:"):
             goal = task_input[5:].strip()
             screen_context = context.get("screen_context", "Unknown") if context else "Unknown"
