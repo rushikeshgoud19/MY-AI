@@ -2444,6 +2444,23 @@ NOTHING. Z5 engine DONE; activation pending.
   Committed 4c1d315. Z3.3 offline model DEFERRED (Rushi: laptop too weak). Wrote TASK PACK 4
   (Z5 MESH cross-model verification). Z4 HANDS parked (needs a real vulnerable user + safety
   review — not a code-execution task). NEXT after Z5: Claude wires mesh trigger + deploys.
+- 2026-07-26: MISSION ENGINE RE-VERIFIED HEALTHY (post-OOM-fix). Mission #8 ("create a calendar
+  event called MizuneVerifyTest tomorrow 4pm, then confirm by reading the calendar") → **done 1/1**,
+  and the verdict carries REAL evidence (she read the calendar back: "Upcoming events: 2026-07-27
+  04:00 PM MizuneVerifyTest") = verify-after-act genuinely working. Test event deleted after.
+  Memory healthy at test time: 357MB available, swap 253MB (was 2047 FULL), Xvfb count 1 — the
+  Xvfb-leak fix is holding.
+  ⚠️ CORRECTION to yesterday's note: mission #7 did NOT fail because the laptop was offline. The
+  seals show the laptop node WAS connected and running **Windows** — it failed because the planner
+  emitted **Unix shell syntax** for a Windows host: `[TOOL RESULTS] remote_device_command: Exit 1.
+  'cat' is not recognized as an internal or external command` and `run_command ... Output: ALIVE >
+  /tmp/mizune_alive.txt` (echo printed the redirect literally instead of writing the file).
+  ⇒ REAL OPEN BUG (worth fixing): the mission planner / run_command path generates POSIX commands
+  (`cat`, `echo x > /path`, `/tmp/...`) without knowing the target node's OS. ai.py already has a
+  reverse guard (Windows-flavoured command on the linux brain → reroute to laptop, ~line 1173) but
+  NOT the forward one. FIX SHAPE: include each device's platform in the capability/plan context so
+  the planner emits `type`/`%TEMP%`/backslash paths for a Windows node, or add a translation shim in
+  the laptop agent's run_command. Until then, device missions should be phrased OS-agnostically.
 - 2026-07-25 (PART 2 — THE BIG ONE): root-caused the chronic OOM crashes. `xvfb-run -a`
   in EVERY launcher (watchdog.sh, boot.sh, start_server.sh, start_all.sh) + the every-minute
   watchdog restart leaked ONE Xvfb per restart with no cleanup → ~90 orphaned Xvfb (displays
