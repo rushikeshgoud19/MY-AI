@@ -128,14 +128,62 @@ def _brain(text: str, config: dict, opts: dict = None) -> str:
     return str(res or "").strip()
 
 
+# A stage-1 evidence reply that PROMISES to check instead of checking is worthless — the judge
+# then correctly rules FAIL and a perfectly good step is marked failed. Observed live on mission
+# #9 (2026-07-26): evidence came back "To verify the condition, I will use the execute_python tool
+# to check if the file exists..." — narration, no tool call, no facts. Detect it and force a retry.
+_NARRATION_PAT = re.compile(
+    r"\b(i will|i'll|i am going to|i'm going to|let me|i would|i can use|i need to use|"
+    r"to verify (?:this|the condition)|first,? i)\b", re.IGNORECASE)
+
+# Markers of an ACTUAL observation. Deliberately strict: words like "exists" or "contains"
+# are NOT here, because narration says them too ("I will check if the file exists") — including
+# them made the detector miss the very bug it was written for.
+_RESULT_PAT = re.compile(
+    r"(exit\s*(?:code)?\s*[:=]?\s*\d|output\s*:|stdout|no such file|does not exist|"
+    r"\d{4}-\d{2}-\d{2}|\d{1,2}:\d{2}\s*(?:AM|PM)?|successfully (?:created|scheduled|sent))",
+    re.IGNORECASE)
+
+
+def _is_narration(text: str) -> bool:
+    """True if the 'evidence' is a PLAN to gather evidence rather than evidence itself.
+
+    Rule: empty is narration; otherwise it's narration only when the reply OPENS by describing
+    intent and carries no concrete observation. Short concrete outputs ("WORKING", "not found")
+    must pass — they're exactly what a real command returns.
+    """
+    t = (text or "").strip()
+    if not t:
+        return True
+    if _NARRATION_PAT.search(t[:120]):        # intent stated up front
+        return not _RESULT_PAT.search(t)      # ...and nothing observed anywhere
+    return False
+
+
+_EVIDENCE_PROMPT = (
+    "[MISSION VERIFY] Call the tool RIGHT NOW that checks this condition, then report ONLY the "
+    "raw factual result you got back. Do NOT describe what you are going to do, do NOT explain "
+    "your plan — perform the check in this turn and state the observed facts: {clause}"
+)
+
+
 def _verify(verify_clause: str, config: dict, opts: dict = None) -> tuple:
     """Two-stage verify-after-act. Stage 1 gathers CURRENT facts with tools (its
     output may be a raw fast-tracked tool result). Stage 2 is a no-tools judgment
     call that rules PASS/FAIL from that evidence. Returns (passed, detail)."""
     from .ai import get_ai_response
-    evidence = _brain(
-        f"[MISSION VERIFY] Use your tools to gather the CURRENT facts needed to check "
-        f"this condition, and report just the facts: {verify_clause}", config, opts)
+    evidence = _brain(_EVIDENCE_PROMPT.format(clause=verify_clause), config, opts)
+    if _is_narration(evidence):
+        log_info(f"[MISSION] verify evidence was narration, not facts — forcing a real check. "
+                 f"Got: {evidence[:90]!r}")
+        evidence = _brain(
+            "[MISSION VERIFY — RETRY] Your last reply described a plan instead of doing it. "
+            "Execute the check NOW with your tools and output ONLY the observed result "
+            f"(command output, file contents, or 'not found'): {verify_clause}", config, opts)
+        if _is_narration(evidence):
+            # Honest failure beats a fabricated PASS (Design Law 3).
+            return (False, "verification inconclusive: could not gather real evidence "
+                           f"(model kept narrating) | last: {evidence[:120]}")
     judge, _ = get_ai_response(
         f"Condition to verify: {verify_clause}\n\nEvidence gathered just now:\n{evidence[:800]}\n\n"
         f"Does the evidence prove the condition is true RIGHT NOW? Reply with exactly "
