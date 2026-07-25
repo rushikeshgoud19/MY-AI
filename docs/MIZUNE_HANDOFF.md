@@ -2444,6 +2444,18 @@ NOTHING. Z5 engine DONE; activation pending.
   Committed 4c1d315. Z3.3 offline model DEFERRED (Rushi: laptop too weak). Wrote TASK PACK 4
   (Z5 MESH cross-model verification). Z4 HANDS parked (needs a real vulnerable user + safety
   review — not a code-execution task). NEXT after Z5: Claude wires mesh trigger + deploys.
+- 2026-07-25: Claude trace/log bug hunt on VM server.log (47k lines). FIXED (69005de,
+  deployed + live-verified): `update_current_span() takes 0 positional args` — 26x, aborted
+  SystemAgent(23x)/Vision/task-planner/action-executor because the real TraceRoot SDK is
+  keyword-only but 4 sites passed a positional dict. Fixed the calls + hardened
+  server/tracing.py so telemetry can never crash a feature. SystemAgent now returns real
+  readings; 0 errors post-restart; smoke 4/4. STILL OPEN (reported, not yet fixed): (a)
+  NVIDIA NIM timeouts 74x + "All providers failed" 15x = she went mute 15x — root is all
+  free tiers exhausted at once falling to the slow NVIDIA backstop (budget, not a code bug;
+  handoff deliberately keeps NVIDIA as last resort — don't rip out without Rushi); (b)
+  Baileys bridge 127.0.0.1:9876 connect-failed 58x (WhatsApp bridge flapping, self-heals);
+  (c) DeepFilterNet torch traceback logged 52x = expected (torch blocked) but noisy;
+  (d) VM memory at 95.3% — tight. 
 - 2026-07-24: Antigravity did TASK PACK 4 (Z5 MESH) — server/mesh.py + scripts/test_mesh.py.
   Claude reviewed vs the real artifact (.data/mesh_test_report.json): read-only confirmed,
   parallel fan-out + verifier reconciliation work, disagreement case correctly caught (BP
