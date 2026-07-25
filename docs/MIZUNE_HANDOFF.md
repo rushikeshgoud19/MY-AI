@@ -2444,6 +2444,37 @@ NOTHING. Z5 engine DONE; activation pending.
   Committed 4c1d315. Z3.3 offline model DEFERRED (Rushi: laptop too weak). Wrote TASK PACK 4
   (Z5 MESH cross-model verification). Z4 HANDS parked (needs a real vulnerable user + safety
   review — not a code-execution task). NEXT after Z5: Claude wires mesh trigger + deploys.
+- 2026-07-26 (LATER): TWO REAL BUGS FIXED + DEPLOYED, both verified live on the VM.
+  (1) CROSS-PLATFORM DEVICE COMMANDS (bc15bf4): device_registry stored each device's `platform`
+      but `context_line()` — the only thing the model sees — omitted it, so the brain emitted POSIX
+      commands at the WINDOWS laptop node. FIX = two layers: context_line now says
+      "laptop [win32 OS]" + explicit Windows syntax rules; `_posix_to_windows()` translates at the
+      send_command choke point (covers chat/mission/scheduled alike), conservative — bails on
+      anything already Windows/PowerShell-ish. 16/16 unit cases incl. 8 must-not-change.
+      PROOF: seal went from `Exit 1. 'cat' is not recognized` → `Exit 0. | WORKING` on the real
+      laptop. The model now emits `type`/Windows redirects natively (translator didn't even fire).
+  (2) VERIFIER ACCEPTED NARRATION (c8b4028): mission #9's verify stage returned "To verify the
+      condition, I WILL use the execute_python tool..." — a plan, not evidence → judge correctly
+      FAILed a step that had actually worked. FIX = forceful stage-1 prompt ("call the tool RIGHT
+      NOW"), `_is_narration()` deterministic detection + ONE forced retry, then honest
+      "verification inconclusive" rather than a guess. ⚠️ LESSON: my first detector treated
+      "exists"/"contains" as concrete evidence and therefore MISSED the exact bug (narration says
+      "check if the file exists") — result markers must be strict (exit code/output:/no such file/
+      timestamps). 12/12 cases incl. short real outputs ("WORKING", "not found") not flagged.
+      PROOF: verify now calls tools — seals show `execute_python: Success. Output: FOUND=False`
+      and verdicts cite real evidence.
+  ⛔ REMAINING BLOCKER for LAPTOP missions (environmental, NOT a code bug): the laptop agent flaps
+  — **276 online / 192 offline** events in server.log (laptop sleep + wifi drops). device_agent.py
+  is actually correct (auto-reconnect 10s, `asyncio.to_thread` so commands don't stall the loop),
+  so a mission needing the laptop can simply land in an offline window and now honestly reports
+  "I don't have the capability" instead of faking success. PROPOSED NEXT (roadmap V.3): make a
+  mission step WAIT up to ~60s for a required device to come back before failing, and/or have the
+  planner prefer the VM when the goal doesn't say "on my laptop".
+  Also this session: scripts/content_engine.py (274527a) — turns real git commits into LinkedIn
+  post drafts. Deliberately NEVER touches LinkedIn (their ToS §8.2 bans automation; ~23%
+  restriction rate; 2026 enforcement = permanent suspension). Bug found+fixed in it: given 8
+  commits at once the model welded two unrelated fixes into a FALSE causal chain → now code picks
+  ONE commit per draft (deterministic) so it cannot invent links.
 - 2026-07-26: MISSION ENGINE RE-VERIFIED HEALTHY (post-OOM-fix). Mission #8 ("create a calendar
   event called MizuneVerifyTest tomorrow 4pm, then confirm by reading the calendar") → **done 1/1**,
   and the verdict carries REAL evidence (she read the calendar back: "Upcoming events: 2026-07-27
