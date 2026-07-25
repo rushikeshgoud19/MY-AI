@@ -2444,6 +2444,32 @@ NOTHING. Z5 engine DONE; activation pending.
   Committed 4c1d315. Z3.3 offline model DEFERRED (Rushi: laptop too weak). Wrote TASK PACK 4
   (Z5 MESH cross-model verification). Z4 HANDS parked (needs a real vulnerable user + safety
   review — not a code-execution task). NEXT after Z5: Claude wires mesh trigger + deploys.
+- 2026-07-25 (PART 2 — THE BIG ONE): root-caused the chronic OOM crashes. `xvfb-run -a`
+  in EVERY launcher (watchdog.sh, boot.sh, start_server.sh, start_all.sh) + the every-minute
+  watchdog restart leaked ONE Xvfb per restart with no cleanup → ~90 orphaned Xvfb (displays
+  :120–:207, some 18 DAYS old) + 111 xvfb-run wrappers, filling the 2GB swap to 100% and
+  OOM-killing her under load. FIX: (a) nuked all orphaned Xvfb/xvfb-run + restarted clean →
+  swap 2047MB→66MB used, RAM available 146MB→326MB, Xvfb count 90→1; (b) rewrote VM
+  watchdog.sh to v3 (pkill stale Xvfb/xvfb-run before every restart) + prepended the same
+  cleanup to boot.sh/start_server.sh/start_all.sh (baks *.bak_xvfbleak). ⚠️ These VM ops
+  scripts are NOT in the git repo — they live at /home/azureuser and were patched in place;
+  if the VM is ever rebuilt, re-apply the Xvfb cleanup. Also DEPLOY RECIPE step 5 should add
+  the pkill-Xvfb cleanup to the restart command (future sessions: don't reintroduce `xvfb-run
+  -a` without cleanup). Also fixed (f0d3e4a): noise_cancellation.py init-once + torch-blocked
+  = one clean line (was 52x traceback spam); NVIDIA timeout 10s→6s.
+  FEATURE VERIFICATION (7/7 over WS, post-fix, no crash): chat ✓, IST time ✓, recall_knowledge
+  ✓ (Kaizen), guardian/check_legit ✓ (flagged phishing), mission_status ✓, night_shift ✓,
+  calendar ✓. Smoke 4/4.
+  MISSION FINDING (not a crash bug — engine honesty INTACT): missions #4/#5 failed overnight
+  because they ran DURING the OOM-crash + provider-exhaustion window (verifier landed on
+  non-tool fallbacks → "I don't have the capability" → correct FAIL). #7 (tested now) failed
+  because the planner routed a generic file task to the OFFLINE laptop and verify-after-act
+  correctly refused to confirm it. TWO QUALITY FOLLOW-UPS (deferred, not crashes): (1) mission
+  planner over-prefers the laptop node for generic tasks — should default to the VM
+  (run_command) unless Master says "on my laptop/phone"; (2) remote_device_command narrated
+  fake "success" for an offline laptop (verify caught it, but the tool should return an honest
+  "laptop offline"). Recommend a daytime VM-only mission re-test to confirm the engine end-to-
+  end now that memory is healthy.
 - 2026-07-25: Claude trace/log bug hunt on VM server.log (47k lines). FIXED (69005de,
   deployed + live-verified): `update_current_span() takes 0 positional args` — 26x, aborted
   SystemAgent(23x)/Vision/task-planner/action-executor because the real TraceRoot SDK is
