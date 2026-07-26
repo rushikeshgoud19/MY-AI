@@ -1283,12 +1283,25 @@ def _execute_tool_call_impl(tool_name: str, args: dict, config: dict, background
                 ws_manager.broadcast_sync({"type": "approval_required", "command": cmd})
                 return f"Command execution blocked for safety. Master, please confirm manually: {cmd}"
             log_info(f"[AI] Executing shell command: {cmd}")
+            # SHELL METACHARACTERS need an actual shell. Without one, shlex.split turns
+            # `echo BETA > /tmp/f` into ['echo','BETA','>','/tmp/f'] and echo prints the
+            # redirect as literal text — the file is never written, while the tool happily
+            # reports "Exit code: 0". A night-shift task failed exactly this way
+            # (2026-07-26: verified 0/2, both files missing, exit 0 reported).
+            # The dangerous-command guard above still runs FIRST, so this does not widen
+            # what may be executed — only how faithfully it is executed.
+            _needs_shell = any(ch in cmd for ch in (">", "<", "|", "&&", ";", "$(", "`", "*"))
             try:
-                cmd_args = shlex.split(cmd)
-            except Exception:
-                cmd_args = [cmd]
-            try:
-                result = subprocess.run(cmd_args, capture_output=True, text=True, timeout=30)
+                if _needs_shell:
+                    log_info("[AI] command contains shell metacharacters — running via shell")
+                    result = subprocess.run(cmd, shell=True, capture_output=True,
+                                            text=True, timeout=30)
+                else:
+                    try:
+                        cmd_args = shlex.split(cmd)
+                    except Exception:
+                        cmd_args = [cmd]
+                    result = subprocess.run(cmd_args, capture_output=True, text=True, timeout=30)
                 output = (result.stdout + "\n" + result.stderr).strip()
                 if len(output) > 500:
                     output = output[:500] + "...(truncated)"

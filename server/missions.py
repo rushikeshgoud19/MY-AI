@@ -53,7 +53,14 @@ _PLAN_PROMPT = """You are a mission planner for Mizune, a personal AI with these
 - WhatsApp: send messages to Master or his contacts
 - Phone: open apps/URLs, tap/type/read the screen, play/control music
 - Laptop: run shell commands, background tasks (run_task), delegate coding to Claude (claude_task)
+- Server (your own cloud host): run shell commands and python directly — ALWAYS AVAILABLE
 - Scheduling: reminders and future tasks
+
+DEVICE CHOICE — this matters: Master's laptop and phone are only intermittently connected (a
+laptop sleeps and drops wifi). Use them ONLY when the GOAL explicitly says so ("on my laptop",
+"on my phone"). For anything else — creating or reading a file, running a script, fetching data —
+run it on the SERVER, which is always online. Choosing a device that happens to be asleep makes a
+step fail for no reason.
 
 Decompose the GOAL into 2-{max_steps} sequential steps. If the GOAL states BOUNDARIES /
 constraints (things NOT to do, or a scope limit), respect them in every step.
@@ -136,6 +143,19 @@ _NARRATION_PAT = re.compile(
     r"\b(i will|i'll|i am going to|i'm going to|let me|i would|i can use|i need to use|"
     r"to verify (?:this|the condition)|first,? i)\b", re.IGNORECASE)
 
+# CAPABILITY REFUSALS are also not evidence. Observed on night shift #3 (2026-07-26): the
+# work SUCCEEDED — both files existed with the right contents — but the verify stage replied
+# "I'm sorry, but I don't have the capability to access or interact with files on a server"
+# without calling a single tool. The judge then correctly ruled FAIL on that non-evidence, so
+# a completed task was reported as unverified. A false NEGATIVE is as damaging as a false
+# positive here: it makes an honest engine look broken and hides the real failures.
+# She does have execute_python and run_command; a weaker provider simply doesn't realise it.
+_REFUSAL_PAT = re.compile(
+    r"(i'?m sorry|i am sorry|i don'?t have (?:the )?(?:capability|access|ability)|"
+    r"i cannot (?:access|check|read|verify)|i can'?t (?:access|check|read|verify)|"
+    r"unable to (?:access|check|read|verify|interact)|"
+    r"as an ai|i don'?t have direct access)", re.IGNORECASE)
+
 # Markers of an ACTUAL observation. Deliberately strict: words like "exists" or "contains"
 # are NOT here, because narration says them too ("I will check if the file exists") — including
 # them made the detector miss the very bug it was written for.
@@ -146,15 +166,23 @@ _RESULT_PAT = re.compile(
 
 
 def _is_narration(text: str) -> bool:
-    """True if the 'evidence' is a PLAN to gather evidence rather than evidence itself.
+    """True when the 'evidence' is NOT an observation — i.e. the verifier didn't actually look.
 
-    Rule: empty is narration; otherwise it's narration only when the reply OPENS by describing
-    intent and carries no concrete observation. Short concrete outputs ("WORKING", "not found")
-    must pass — they're exactly what a real command returns.
+    Two non-evidence shapes, both seen in production:
+      1. NARRATION — a plan instead of a result ("I will use execute_python to check...").
+      2. REFUSAL — a claim of incapability ("I'm sorry, I don't have access to files on a
+         server") while holding execute_python and run_command. This one produced FALSE
+         NEGATIVES: night shift #3 wrote both files correctly and was still reported 0/2.
+
+    Empty is non-evidence. Short concrete outputs ("WORKING", "not found") must pass — that's
+    exactly what a real command returns — so only the opening is scanned for intent, and any
+    concrete observation anywhere in the text rescues it.
     """
     t = (text or "").strip()
     if not t:
         return True
+    if _REFUSAL_PAT.search(t[:200]):          # claimed it couldn't look
+        return not _RESULT_PAT.search(t)      # ...unless it actually reported something
     if _NARRATION_PAT.search(t[:120]):        # intent stated up front
         return not _RESULT_PAT.search(t)      # ...and nothing observed anywhere
     return False
@@ -163,7 +191,12 @@ def _is_narration(text: str) -> bool:
 _EVIDENCE_PROMPT = (
     "[MISSION VERIFY] Call the tool RIGHT NOW that checks this condition, then report ONLY the "
     "raw factual result you got back. Do NOT describe what you are going to do, do NOT explain "
-    "your plan — perform the check in this turn and state the observed facts: {clause}"
+    "your plan — perform the check in this turn and state the observed facts.\n"
+    "YOU CAN DO THIS: you have execute_python and run_command, and they run on YOUR OWN host "
+    "(a Linux server) — so you CAN read files, list directories and inspect state there. Never "
+    "reply that you lack access to files or a server; run the check instead. To read a file, "
+    "call execute_python with code like: print(open('/path','r').read()).\n"
+    "CONDITION: {clause}"
 )
 
 
