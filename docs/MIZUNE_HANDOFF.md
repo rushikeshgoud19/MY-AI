@@ -3163,8 +3163,35 @@ Desktop docs: `mizune-million-path.md`, `linkedin-content-plan.md`, `linkedin-pr
   failing. Inverted it: ignore everything at root, un-ignore what belongs. Verified junk is
   now unstageable.
   **138 checks pass. Mizune smoke 4/4 (untouched by all of this).**
-  ⛔ NEXT — needs RUSHI, not me: confirm the name, then `gh repo create` + push + PyPI token
-  + post. All free. Everything up to the publish button is done.
+  🚀 **PUBLISHED 2026-07-27 (Rushi said go): https://github.com/rushikeshgoud19/agent-seal**
+  Public, 8 commits, 9 topics. **Verified from a CLEAN CLONE, not the working copy** — all
+  138 checks pass against exactly what a stranger downloads. Name shipped as `agent-seal`.
+  ⛔ STILL NEEDS RUSHI: **PyPI** (free account + API token — Claude does not create accounts
+  or handle credentials, so he runs `twine upload` or hands the token over himself) and
+  **the post** (`docs/launch-post.md` — he edits before posting; a launch post that reads as
+  machine-written undercuts a library about honesty). Then fill the launch date into the kill
+  criterion in `docs/RELEASE.md`.
+
+## AGENTIC OS DASHBOARD (localhost:4517) — was DEAD for ~2 days, now fixed + proven
+Rushi asked for it to stay on. It was down, and the reason matters: **`keepalive.vbs` was
+alive but silently not healing.** Found running since 2026-07-25 15:59 while the dashboard
+had been dead the whole time, with `dashboard.log` never even created. Three faults:
+ 1. `sh.LogEvent` ran AFTER `On Error GoTo 0` — if the Windows event-log write fails the
+    whole script dies with no trace.
+ 2. The relaunch relied on `node` being on PATH inside the spawned `cmd`, which depends on
+    the environment inherited at login and is not guaranteed.
+ 3. **Nothing was EVER logged on the healthy path**, so "is the watcher working?" was
+    unanswerable — the failure was invisible by design. Same lesson as the smoke gate: a
+    monitor that only speaks when it feels like it is a monitor you cannot trust.
+FIX: absolute node path (`C:\Program Files\nodejs\node.exe`, falls back to PATH), quoted for
+spaces; `LogEvent` replaced with a file log at `agentic-os/keepalive.log`; a heartbeat line
+on every healthy poll, so SILENCE now means broken.
+**PROVEN, not assumed:** killed the dashboard (PID 25148) → came back unattended as PID 25876
+in ~35s, with the relaunch line in `keepalive.log`. Also verified only ONE keepalive runs
+(two were racing at one point) and it is registered in the Startup folder, so it survives
+reboot.
+⚠️ If the dashboard is ever dead again, READ `agentic-os/keepalive.log` FIRST — no recent
+lines at all means the watcher itself died, which is the failure that hid for two days.
   STILL OPEN: the token budget (groq 100k/day is the ceiling; mistral is healthy and unused —
   measure before adding keys), phone-side playback test (phone was offline all session).
 - 2026-07-26: Executor completed TASK PACK 6 (V2.1 feature audit harness & V2.2 feature matrix). Authored scripts/feature_audit.py and docs/FEATURE_MATRIX.md. Evaluated 15 features over WS and HTTP with spaced probes and ground-truth rules. Results: 12 PASS, 2 UNVERIFIABLE-FROM-CLIENT (seals_lie_detector, scheduler — VM commands provided), 1 NOT-WIRED (mesh — router trigger pending in processor.py), 0 FAIL. Flakiness gates 3/3 PASS across chat_persona, ist_clock, and calendar_read. Report saved to .data/feature_audit_20260726-1938.json. Stopped at ⛔ END OF EXECUTOR TASK PACK 6.
