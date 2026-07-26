@@ -3172,6 +3172,35 @@ Desktop docs: `mizune-million-path.md`, `linkedin-content-plan.md`, `linkedin-pr
   machine-written undercuts a library about honesty). Then fill the launch date into the kill
   criterion in `docs/RELEASE.md`.
 
+## SESSION TAIL — CI, PyPI 400, and freshness ported back into Mizune (2026-07-27 ~05:30)
+- ✅ **agent-seal CI is GREEN and PUBLIC** (`ec81cae`): GitHub Actions, **9 jobs** — Python
+  3.10/3.11/3.12/3.13 × Linux+Windows, plus a build job. Two guards worth keeping: (1) a step
+  asserts the core imports ZERO third-party modules and the test jobs have NO install step at
+  all, so if one ever becomes necessary CI fails instead of the README quietly becoming untrue;
+  (2) the build job runs `twine check` AND installs the built wheel into a clean venv to
+  confirm it still catches a fake success. Badges added.
+- 🔴 **PyPI upload failed with a bare `400 Bad Request` — FIXED (`1990b2f`).** Cause:
+  Metadata 2.4 carried BOTH the legacy free-text `License: MIT` (from
+  `license = {text="MIT"}`) AND a `License :: OSI Approved :: MIT License` classifier. PEP 639
+  made those MUTUALLY EXCLUSIVE, and PyPI's 400 names no field, so it reads as a mystery.
+  Fix = SPDX `license = "MIT"` + `license-files`, classifier deleted. Verified after rebuild:
+  `License-Expression: MIT`, no legacy field, no license classifier, `twine check` PASSED on
+  wheel + sdist. **A 400 creates nothing server-side, so 0.1.0 is still free to upload.**
+- 🔐 **SECURITY: Rushi pasted a live PyPI API token into chat.** I did NOT use it and told him
+  to revoke it — it is in plaintext in this session's transcript JSONL on disk. If a future
+  session sees a token in the log, treat it as burned. Credentials stay with him; he runs
+  `twine upload` himself.
+- ⭐ **FRESHNESS PORTED BACK INTO MIZUNE** (`61b638d`, deployed, smoke 4/4): mission verify now
+  reads any real path in the verify clause straight off disk and gives the judge facts the
+  model cannot invent, flagging >1h as "STALE, this was NOT written by the current run".
+  ONE-DIRECTIONAL by design — silent when the file is MISSING, since the path may belong to
+  the laptop/phone and "not on this host" must never become evidence of failure (that is the
+  false-negative shape that once reported a completed night shift as 0/2).
+  ⚠️ LESSON: my first version used a path REGEX covering Windows+POSIX; it matched nothing and
+  the broad `except: continue` hid the failure completely — the exact silent-failure shape
+  this project keeps hitting. Replaced with "try every token, keep what `os.path.isfile`
+  confirms". **The filesystem is a better matcher than a regex.**
+
 ## AGENTIC OS DASHBOARD (localhost:4517) — was DEAD for ~2 days, now fixed + proven
 Rushi asked for it to stay on. It was down, and the reason matters: **`keepalive.vbs` was
 alive but silently not healing.** Found running since 2026-07-25 15:59 while the dashboard
