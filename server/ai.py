@@ -450,6 +450,27 @@ TOOLS_SCHEMA = [
     {
         "type": "function",
         "function": {
+            "name": "read_whatsapp",
+            "description": ("Read Master's recent WhatsApp messages, including ones you never replied to. "
+                            "Use when Master refers to something someone sent him — 'the song Sarthak sent me', "
+                            "'what did Owais say', 'the link Pranith shared'. If the result contains a link and "
+                            "Master wants it played, pass that exact link to play_music as `query` — never "
+                            "re-search for the song by name."),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sender": {"type": "string", "description": "Contact name or a fragment of it, e.g. 'Sarthak'."},
+                    "contains": {"type": "string", "description": "Only messages containing this text, e.g. 'http' for links."},
+                    "limit": {"type": "integer", "description": "How many messages (default 5, max 20)."},
+                    "hours": {"type": "integer", "description": "Only messages from the last N hours."}
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "control_music",
             "description": "Control whatever is playing on Master's phone: pause, resume/play, or skip to the next track. Use when Master says 'pause the music', 'resume', 'next song', 'skip this'.",
             "parameters": {
@@ -722,6 +743,37 @@ _recent_tool_calls: dict = {}
 _recent_tool_lock = _dedup_threading.Lock()
 
 
+def _passthrough_music_url(query: str) -> str | None:
+    """If `query` is already a link, return a playable url instead of searching.
+
+    Friends share `youtube.com/watch?v=…`, `youtu.be/…`, `music.youtube.com/watch?v=…`
+    (often with WhatsApp's `&si=` tracking suffix) and Spotify links. Re-searching the song
+    by NAME is how you end up playing a cover or a slowed-reverb edit instead of the track
+    someone actually sent. YouTube links are normalised onto music.youtube.com because that
+    is what deep-link autoplays; anything else non-YouTube is handed over untouched.
+    """
+    import urllib.parse
+    q = (query or "").strip().strip("<>")
+    if not _re.match(r"^https?://", q, _re.IGNORECASE):
+        return None
+    try:
+        parsed = urllib.parse.urlparse(q)
+    except Exception:
+        return None
+    host = (parsed.netloc or "").lower().lstrip("www.")
+
+    vid = None
+    if host in ("youtube.com", "m.youtube.com", "music.youtube.com"):
+        vid = urllib.parse.parse_qs(parsed.query).get("v", [None])[0]
+    elif host == "youtu.be":
+        vid = parsed.path.lstrip("/").split("/")[0] or None
+
+    if vid and _re.fullmatch(r"[A-Za-z0-9_-]{11}", vid):
+        # Drops WhatsApp's &si=... tracking tail, which YT Music does not need.
+        return f"https://music.youtube.com/watch?v={vid}"
+    return q  # some other music link (Spotify, an album page) — open it as-is
+
+
 def _resolve_youtube_music_url(query: str) -> str | None:
     """Resolve a song query to a YouTube Music WATCH url (autoplays when deep-linked
     into the YT Music app). Scrapes the top search result — no API key needed."""
@@ -738,6 +790,123 @@ def _resolve_youtube_music_url(query: str) -> str | None:
     except Exception as e:
         log_info(f"[MUSIC] YouTube resolve failed: {e}")
     return None
+
+
+_URL_RE = _re.compile(r"https?://[^\s<>\"']+")
+
+
+def _cortex_db_path() -> str | None:
+    """Locate cortex.db — the WhatsApp message store. cwd differs between the VM
+    (/home/azureuser) and a local run, so try both rather than assuming."""
+    import os
+    for p in ("cortex.db",
+              os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cortex.db")):
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def _read_whatsapp_messages(sender: str = None, contains: str = None,
+                            limit=None, hours=None) -> str:
+    """Read Master's recent WhatsApp messages from the cortex store.
+
+    Every inbound message is ingested BEFORE the _should_reply gate, so this sees messages
+    she never answered — which is the whole point: "play the song Sarthak sent me" refers to
+    a message that was never addressed to her.
+
+    Read-only. Returns a compact, quotable list; any links are surfaced explicitly so the
+    model can hand one straight to play_music instead of inventing a search query.
+    """
+    import sqlite3
+    path = _cortex_db_path()
+    if not path:
+        return "I can't find my WhatsApp message store right now, Master."
+
+    try:
+        limit = max(1, min(int(limit or 5), 20))
+    except (TypeError, ValueError):
+        limit = 5
+
+    where, params = [], []
+    if sender:
+        # Contact names are stored as WhatsApp shows them ("Sarthak Kumar Nashine"),
+        # so match on a fragment — Master says "Sarthak".
+        where.append("sender_name LIKE ?")
+        params.append(f"%{str(sender).strip()}%")
+    if contains:
+        where.append("text LIKE ?")
+        params.append(f"%{str(contains).strip()}%")
+    if hours:
+        try:
+            where.append("timestamp > ?")
+            params.append(time.time() - float(hours) * 3600)
+        except (TypeError, ValueError):
+            where.pop(), params.pop()
+    params.append(limit)
+
+    sql = ("SELECT sender_name, text, timestamp, media_type FROM whatsapp_messages "
+           + ("WHERE " + " AND ".join(where) + " " if where else "")
+           + "ORDER BY timestamp DESC LIMIT ?")
+    try:
+        con = sqlite3.connect(path)
+        rows = list(con.execute(sql, params))
+        con.close()
+    except Exception as e:
+        log_info(f"[WHATSAPP READ] query failed: {e}")
+        return "I couldn't read my message history just now, Master."
+
+    if not rows:
+        who = f" from {sender}" if sender else ""
+        return f"I don't have any messages{who} matching that, Master."
+
+    lines, links = [], []
+    now = time.time()
+    for name, text, ts, media in rows:
+        text = (text or "").strip()
+        age = now - (ts or now)
+        when = (f"{int(age // 60)}m ago" if age < 3600 else
+                f"{int(age // 3600)}h ago" if age < 86400 else
+                f"{int(age // 86400)}d ago")
+        found = _URL_RE.findall(text)
+        links.extend(found)
+        body = text[:200] if text else f"[{media or 'media'}]"
+        lines.append(f"- {name or 'Unknown'} ({when}): {body}")
+
+    # Name the filter that was actually applied. If the caller's filter got dropped, this
+    # says "from anyone" and the mistake is visible in the reply instead of silent.
+    scope = f"from {sender}" if sender else "from anyone"
+    if contains:
+        scope += f" containing '{contains}'"
+    out = f"Recent WhatsApp messages ({scope}):\n" + "\n".join(lines)
+    if links:
+        # Spelled out so the model passes the REAL link to play_music rather than
+        # re-searching for the song by name and landing on a different track.
+        out += "\n\nLinks in those messages (use one directly, do not search again):\n"
+        for u in links[:5]:
+            title = _youtube_title(u)
+            out += f"- {u}" + (f"  [title: {title}]" if title else "") + "\n"
+        # Observed live 2026-07-27: asked what song Sarthak sent, she invented
+        # "Tisinj Napam by Gobindo and Basanti" out of a bare video id. A link is not a
+        # title, and guessing one is a fabrication Master cannot check at a glance.
+        out += ("NOTE: if a link has no [title:], you do NOT know what it is. Say Master was "
+                "sent a link — never invent a song name or artist.")
+    return out
+
+
+def _youtube_title(url: str) -> str | None:
+    """Real title for a YouTube link via oEmbed (no API key). Best-effort and short —
+    supplying the truth is what stops the model inventing a song name."""
+    import urllib.request, urllib.parse, json as _json
+    if not _re.search(r"(youtube\.com|youtu\.be)", url, _re.IGNORECASE):
+        return None
+    try:
+        api = "https://www.youtube.com/oembed?format=json&url=" + urllib.parse.quote(url, safe="")
+        req = urllib.request.Request(api, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return (_json.loads(r.read().decode("utf-8", "ignore")).get("title") or "")[:120] or None
+    except Exception as e:
+        log_info(f"[WHATSAPP READ] oEmbed title lookup failed for {url[:60]}: {e}")
+        return None
 
 
 # Background utility calls (memory-worker seals, planner, reformatting — anything
@@ -969,7 +1138,15 @@ def _execute_tool_call_impl(tool_name: str, args: dict, config: dict, background
             device = (args.get("device") or "phone").strip()
             if not query:
                 return "Error: what song should I play, Master?"
-            url = _resolve_youtube_music_url(query)
+            # A LINK Master (or a friend) already gave us beats any search: searching by
+            # name lands on a different upload — a cover, a slowed-reverb edit, the wrong
+            # version. So when `query` IS a url, honour it verbatim.
+            note = ""
+            url = _passthrough_music_url(query)
+            if url:
+                log_info(f"[MUSIC] using the link as given: {url}")
+            else:
+                url = _resolve_youtube_music_url(query)
             if not url:
                 url = f"https://music.youtube.com/search?q={query.replace(' ', '+')}"
                 note = f"(couldn't grab a direct link — opening a search for '{query}')"
@@ -1145,6 +1322,31 @@ def _execute_tool_call_impl(tool_name: str, args: dict, config: dict, background
             from .guardian import investigate_query
             query_text = args.get("text") or args.get("query") or ""
             return investigate_query(query_text)
+
+        if tool_name == "read_whatsapp":
+            # PRIVACY GATE — Master only. Without this, a friend in a group could ask
+            # "what did Sarthak send Rushi?" and she would read his inbox out loud. Mirrors
+            # the existing history firewall in _get_ai_response_body, which is the only
+            # place that knows who is actually talking.
+            if getattr(_bg_guard, "third_party", False):
+                return "I only share Master's messages with Master, sorry!"
+            # ALIASES ARE LOAD-BEARING. Caught live 2026-07-27: the model called this with
+            # `contact='Sarthak'`, `sender` came back None, the filter was silently dropped
+            # and she answered from the newest message BY ANYONE. It looked right only
+            # because Sarthak's message happened to be newest — ask about someone else and
+            # she would confidently quote the wrong person. A silently ignored filter is
+            # worse than an error, so accept what models actually emit.
+            _sender = next((args[k] for k in ("sender", "contact", "from", "from_",
+                                              "name", "person", "who")
+                            if isinstance(args.get(k), str) and args[k].strip()), None)
+            _contains = next((args[k] for k in ("contains", "query", "search", "text")
+                              if isinstance(args.get(k), str) and args[k].strip()), None)
+            return _read_whatsapp_messages(
+                sender=_sender,
+                contains=_contains,
+                limit=args.get("limit") or args.get("count"),
+                hours=args.get("hours"),
+            )
 
         if tool_name == "remote_device_command":
             from .device_registry import device_registry
@@ -1325,11 +1527,15 @@ def get_ai_response(text: str, history: list, config: dict, system_prompt_overri
     classification, priming...) can't leave no_tools=True behind and block the
     OUTER user request's tools (observed: start_mission blocked)."""
     _prev_no_tools = getattr(_bg_guard, "no_tools", False)
+    _prev_third_party = getattr(_bg_guard, "third_party", False)
     _bg_guard.no_tools = bool(system_prompt_override)
     try:
         return _get_ai_response_body(text, history, config, system_prompt_override, hints, ws_broadcast_func)
     finally:
         _bg_guard.no_tools = _prev_no_tools
+        # Restore alongside no_tools: a nested utility call must not leave a request
+        # marked (or un-marked) as third-party for the turn that follows it.
+        _bg_guard.third_party = _prev_third_party
 
 
 def _get_ai_response_body(text: str, history: list, config: dict, system_prompt_override: str = None, hints: dict = None, ws_broadcast_func=None) -> tuple:
@@ -1339,8 +1545,13 @@ def _get_ai_response_body(text: str, history: list, config: dict, system_prompt_
     history = TokenJuice.compress_history(history)
     
     # STRICT PRIVACY FIREWALL: If a third party messages, they get NO access to Master's chat history.
-    if "[WHATSAPP MESSAGE FROM" in text and "FROM Rushi" not in text and "FROM Rushikesh" not in text:
+    _is_third_party = ("[WHATSAPP MESSAGE FROM" in text
+                       and "FROM Rushi" not in text and "FROM Rushikesh" not in text)
+    if _is_third_party:
         history = []
+    # Same signal, carried to the tool layer: read_whatsapp must refuse a stranger, and
+    # execute_tool_call has no view of who is talking.
+    _bg_guard.third_party = _is_third_party
         
     from server.model_router import get_model_router
     model_choice = get_model_router(config).route(text, history, hints)
