@@ -3,6 +3,7 @@ Core command processor for Mizune AI.
 Stitches together Vision, AI, Commands, and Context.
 """
 import os
+import json
 import re
 import time
 import subprocess
@@ -190,10 +191,30 @@ def _scheduler_callback(task_description):
     # `execute_python code="..."`), run it directly through the guarded tool
     # dispatcher. Re-emitting code through the LLM truncates it — models fumble
     # quotes-in-JSON — so scheduled code must never round-trip through the model.
+    # TWO stored shapes must both hit this path. The original fix only handled
+    # `execute_python code="..."`, but schedule_task now stores the JSON arg form
+    # `execute_python {"code": "..."}`. That form fell through to the LLM/SystemAgent
+    # branch, which "handled" it conversationally and never ran the code — the task
+    # was marked executed=1 while the file it was supposed to write never appeared
+    # (caught by the feature audit 2026-07-26: /tmp/sched_4811.txt missing).
+    _sched_code = None
     m = re.match(r'\s*execute_python\s+code="(.*)"\s*$', task_description, re.DOTALL)
-    if m and "whatsapp" not in task_description.lower():
+    if m:
+        _sched_code = m.group(1)
+    else:
+        m_json = re.match(r'\s*execute_python\s+(\{.*\})\s*$', task_description, re.DOTALL)
+        if m_json:
+            try:
+                _payload = json.loads(m_json.group(1))
+                if isinstance(_payload, dict) and isinstance(_payload.get("code"), str):
+                    _sched_code = _payload["code"]
+            except Exception as _e:
+                log_info(f"[SCHEDULER] stored execute_python JSON unparseable ({_e}); "
+                         f"falling through to the brain path.")
+
+    if _sched_code and "whatsapp" not in task_description.lower():
         from server.ai import execute_tool_call
-        result = execute_tool_call("execute_python", {"code": m.group(1)}, config)
+        result = execute_tool_call("execute_python", {"code": _sched_code}, config)
         log_info(f"[SCHEDULER] Direct-executed stored python: {str(result)[:150]}")
         # R.2: report the REAL outcome, not a blanket success.
         res_str = str(result)

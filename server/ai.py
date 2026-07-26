@@ -633,6 +633,24 @@ def _clean_final_text(text: str) -> str:
     return text.strip()
 
 
+def _host_os_label() -> str:
+    """Describe the machine the brain itself runs on, for prompt grounding.
+
+    Without this the model assumed Windows — the capability text mentions "Master's PC" and
+    the Windows registry, and the device context advertises a Windows laptop. A scheduled
+    task then generated `r'C:\\Temp\\fix.txt'` / `os.getenv('TEMP')` while running on the
+    Linux VM, so the file was written nowhere reachable and the task reported done with no
+    effect (caught 2026-07-26 chasing a scheduled write that never appeared in /tmp).
+    """
+    import platform
+    import sys as _sys
+    if _sys.platform.startswith("linux"):
+        return f"LINUX ({platform.system()} {platform.release()})"
+    if _sys.platform.startswith("win"):
+        return f"WINDOWS ({platform.system()} {platform.release()})"
+    return f"{_sys.platform} ({platform.system()})"
+
+
 def _recover_text_mode_tools(raw: str, config: dict) -> list:
     """Parse tool calls a model emitted as TEXT rather than via the function API.
 
@@ -1362,6 +1380,14 @@ def _get_ai_response_body(text: str, history: list, config: dict, system_prompt_
             "calls TOGETHER in the SAME response — they are executed simultaneously, so this is "
             "much faster. Only chain them one-at-a-time when a later step genuinely needs an "
             "earlier step's result.\n"
+            "\n[WHERE YOU RUN - THIS DETERMINES EVERY PATH AND COMMAND YOU WRITE]\n"
+            f"YOUR OWN HOST is {_host_os_label()}. execute_python and run_command execute HERE, "
+            "on this host — NOT on Master's laptop. So use POSIX conventions for your own work: "
+            "'/tmp/name.txt', forward slashes, 'ls'/'cat'/'rm'. NEVER write 'C:\\\\...', "
+            "'%TEMP%' or os.getenv('TEMP') for your own filesystem — those resolve to nothing "
+            "here and the file silently lands somewhere that does not exist. "
+            "Master's LAPTOP is a SEPARATE Windows machine reached only via "
+            "remote_device_command; Windows paths belong ONLY inside those calls.\n"
             "\n[CAPABILITY GROUNDING - READ CAREFULLY]\n"
             "You MUST be honest about what you can and cannot do. Your REAL capabilities are:\n"
             "- open_app / close_app: Launch or close apps on Master's PC\n"
