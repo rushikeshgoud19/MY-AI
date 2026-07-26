@@ -3079,8 +3079,26 @@ Desktop docs: `mizune-million-path.md`, `linkedin-content-plan.md`, `linkedin-pr
   - `examples/langchain_fake_success.py` — THE DEMO the plan calls "the whole marketing plan".
     Three verdicts on ONE run: judge **PASS**, reality **FAIL**, agent-seal **FAIL**. Seal even
     captures the smoking gun: `stdout: 'DONE > C:Users…'` — the redirect printed, not executed.
-  NEXT for Stage 1: framework adapters (LangChain / OpenAI Agents SDK / CrewAI), more evidence
-  collectors (HTTP, DB row, process state), then Stage 2 distribution (PyPI + the post).
+  ✅ **SECOND agent-seal COMMIT (32afc9d): collectors + clause grammar + LangChain adapter.**
+  Files-only verification was a toy; this makes it usable on real actions.
+  - `collectors.py` — file exists/absent/contains, `http_ok`, **`sqlite_row_exists`** (the one
+    that catches "task scheduled successfully" with no scheduler row — the failure that
+    started all of this), `output_contains` (docstring says outright it is WEAKER evidence —
+    for pure computations, never as a shortcut when real state exists).
+  - `proves=` grammar is now a REGISTRY, not an if-chain. Referencing an argument the function
+    doesn't take raises immediately and names the ones it does have; a contract that silently
+    verifies nothing is worse than no contract.
+  - `adapters/langchain.py` — `seal_tools(tools)` records; `seal_tools(tools, proves={...})`
+    verifies. **Record mode marks `verified=None`, NOT True** — calling an unchecked action
+    "verified" because nothing threw is exactly the mistake this library is about, so the
+    report counts them separately as "never checked". That is also the honest adoption path:
+    point it at an existing agent, run the normal workload, see how much is really confirmed.
+    `raises` defaults False in the adapter (a raise inside a tool loop turns a detectable
+    failure into a crash). Original tool never mutated — tested.
+  - **64 checks total, all pass.** Adapter tests use a stand-in tool object, not LangChain —
+    a test that silently skips is a test that rots. Core still has ZERO dependencies.
+  NEXT for Stage 1: OpenAI Agents SDK + CrewAI adapters, richer collectors (process state,
+  cloud APIs), then Stage 2 distribution (PyPI + the "your evals only check the output" post).
   STILL OPEN: the token budget (groq 100k/day is the ceiling; mistral is healthy and unused —
   measure before adding keys), phone-side playback test (phone was offline all session).
 - 2026-07-26: Executor completed TASK PACK 6 (V2.1 feature audit harness & V2.2 feature matrix). Authored scripts/feature_audit.py and docs/FEATURE_MATRIX.md. Evaluated 15 features over WS and HTTP with spaced probes and ground-truth rules. Results: 12 PASS, 2 UNVERIFIABLE-FROM-CLIENT (seals_lie_detector, scheduler — VM commands provided), 1 NOT-WIRED (mesh — router trigger pending in processor.py), 0 FAIL. Flakiness gates 3/3 PASS across chat_persona, ist_clock, and calendar_read. Report saved to .data/feature_audit_20260726-1938.json. Stopped at ⛔ END OF EXECUTOR TASK PACK 6.
