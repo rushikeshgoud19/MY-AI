@@ -3059,9 +3059,30 @@ Desktop docs: `mizune-million-path.md`, `linkedin-content-plan.md`, `linkedin-pr
   append-only seal log (tamper-evidence is what makes it audit-grade), pluggable evidence
   collectors, the narration detector (already built here as `_is_narration`, genuinely novel),
   adapters for LangChain / OpenAI Agents SDK / CrewAI.
+  🚀 **STAGE 1 CORE BUILT — `agent-seal` v0.1.0.** NEW REPO, SEPARATE FROM MIZUNE:
+  `C:\Users\rushi\OneDrive\Desktop\agent-seal` (own git, MIT, 2 commits, NOT pushed).
+  It is standalone and dependency-free ON PURPOSE — an audit tool that drags in a framework
+  is one nobody installs. Uses Mizune's ideas, imports none of her code.
+  - `agent_seal/verify.py` — `@verified(proves="file {path} contains DONE")`: runs the action,
+    then checks REAL STATE. Raises by default (a verification layer that only logs is one more
+    thing nobody reads); `raises=False` sweeps an existing agent to measure how much of what it
+    reports is real. `actor` + `authorization` sealed on every record (the two audit questions
+    the plan lists as gaps).
+  - `agent_seal/ledger.py` — hash-chained append-only JSONL. Edit a record → its own hash stops
+    matching; delete one → the next record's `prev_hash` points at nothing. `verify_chain()`
+    names WHICH record broke and HOW. Plain text, readable without the library.
+  - `agent_seal/narration.py` — ported from `missions.py::_is_narration`, comments and all,
+    incl. the hard-won rule that `exists`/`contains` are NOT observation markers (narration
+    says them too — the earlier version that counted them missed the very bug it was for).
+  - `tests/test_agent_seal.py` — **27 checks, ALL PASS**, no pytest dep. Tamper tests assert the
+    failure is DETECTED AND CORRECTLY DESCRIBED, not just that the happy path works.
+  - `examples/langchain_fake_success.py` — THE DEMO the plan calls "the whole marketing plan".
+    Three verdicts on ONE run: judge **PASS**, reality **FAIL**, agent-seal **FAIL**. Seal even
+    captures the smoking gun: `stdout: 'DONE > C:Users…'` — the redirect printed, not executed.
+  NEXT for Stage 1: framework adapters (LangChain / OpenAI Agents SDK / CrewAI), more evidence
+  collectors (HTTP, DB row, process state), then Stage 2 distribution (PyPI + the post).
   STILL OPEN: the token budget (groq 100k/day is the ceiling; mistral is healthy and unused —
-  measure before adding keys), phone-side playback test (phone was offline all session), then
-  the Stage 1 build itself.
+  measure before adding keys), phone-side playback test (phone was offline all session).
 - 2026-07-26: Executor completed TASK PACK 6 (V2.1 feature audit harness & V2.2 feature matrix). Authored scripts/feature_audit.py and docs/FEATURE_MATRIX.md. Evaluated 15 features over WS and HTTP with spaced probes and ground-truth rules. Results: 12 PASS, 2 UNVERIFIABLE-FROM-CLIENT (seals_lie_detector, scheduler — VM commands provided), 1 NOT-WIRED (mesh — router trigger pending in processor.py), 0 FAIL. Flakiness gates 3/3 PASS across chat_persona, ist_clock, and calendar_read. Report saved to .data/feature_audit_20260726-1938.json. Stopped at ⛔ END OF EXECUTOR TASK PACK 6.
 
 
