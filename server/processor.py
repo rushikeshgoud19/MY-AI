@@ -242,7 +242,8 @@ def _scheduler_callback(task_description):
         _report_seal_failures(wm, ws_manager.broadcast_sync)
     threading.Thread(target=_run_and_report, daemon=True).start()
 
-global_cron_manager.start(task_callback=_scheduler_callback)
+# NOTE: global_cron_manager.start() is deliberately NOT called here — see the bottom of
+# this module. Starting it mid-import let a task fire before process_command existed.
 
 # Register the daily morning briefing (idempotent — checks for an existing row).
 # Lives here so BOTH entry points (local server.py, VM backend_main.py) get it.
@@ -1137,3 +1138,15 @@ def process_mobile_vision(image_bytes: bytes, config: dict) -> str:
         log_info(f"[MOBILE VISION] Processing failed: {e}")
         
     return "I tried to look at the picture, Master, but my eyes are a bit blurry right now! Please check your API keys."
+
+
+# ── Start the scheduler LAST, once every name in this module exists ──────────────
+# This used to run at line ~245, i.e. PARTWAY THROUGH the import. The cron thread
+# starts immediately, so any task already due fired while the module was still being
+# defined and hit:
+#     NameError: name 'process_command' is not defined   (in _run_and_report)
+# It dies in a daemon thread, so nothing surfaces to Master — the task is simply lost.
+# Caught 2026-07-27 while testing provider routing. The window is narrow (boot only)
+# but that is exactly when overdue tasks — a missed briefing, a night-shift report —
+# are most likely to fire. Keep this call at the END of the module.
+global_cron_manager.start(task_callback=_scheduler_callback)
