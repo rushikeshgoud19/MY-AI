@@ -3097,8 +3097,32 @@ Desktop docs: `mizune-million-path.md`, `linkedin-content-plan.md`, `linkedin-pr
     failure into a crash). Original tool never mutated — tested.
   - **64 checks total, all pass.** Adapter tests use a stand-in tool object, not LangChain —
     a test that silently skips is a test that rots. Core still has ZERO dependencies.
-  NEXT for Stage 1: OpenAI Agents SDK + CrewAI adapters, richer collectors (process state,
-  cloud APIs), then Stage 2 distribution (PyPI + the "your evals only check the output" post).
+  ✅ **THIRD agent-seal COMMIT (d8eba75): OpenAI Agents SDK + CrewAI adapters.**
+  Refactored FIRST into `adapters/_common.py` — three adapters each doing "wrap the callable,
+  seal it, leave the original alone" is EXACTLY the shape that gets fixed in one place out of
+  three (the bug class that has bitten this project over and over). Adapters now only encode
+  WHERE each framework keeps its callable: `.func` (LangChain), `.on_invoke_tool` (OpenAI
+  SDK), `._run` (CrewAI BaseTool). Each tries several names since SDK versions differ.
+  A tool exposing no callable RAISES, naming what it looked for — an adapter that silently
+  no-ops is worse than none: it produces a clean audit report about nothing, i.e. this
+  library committing its own headline failure.
+  `tests/test_adapters.py` — 42 checks across all three frameworks: record mode, catching a
+  fake success, real work passing, actor/authorization surviving the wrap, exceptions sealed
+  then re-raised, args in the trail, unwrappable tools failing loudly, original not mutated.
+  **None of the 3 frameworks are installed to run them** — the adapters need only a tool with
+  a name + a callable attr, so stand-ins model that contract exactly. Installing 3 agent
+  frameworks to test thin wrappers = minutes of CI, transitive dep sprawl, version flakiness,
+  zero extra coverage.
+  **107 checks total, all pass. `import agent_seal` pulls in ZERO third-party modules** —
+  verified programmatically, since that is the whole pitch.
+  💰 **COST CONFIRMED WITH RUSHI: agent-seal is $0.** Core has no deps and needs no API key;
+  the 107 tests run offline; only the DEMO calls an LLM and it uses his existing FREE Mistral
+  key; PyPI + GitHub are free. Nothing in Stage 1 or Stage 2 requires spending. Do NOT
+  recommend paid keys — his hard constraint is zero dollars.
+  ⚠️ Deliberately did NOT pip-install langchain-full/crewai/openai-agents into Mizune's venv:
+  risk to her runtime, no benefit to thin wrappers.
+  NEXT for Stage 1: richer collectors (process state, cloud APIs); then Stage 2 distribution
+  (PyPI + the "your evals only check the output" post) — all free.
   STILL OPEN: the token budget (groq 100k/day is the ceiling; mistral is healthy and unused —
   measure before adding keys), phone-side playback test (phone was offline all session).
 - 2026-07-26: Executor completed TASK PACK 6 (V2.1 feature audit harness & V2.2 feature matrix). Authored scripts/feature_audit.py and docs/FEATURE_MATRIX.md. Evaluated 15 features over WS and HTTP with spaced probes and ground-truth rules. Results: 12 PASS, 2 UNVERIFIABLE-FROM-CLIENT (seals_lie_detector, scheduler — VM commands provided), 1 NOT-WIRED (mesh — router trigger pending in processor.py), 0 FAIL. Flakiness gates 3/3 PASS across chat_persona, ist_clock, and calendar_read. Report saved to .data/feature_audit_20260726-1938.json. Stopped at ⛔ END OF EXECUTOR TASK PACK 6.
