@@ -3039,9 +3039,29 @@ Desktop docs: `mizune-million-path.md`, `linkedin-content-plan.md`, `linkedin-pr
   **Why it hid: the direct-exec fast path was never affected, so the audit's scheduler check
   passed end-to-end. Only the LLM wakeup path crashed. A green check covered a real bug —
   same lesson as rule 1, different shape.**
+  🟢 **STAGE 1 KILL CRITERION — REPRODUCED 3/3 (0982677). THE PREMISE HOLDS.**
+  `mizune-million-path.md` gates the entire library extraction on: *"if you can't reproduce a
+  public agent framework faking a completed action within 2 weeks, stop and reassess."*
+  Took one evening, worked first try, 3/3 runs. `scripts/killcheck_langchain.py`.
+  A stock LangChain tool-calling agent is asked to create a file. It answers "Task succeeded."
+  An output-level LLM judge (which is what output-only eval IS — a model reading the final
+  answer with no access to the world) returns **PASS**. The file **does not exist**.
+  **The tool is NOT sabotaged — that is the whole point.** It carries a REAL bug, the same one
+  that shipped in Mizune's own `run_command`: `shlex.split` + no shell → `>` becomes a literal
+  argument instead of a redirect, `echo` prints `DONE > /path` and exits 0. The tool honestly
+  reports exit 0 because that IS what happened. The agent honestly reports success because
+  exit 0 is what it was told. **Nobody lies anywhere in the stack.** The failure lives entirely
+  in the gap between "the tool returned 0" and "the effect the user asked for exists" — which
+  output-level evaluation cannot see BY CONSTRUCTION, not by oversight.
+  ⇒ This is simultaneously the kill-criterion answer AND the Stage 1 demo artifact the plan
+  asks for ("take a popular agent example, show it reporting success on work it didn't do").
+  NEXT for Stage 1: the library itself — `@verified(proves=...)` decorator, hash-chained
+  append-only seal log (tamper-evidence is what makes it audit-grade), pluggable evidence
+  collectors, the narration detector (already built here as `_is_narration`, genuinely novel),
+  adapters for LangChain / OpenAI Agents SDK / CrewAI.
   STILL OPEN: the token budget (groq 100k/day is the ceiling; mistral is healthy and unused —
   measure before adding keys), phone-side playback test (phone was offline all session), then
-  Stage 1 (library extraction).
+  the Stage 1 build itself.
 - 2026-07-26: Executor completed TASK PACK 6 (V2.1 feature audit harness & V2.2 feature matrix). Authored scripts/feature_audit.py and docs/FEATURE_MATRIX.md. Evaluated 15 features over WS and HTTP with spaced probes and ground-truth rules. Results: 12 PASS, 2 UNVERIFIABLE-FROM-CLIENT (seals_lie_detector, scheduler — VM commands provided), 1 NOT-WIRED (mesh — router trigger pending in processor.py), 0 FAIL. Flakiness gates 3/3 PASS across chat_persona, ist_clock, and calendar_read. Report saved to .data/feature_audit_20260726-1938.json. Stopped at ⛔ END OF EXECUTOR TASK PACK 6.
 
 
