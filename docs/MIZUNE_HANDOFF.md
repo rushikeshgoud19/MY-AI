@@ -2976,7 +2976,41 @@ Desktop docs: `mizune-million-path.md`, `linkedin-content-plan.md`, `linkedin-pr
   MISSING PIECE: she has `message_whatsapp` (send) but NO read tool. Needs `read_whatsapp
   (sender/contains/limit)` + `play_music` accepting a direct URL, and a Master-only gate so a
   group member can never make her read Rushi's inbox. NOT BUILT YET.
-  STILL OPEN: the WhatsApp read tool above, the token budget, then Stage 1 (library extraction).
+  ✅ **SONG FEATURE SHIPPED + DEPLOYED (dc12642)** — "play the song Sarthak sent me" works.
+  `read_whatsapp(sender/contains/limit/hours)` (read-only, NOT fast-tracked so she can chain
+  read→play in one turn) + `_passthrough_music_url` (a link in `play_music.query` is honoured
+  verbatim; youtu.be / m. / www. / music. all normalised for deep-link autoplay, WhatsApp's
+  `&si=` tail dropped) + PRIVACY GATE (refuses when the turn is third-party, reusing the
+  existing history-firewall signal — otherwise a group member could make her read Rushi's
+  inbox aloud). PROVEN by seals, not her words: `read_whatsapp` → `play_music` carrying the
+  exact URL, log `[MUSIC] using the link as given`, phone offline reported honestly.
+  ⚠️ TWO BUGS THE LIVE TEST CAUGHT — the same claim-without-effect shape as everything else:
+  (1) the model called it with `contact='Sarthak'` not `sender=`; the filter was SILENTLY
+      DROPPED and she answered from the newest message BY ANYONE. It looked correct purely
+      because Sarthak's message was newest — ask about someone else and she'd confidently
+      quote the wrong person. Now all of sender/contact/from/name/person/who are accepted AND
+      the reply states the filter actually applied ("from anyone" vs "from Owais"), so a
+      dropped filter is visible instead of silent. **Lesson: a schema arg name the model
+      doesn't happen to use is a silent filter drop. Accept the synonyms, and echo the filter.**
+  (2) asked what the song WAS, she invented "Tisinj Napam by Gobindo and Basanti" from a bare
+      video id. A link is not a title. Real titles now come from YouTube oEmbed (no API key);
+      when none resolves the tool explicitly tells her she does NOT know and must not name it.
+      Real answer: "A Thousand Years (Cinematic Version)".
+  🔑 **KEY AUDIT — no dead keys to remove; the earlier assumption was wrong.** Probed every key
+  live: groq 4/4 HEALTHY (they were never dead — they cap at 100k TPD during the day and reset;
+  a first probe reporting them DEAD was MY bug: Cloudflare 403 `error code: 1010` because the
+  probe lacked a browser User-Agent, the exact trap already documented for cerebras in
+  `_OPENAI_COMPAT`), cerebras 1/1 HEALTHY, mistral 4/4 HEALTHY, nvidia 3/3 HEALTHY. The 3 dead
+  cerebras keys mentioned earlier were already gone — only 1 remains.
+  **REMOVED: `openrouter_api_key`** (backed up to `config.json.bak_openrouter`, with a
+  `_openrouter_disabled_note` in config saying why so nobody "restores" it). Ground truth: the
+  account never purchased credits → every call returns 402, and the `:free` slugs were retired.
+  Log: reached **54 times, failed 52**. It was a guaranteed-failure hop in the cascade and a
+  bogus "keyed" verifier candidate for mesh.
+  📌 **MISTRAL IS THE UNDERUSED ASSET**: 4 healthy keys, ~1B tokens/month EACH, tool-capable
+  (persona benchmark 10/10, tools 5/5) — yet the log shows it reached only 24 times vs gemini
+  142. Worth investigating why before buying anything.
+  STILL OPEN: the token budget (see the provider notes above), then Stage 1 (library extraction).
 - 2026-07-26: Executor completed TASK PACK 6 (V2.1 feature audit harness & V2.2 feature matrix). Authored scripts/feature_audit.py and docs/FEATURE_MATRIX.md. Evaluated 15 features over WS and HTTP with spaced probes and ground-truth rules. Results: 12 PASS, 2 UNVERIFIABLE-FROM-CLIENT (seals_lie_detector, scheduler — VM commands provided), 1 NOT-WIRED (mesh — router trigger pending in processor.py), 0 FAIL. Flakiness gates 3/3 PASS across chat_persona, ist_clock, and calendar_read. Report saved to .data/feature_audit_20260726-1938.json. Stopped at ⛔ END OF EXECUTOR TASK PACK 6.
 
 
