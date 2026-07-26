@@ -2501,6 +2501,114 @@ plainly which targets were skipped as auth-walled.
 - B.2:
 - B.3:
 
+# ═══════════════════════════════════════════════════════════════
+# EXECUTOR TASK PACK 6 (for Antigravity) — written 2026-07-26 by Claude
+# PHASE V2 — FEATURE AUDIT HARNESS: prove every feature, from ground truth
+# ═══════════════════════════════════════════════════════════════
+# WHY THIS IS THE MOST IMPORTANT TASK YET (read this, it changes how you build it):
+#   The plan is to extract Mizune's verification layer into a standalone library — the
+#   market research says the funded incumbents (LangSmith, Arize, Braintrust) do NOT verify
+#   that an agent's actions actually happened, and agents judged on output alone pass 20-40%
+#   more tests than step-level checking reveals.
+#   We cannot ship a verification library out of a system whose own verification is unproven.
+#   So this harness is BOTH the audit AND the first artifact of the product.
+#
+# THE ONE RULE THAT DEFINES IT:
+#   **NEVER score a feature on what Mizune SAYS. Score it on ground truth** — a DB row, a
+#   file on disk, an API response, a seal record. She has claimed success on work she never
+#   did (a "Task scheduled successfully" with no scheduler row). A harness that trusts her
+#   replies would inherit exactly the bug we are selling the cure for.
+
+## ENVIRONMENT FACTS (verified — do not re-discover)
+- Repo root: `C:\Users\rushi\OneDrive\Desktop\my Ai`. Python = `.venv\Scripts\python.exe`.
+- Live brain: `ws://40.123.215.32:8001/ws` (WebSocket) and `http://40.123.215.32:8001/health`.
+  Talking to her over WS as a client IS allowed — that's how `scripts/smoke_test.py` works,
+  read it first and reuse its `ws_ask()` pattern.
+- ⚠️ You may NOT deploy, restart, ssh, or run `az` commands. No VM file edits. Claude owns
+  the VM. You only run the harness against the live endpoint and read LOCAL DBs.
+- Ground-truth DBs are LOCAL under `.data/` (hidden dir — `glob` skips it by default, this
+  has bitten us): `missions.db`, `night_shift.db`, `guardian.db`, `knowledge.db`,
+  `mizune_memory.db` (history + seals), `self_review.db`, and `data/schedules.db`
+  (note: `data/`, not `.data/`).
+  ⚠️ The LIVE DBs are on the VM, not local. So: for features whose state lives server-side,
+  verify through her READ-ONLY query surfaces (e.g. ask for `mission_status`, `night_shift`
+  report, `recall_knowledge`) AND cross-check the shape/consistency of the answer. Where you
+  genuinely cannot reach ground truth from outside, mark the check **UNVERIFIABLE-FROM-CLIENT**
+  and say exactly what Claude must check VM-side. Do NOT guess, and do NOT mark it PASS.
+- `scripts/smoke_test.py` = the 4-check deploy gate. This harness is its big sibling; do not
+  break or replace it.
+
+## ══ V2.1 — `scripts/feature_audit.py` (NEW FILE) ══
+A harness that probes every live feature and reports PASS / FAIL / BLOCKED / UNVERIFIABLE,
+with the evidence string that justified the verdict.
+
+**Structure**
+- One `Check` per feature: `name`, `probe` (what to send), `verify` (callable returning
+  `(verdict, evidence)`), `category`.
+- Run sequentially with a pause between checks (she rate-limits and providers have per-minute
+  caps — a burst will produce false FAILs; **spacing matters more than speed**).
+- Never let one check's exception kill the run; catch, mark ERROR, continue.
+- Final output: a table + a JSON report to `.data/feature_audit_<YYYYMMDD-HHMM>.json`.
+- `--only <name>` to re-run a single check. `--quick` for a subset.
+
+**Checks to implement** (verdict must rest on evidence, not her wording):
+| # | Feature | Probe | Ground truth to check |
+|---|---|---|---|
+| 1 | health | HTTP /health | 200 + JSON has status |
+| 2 | chat + persona | "say ok in one line" | non-empty, no raw JSON, no "tangled" |
+| 3 | TTS audio | same as smoke | an `audio` frame with b64 arrives |
+| 4 | IST clock | "what time is it" | parse her time, compare to real IST (±10 min) |
+| 5 | calendar read | "what's on my calendar today" | answers without "not connected"/"expired" |
+| 6 | semantic recall | "what do you know about continuous improvement" | returns a stored entry with NO keyword overlap (proves embeddings, not LIKE) |
+| 7 | guardian | check a scam text AND a benign college-fee text | scam flagged, benign NOT flagged (false-positive discipline is the point) |
+| 8 | seals / lie detector | run one side-effecting tool, then ask for status | a `[TOOL RESULTS]` record exists for it |
+| 9 | scheduler | "in 2 minutes create a file /tmp/audit_<rand>.txt containing OK" | wait, then verify the FILE/DB, not her confirmation |
+| 10 | missions | a 2-step VM-only mission with a checkable outcome | `mission_status` shows done N/N, and the outcome is independently confirmable |
+| 11 | night shift | `night_shift` status + report | returns structured report or an honest "none queued" |
+| 12 | device nodes | ask for laptop status | honest online/offline — **an offline device must NOT be reported as success** |
+| 13 | mesh | "verify this: <a factual claim>" | ≥2 providers + an agreement label (may be unwired — see note) |
+| 14 | provider cascade | force a long/hard query | replies without "tangled"; note which provider served it |
+| 15 | text-mode recovery | (NEW, just shipped) inspect logs is Claude's job — here just assert no reply is empty or raw JSON across all checks |
+
+**Scoring honesty rules (non-negotiable):**
+- A check is PASS **only** if evidence proves it. "She said it worked" is never evidence.
+- If the feature is not wired yet (e.g. mesh has no trigger), verdict is **NOT-WIRED**, not FAIL.
+- If you cannot reach ground truth as a client, verdict is **UNVERIFIABLE-FROM-CLIENT** plus the
+  exact VM-side command Claude should run.
+- Report FLAKINESS: run checks 2, 4, 5 **three times each** and report pass rate. A feature that
+  works 2/3 times is not passing — the smoke gate has an intermittent TTS failure that we have
+  been eyeballing for weeks, and this harness should quantify it rather than hide it.
+
+**DONE-WHEN (paste all of it in RESULT):**
+- The full result table, verbatim.
+- The flakiness numbers for checks 2/4/5.
+- For every non-PASS: the evidence string and your one-line read on why.
+- Confirm no test data was left behind (delete any audit files/events you created, and say so).
+
+## ══ V2.2 — `docs/FEATURE_MATRIX.md` (NEW FILE) ══
+Turn the audit result into a maintained status table: feature · verdict · evidence · date ·
+what would break it. Ordered worst-first. This becomes the honest "Status" section of the
+public README, replacing the current prose claims — and it's what a recruiter or a design
+partner will actually trust.
+
+## HOUSE RULES
+- LOCAL ONLY for edits. No VM deploys/restarts/ssh/az. No git add/commit/push.
+- Reuse `scripts/smoke_test.py`'s WS pattern; don't invent a second client.
+- Space out probes; a burst causes per-minute 429s and fake FAILs.
+- Clean up after yourself: any file, calendar event, reminder or mission you create for a
+  check must be removed, and say in RESULT that you did.
+- If a probe would cause a real side effect on Rushi's actual accounts (sending WhatsApp to a
+  contact, deleting mail, spending money) — **do not run it.** Mark it MANUAL and describe it.
+- If anything is ambiguous, `BLOCKED: <what>`.
+
+> **⛔ END OF TASK PACK 6 — STOP after V2.2.** Claude then: fixes every FAIL, runs the
+> VM-side checks you marked UNVERIFIABLE, wires what's NOT-WIRED, and only then starts the
+> library extraction (Stage 1 of the million-path plan).
+
+### RESULT (executor writes here)
+- V2.1:
+- V2.2:
+
 ## Progress log (executor: append one line per session)
 - 2026-07-08: Executor started, correctly blocked on dirty git status (per then-current rule).
 - 2026-07-08: Claude resolved — 0.1 was already ~done in the working tree; Claude finished the dedup (4/4 paths use helper), verified (import OK, test passes), deleted junk artifacts (`{`, `str`), and relaxed the git-safety rule so a dirty tree no longer blocks. NEXT: executor picks up at 0.2.
