@@ -200,6 +200,46 @@ _EVIDENCE_PROMPT = (
 )
 
 
+def _local_file_facts(clause: str) -> str:
+    """Deterministic ground truth about any local path named in a verify clause.
+
+    Ported back from agent-seal (2026-07-27), where building the same check surfaced a gap
+    this verifier still has: EXISTENCE IS NOT FRESHNESS. "Regenerate the report" can leave
+    yesterday's file untouched — the file is there, the LLM sees it, and the step passes
+    while nothing was written. Reporting the mtime lets the judge tell those apart.
+
+    Deliberately one-directional: it speaks up only when the file EXISTS. A missing file
+    stays silent, because the path may live on the laptop or the phone rather than this
+    host, and turning "not on the VM" into evidence of failure would manufacture exactly
+    the false negatives that made a completed night shift report 0/2.
+    """
+    import os
+    facts = []
+    # No path regex. Windows and POSIX path syntax differ enough that a pattern covering
+    # both is fragile in exactly the way that fails silently — and the filesystem is a
+    # better matcher than any regex: try every token, keep the ones that are real files.
+    seen = set()
+    for token in (clause or "").replace(",", " ").replace(";", " ").split():
+        path = token.strip("'\"`()[]<>").rstrip(".,;:")
+        if len(path) < 4 or path in seen:
+            continue
+        seen.add(path)
+        try:
+            if not os.path.isfile(path):
+                continue                       # silent: may be a remote host's path
+            age = time.time() - os.path.getmtime(path)
+            size = os.path.getsize(path)
+            when = (f"{int(age)}s ago" if age < 3600 else
+                    f"{age / 3600:.1f}h ago" if age < 86400 else f"{age / 86400:.1f}d ago")
+            stale = " — STALE, this was NOT written by the current run" if age > 3600 else ""
+            facts.append(f"{path}: exists, {size} bytes, last modified {when}{stale}")
+        except Exception:
+            continue
+    if not facts:
+        return ""
+    return "\n[GROUND TRUTH — read from disk by code, not by the model]\n" + "\n".join(facts)
+
+
 def _verify(verify_clause: str, config: dict, opts: dict = None) -> tuple:
     """Two-stage verify-after-act. Stage 1 gathers CURRENT facts with tools (its
     output may be a raw fast-tracked tool result). Stage 2 is a no-tools judgment
@@ -217,10 +257,14 @@ def _verify(verify_clause: str, config: dict, opts: dict = None) -> tuple:
             # Honest failure beats a fabricated PASS (Design Law 3).
             return (False, "verification inconclusive: could not gather real evidence "
                            f"(model kept narrating) | last: {evidence[:120]}")
+    # Hand the judge facts the model cannot have invented, alongside the model's own report.
+    hard_facts = _local_file_facts(verify_clause)
     judge, _ = get_ai_response(
-        f"Condition to verify: {verify_clause}\n\nEvidence gathered just now:\n{evidence[:800]}\n\n"
-        f"Does the evidence prove the condition is true RIGHT NOW? Reply with exactly "
-        f"'VERDICT: PASS' or 'VERDICT: FAIL' plus one short reason.",
+        f"Condition to verify: {verify_clause}\n\nEvidence gathered just now:\n{evidence[:800]}\n"
+        f"{hard_facts}\n\n"
+        f"Does the evidence prove the condition is true RIGHT NOW? A file that exists but was "
+        f"last modified long before this run does NOT prove the current run wrote it. Reply "
+        f"with exactly 'VERDICT: PASS' or 'VERDICT: FAIL' plus one short reason.",
         [], config,
         system_prompt_override="You are a strict verifier. Output only the verdict line.",
         hints=_hints(opts))
