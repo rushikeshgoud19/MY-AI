@@ -2932,8 +2932,51 @@ Desktop docs: `mizune-million-path.md`, `linkedin-content-plan.md`, `linkedin-pr
   it needs a forced synthetic text-mode reply, not more waiting.
   ⚠️ ALL 4 GROQ KEYS AT ~95-99k/100k TPD AGAIN (328 rate_limit_exceeded in the log). Rotation
   can't fix an exhausted pool. Mesh currently runs 2-model (cerebras+mistral) because of it.
-  STILL OPEN: items 2 (device_nodes audit check), 3 (force-test the recovery path),
-  4 (regenerate FEATURE_MATRIX.md — still encodes the FALSE PASSes), then Stage 1.
+  **ITEMS 2, 3, 4 ALSO DONE THIS SESSION** (3670b0d, 748ff2f, d9f50ae):
+  - **Item 2 — device_nodes scored on ground truth.** Old check passed if "online" appeared
+    ANYWHERE in her reply, so "your laptop is offline" passed on the substring and a faked
+    "connected!" for a dead node would have too. Truth is now `GET /api/devices` →
+    `device_registry.list_devices()`. ⚠️ That endpoint did NOT exist, and adding it to
+    `server.py` would have deployed NOTHING: the VM's `backend_main.py` (570 lines) defines
+    all 19 of its own routes and never imports server.py. Patched IN PLACE on the VM
+    (`.bak_devices` saved, 570→581 lines), and mirrored into repo `server.py`.
+    BOTH DIRECTIONS are scored — checking only the online node lets a model that always says
+    "online" pass. `_parse_online_claim` tests negatives before positives ("not online"
+    contains "online") and splits on CLAUSES not sentences ("phone is offline, but laptop is
+    online" is one sentence with opposite claims). 14/14 unit cases.
+    NEGATIVE CONTROLS (a check that cannot fail proves nothing): inverted registry → FAIL
+    naming each lie's direction; empty fleet → UNVERIFIABLE-FROM-CLIENT, not PASS. Control B
+    caught a hole in MY OWN check — it had been returning PASS after exercising only the
+    easy half. Live: laptop online/online, phone offline/offline → PASS on evidence.
+  - **Item 3 — recovery path force-tested** (`scripts/test_text_mode_recovery.py`). 10/10:
+    all 5 emission shapes, nested args, prose-wrapped JSON, hallucinated tool name REJECTED,
+    "Use {this} format" NOT mistaken for a tool call, plus a real dispatch through
+    `execute_tool_call`. 6 of 7 recovery cases genuinely clean to empty, so the branch is
+    reachable, not just parseable. Production occurrences remain 0 — it is proven CORRECT,
+    not proven EXERCISED. Don't confuse the two.
+  - **Item 4 — FEATURE_MATRIX.md regenerated** from a full 15-check run. It was not merely
+    stale, it was WRONG: `missions` was a PASS whose cited evidence was `#10 [failed] 0/2`;
+    `text_mode_recovery` was a PASS based on the absence of raw JSON in unrelated replies;
+    `health` quoted a mode value the endpoint never returns. All corrected in-place with a
+    note per row. Now 12 PASS / 1 FLAKY / 1 UNVERIFIABLE / 0 FAIL.
+  🔴 **NEW FINDING — scheduler is FLAKY 1/3, and the bug is NOT in the scheduler.** It fired
+  end-to-end once on real ground truth (schedules.db row 17 → `/tmp/probe_9001.txt` contained
+  SCHEDULED → executed=1, probe file cleaned up). The two failures happened UPSTREAM: she
+  replied "I'm here to help, but I'm unable to execute Python code or access files" and never
+  called `schedule_task`. Cause = all 4 Groq keys at their 100k/day cap → cascade drops to a
+  weaker model that emits a capability REFUSAL instead of a tool call. **The token budget is
+  now the binding constraint on the whole system** (it also forces mesh to run 2-model instead
+  of 3). Next session: fix fuel, not `scheduler.py` — chasing the scheduler would be chasing
+  the wrong file.
+  📌 **ANSWERED FOR RUSHI — "play the song Sarthak sent me on WhatsApp":** FEASIBLE and small.
+  Ground truth checked: `cortex.db` on the VM already holds **8,566 WhatsApp messages** (531
+  containing links), and `ingest_message()` runs BEFORE the `_should_reply` gate, so messages
+  she never answers are still captured. Sarthak's most recent message is literally
+  `https://music.youtube.com/watch?v=...` — already the exact URL shape `play_music` produces.
+  MISSING PIECE: she has `message_whatsapp` (send) but NO read tool. Needs `read_whatsapp
+  (sender/contains/limit)` + `play_music` accepting a direct URL, and a Master-only gate so a
+  group member can never make her read Rushi's inbox. NOT BUILT YET.
+  STILL OPEN: the WhatsApp read tool above, the token budget, then Stage 1 (library extraction).
 - 2026-07-26: Executor completed TASK PACK 6 (V2.1 feature audit harness & V2.2 feature matrix). Authored scripts/feature_audit.py and docs/FEATURE_MATRIX.md. Evaluated 15 features over WS and HTTP with spaced probes and ground-truth rules. Results: 12 PASS, 2 UNVERIFIABLE-FROM-CLIENT (seals_lie_detector, scheduler — VM commands provided), 1 NOT-WIRED (mesh — router trigger pending in processor.py), 0 FAIL. Flakiness gates 3/3 PASS across chat_persona, ist_clock, and calendar_read. Report saved to .data/feature_audit_20260726-1938.json. Stopped at ⛔ END OF EXECUTOR TASK PACK 6.
 
 
