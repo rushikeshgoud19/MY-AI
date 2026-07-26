@@ -3121,8 +3121,26 @@ Desktop docs: `mizune-million-path.md`, `linkedin-content-plan.md`, `linkedin-pr
   recommend paid keys — his hard constraint is zero dollars.
   ⚠️ Deliberately did NOT pip-install langchain-full/crewai/openai-agents into Mizune's venv:
   risk to her runtime, no benefit to thin wrappers.
-  NEXT for Stage 1: richer collectors (process state, cloud APIs); then Stage 2 distribution
-  (PyPI + the "your evals only check the output" post) — all free.
+  ✅ **FOURTH agent-seal COMMIT (c0319dd): freshness / dir / json / shell collectors.**
+  ⭐ **`file_newer_than` is the standout — it catches a failure `file_exists` CANNOT.** An
+  agent "regenerates the report", the write silently fails, yesterday's file is still on
+  disk → existence PASSES. Only freshness catches it, and a rerun is exactly where this
+  hides. The test asserts BOTH halves: freshness fails the stale file AND `file_exists`
+  would have passed it. Worth stealing back into Mizune's own verifier.
+  Also: `dir_has_files` (N outputs actually produced), `json_field` with dotted keys (config
+  edits — a sentinel separates "key exists" from "equals None", and `False` is a legitimate
+  expected value, not a synonym for absent), `command_output` with `shell=True` — which is
+  precisely what the demo's broken tool lacks, so its test asserts the redirect really works
+  there. The contrast is the point.
+  Clause grammar extended: `"file {path} written within 300s"`, `"dir {path} has 3 files
+  matching *.png"`, `"json {path} has server.port = 8001"` (values JSON-parsed so numbers and
+  booleans keep type).
+  **138 checks, all pass. Core still imports ZERO third-party modules. Demo re-run green.**
+  NEXT for Stage 1: nothing blocking — the library is feature-complete for a 0.1 release.
+  Stage 2 (all free): PyPI publish, then the post — "your agent passes its evals because your
+  evals only check the output" — with the 20-40% number and OUR OWN reproduction as the hook.
+  Kill criterion for Stage 2 is in mizune-million-path.md: <100 stars + zero unsolicited
+  users after 10 weeks → pivot.
   STILL OPEN: the token budget (groq 100k/day is the ceiling; mistral is healthy and unused —
   measure before adding keys), phone-side playback test (phone was offline all session).
 - 2026-07-26: Executor completed TASK PACK 6 (V2.1 feature audit harness & V2.2 feature matrix). Authored scripts/feature_audit.py and docs/FEATURE_MATRIX.md. Evaluated 15 features over WS and HTTP with spaced probes and ground-truth rules. Results: 12 PASS, 2 UNVERIFIABLE-FROM-CLIENT (seals_lie_detector, scheduler — VM commands provided), 1 NOT-WIRED (mesh — router trigger pending in processor.py), 0 FAIL. Flakiness gates 3/3 PASS across chat_persona, ist_clock, and calendar_read. Report saved to .data/feature_audit_20260726-1938.json. Stopped at ⛔ END OF EXECUTOR TASK PACK 6.
