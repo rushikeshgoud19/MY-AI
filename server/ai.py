@@ -633,6 +633,59 @@ def _clean_final_text(text: str) -> str:
     return text.strip()
 
 
+def _recover_text_mode_tools(raw: str, config: dict) -> list:
+    """Parse tool calls a model emitted as TEXT rather than via the function API.
+
+    Handles the shapes weak/truncated replies actually produce:
+        {"tool": "play_music", "data": {...}}        {"tool": "x", "args": {...}}
+        {"name": "x", "parameters": {...}}           {"action": "x", "arguments": {...}}
+        [function=x]{...}
+    Returns [(tool_name, args_dict), ...] — only for tools that exist in TOOLS_SCHEMA, so a
+    hallucinated tool name can never be dispatched. Never raises; on any doubt returns [].
+    """
+    import json as _json
+    if not raw:
+        return []
+    known = {t["function"]["name"] for t in TOOLS_SCHEMA if isinstance(t, dict) and "function" in t}
+    found: list = []
+
+    # [function=name]{json}
+    for m in _re.finditer(r"\[function=([\w.]+)\]\s*(\{.*?\})", raw, _re.DOTALL):
+        name = m.group(1)
+        if name in known:
+            try:
+                found.append((name, _json.loads(m.group(2))))
+            except Exception:
+                found.append((name, {}))
+
+    # JSON objects carrying a tool name under any of the common keys. Scan brace-balanced
+    # candidates so a nested args object doesn't truncate the match.
+    for start in (i for i, c in enumerate(raw) if c == "{"):
+        depth = 0
+        for end in range(start, min(len(raw), start + 4000)):
+            if raw[end] == "{":
+                depth += 1
+            elif raw[end] == "}":
+                depth -= 1
+                if depth == 0:
+                    blob = raw[start:end + 1]
+                    try:
+                        obj = _json.loads(blob)
+                    except Exception:
+                        break
+                    if not isinstance(obj, dict):
+                        break
+                    name = next((obj[k] for k in ("tool", "name", "action", "function")
+                                 if isinstance(obj.get(k), str)), None)
+                    args = next((obj[k] for k in ("data", "args", "parameters", "arguments",
+                                                  "input") if isinstance(obj.get(k), dict)), {})
+                    if name in known and not any(n == name for n, _ in found):
+                        found.append((name, args))
+                    break
+
+    return found[:3]   # cap: a runaway reply must not fan out into many side effects
+
+
 import threading as _dedup_threading
 
 # Side-effect dedup: when a provider times out AFTER its tools ran, the cascade
@@ -679,6 +732,32 @@ _bg_guard = _dedup_threading.local()
 _provider_fails = {}
 _CB_WINDOW = 600.0      # look back 10 minutes
 _CB_THRESHOLD = 3       # 3 failures in that window ⇒ demote to last resort
+
+# PER-MINUTE RATE-LIMIT COOLDOWN. Distinct from the circuit breaker: a provider with ONE
+# key (cerebras) can't be rescued by key rotation, and a per-minute cap clears in ~60s. The
+# circuit breaker needs 3 failures before demoting, so a burst of cascade traffic burned
+# cerebras 10x in one night (VM logs 2026-07-26). Skip a rate-limited provider outright
+# until its window resets, instead of paying a round-trip to be told 429 again.
+_provider_cooldown: dict = {}
+_RPM_COOLDOWN_SECONDS = 60.0
+
+
+def _is_cooling(provider: str) -> bool:
+    until = _provider_cooldown.get(provider, 0)
+    return until > time.time()
+
+
+def _mark_rate_limited(provider: str, err: str) -> None:
+    """Cool a provider off when the error is a PER-MINUTE cap (not a daily cap — a daily
+    cap won't clear in 60s, and the circuit breaker already handles that case)."""
+    e = (err or "").lower()
+    if "429" not in e and "rate" not in e and "too many" not in e:
+        return
+    if any(k in e for k in ("per day", "tpd", "daily", "per-day")):
+        return
+    _provider_cooldown[provider] = time.time() + _RPM_COOLDOWN_SECONDS
+    log_info(f"[AI] {provider} hit a per-minute limit — cooling off "
+             f"{_RPM_COOLDOWN_SECONDS:.0f}s instead of retrying it.")
 
 
 # HB.2 PARALLEL TOOL CALLS. "What's my calendar + any unread mail + weather in Dubai?"
@@ -1476,6 +1555,13 @@ def _get_ai_response_body(text: str, history: list, config: dict, system_prompt_
         log_info(f"[AI] Circuit breaker: demoting {sick} (recent failures)")
         attempt_order = healthy + sick
 
+    # Move per-minute rate-limited providers to the back rather than dropping them: if every
+    # other provider is also down they're still better than no answer at all.
+    cooling = [p for p in attempt_order if _is_cooling(p)]
+    if cooling and len(cooling) < len(attempt_order):
+        attempt_order = [p for p in attempt_order if p not in cooling] + cooling
+        log_info(f"[AI] Deprioritising rate-limited provider(s): {cooling}")
+
     last_err = None
     for idx, provider in enumerate(attempt_order):
         try:
@@ -1486,6 +1572,7 @@ def _get_ai_response_body(text: str, history: list, config: dict, system_prompt_
             last_err = e
             log_info(f"[AI] Provider '{provider}' failed: {e}")
             _provider_fails.setdefault(provider, []).append(time.time())
+            _mark_rate_limited(provider, str(e))
             error_str = str(e).lower()
             # Only keep cascading on transient/quota/auth errors; hard bugs re-raise.
             retriable = any(k in error_str for k in
@@ -1875,12 +1962,39 @@ def _groq_response(text: str, history: list, system_prompt: str, config: dict,
             msg = response.choices[0].message
             messages.append(msg)
 
-        text_response = msg.content or "Done, Master!"
-        
+        raw_response = msg.content or "Done, Master!"
+
         # Clean up artefacts via shared helper
         import re
-        text_response = _clean_final_text(text_response)
-        
+        text_response = _clean_final_text(raw_response)
+
+        # R2.2 — TEXT-MODE TOOL CALLS. A weak/truncated reply sometimes emits a tool call as
+        # TEXT instead of using the function API. _clean_final_text deletes from the first
+        # `{"tool": ...` to end-of-string, so the whole reply became "" — which the cascade
+        # validator reads as "Empty response from <provider>" and fails the provider outright.
+        # Measured on the VM 2026-07-26: 12 groq "empty response" events, each one cascading
+        # into cerebras and tripping ITS per-minute limit (10 cerebras 429s). One silent
+        # parse failure was burning two providers per request.
+        # So: recover the intent instead of discarding it.
+        if not text_response.strip():
+            recovered = _recover_text_mode_tools(raw_response, config)
+            if recovered:
+                log_info(f"[AI] {_provider}: recovered {len(recovered)} text-mode tool call(s) "
+                         f"from a reply that cleaned to empty.")
+                results = [execute_tool_call(n, a, config) for n, a in recovered]
+                executed_tools.extend({"name": n, "args": a} for n, a in recovered)
+                text_response = " ".join(str(r) for r in results if r) or "Done, Master!"
+            else:
+                # Nothing parseable. RAISE so the cascade tries the next provider.
+                # Do NOT return a friendly fallback here: a non-empty string looks like
+                # success and STOPS the cascade, so the user gets "I'm tangled" instead of
+                # the correct answer another provider would have given. (Caught in the smoke
+                # gate 2026-07-26 — the calendar check started returning the fallback.)
+                # Empty-reply -> failover is a FEATURE; only tool recovery should short-circuit it.
+                log_info(f"[AI] {_provider}: reply cleaned to empty, no tool call parsed; "
+                         f"failing over. Raw head: {raw_response[:120]!r}")
+                raise ValueError(f"Empty response from {_provider} (unparseable content)")
+
         if executed_tools:
             from .trajectory_logger import trajectory_logger
             trajectory_logger.log_trajectory(text, history, executed_tools, text_response)
