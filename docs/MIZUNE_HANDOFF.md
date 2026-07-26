@@ -3010,7 +3010,38 @@ Desktop docs: `mizune-million-path.md`, `linkedin-content-plan.md`, `linkedin-pr
   📌 **MISTRAL IS THE UNDERUSED ASSET**: 4 healthy keys, ~1B tokens/month EACH, tool-capable
   (persona benchmark 10/10, tools 5/5) — yet the log shows it reached only 24 times vs gemini
   142. Worth investigating why before buying anything.
-  STILL OPEN: the token budget (see the provider notes above), then Stage 1 (library extraction).
+  🔎 **ROUTING DIG (the "mistral underused" theory) — MOSTLY A GHOST.** Checked properly:
+  `ai_model='groq'`, the nvidia→groq guard IS live, and **0 nvidia primary picks since the
+  latest restart** (last 3000 lines: groq 170, mistral 12, cerebras 6). The alarming
+  historical numbers (nvidia primary 260×, failed 176×; mistral reached only 24× vs gemini
+  142×) all PREDATE the guard + the current CASCADE order. **Lesson: whole-log aggregates mix
+  eras — window the log to the current process before concluding anything.**
+  ALSO: **`mistral failed: 0`** in the entire log. Never failed once.
+  ⚠️ COULD NOT REPRODUCE THE CAPABILITY REFUSAL. Forced each provider with no_fallback on the
+  exact scheduler prompt: groq (capped→tangled), cerebras → scheduled fine, mistral → called a
+  tool (chose execute_python over schedule_task, timed out — wrong tool, NOT a refusal),
+  gemini → scheduled fine. So no provider refuses tools on this prompt today; the audit's two
+  refusals correlate with a total-exhaustion window, not a specific bad model. Do NOT "fix"
+  the cascade order on the strength of the old benchmark — re-measure first.
+  ⚠️ MINOR, KNOWN: `force_provider='nvidia'` is silently rewritten to groq by the
+  multi-tool guard, so nvidia cannot be force-tested. Harmless for mesh (nvidia isn't in its
+  pool) but remember it before trusting an nvidia-forced result.
+  🔴 **REAL BUG FOUND + FIXED + DEPLOYED (fa2f771): cron started MID-IMPORT.**
+  `global_cron_manager.start()` sat at line ~245 of processor.py — partway through the module's
+  own import. The cron thread starts immediately, so a task already DUE fired while the module
+  was still being defined → `NameError: name 'process_command' is not defined` inside
+  `_run_and_report`. It dies in a DAEMON THREAD: no reply, no seal, no user-visible trace. The
+  task is silently lost. Window is boot-only — which is exactly when overdue tasks (a briefing
+  missed during a restart, a queued night-shift report) fire. Every restart this session was a
+  chance to drop one. FIX: start() moved to the END of the module. PROVEN by re-running the
+  same condition — task due during import now logs `[SCHEDULER WAKEUP] Processing task: ...`
+  with no NameError. Found BY ACCIDENT while testing routing.
+  **Why it hid: the direct-exec fast path was never affected, so the audit's scheduler check
+  passed end-to-end. Only the LLM wakeup path crashed. A green check covered a real bug —
+  same lesson as rule 1, different shape.**
+  STILL OPEN: the token budget (groq 100k/day is the ceiling; mistral is healthy and unused —
+  measure before adding keys), phone-side playback test (phone was offline all session), then
+  Stage 1 (library extraction).
 - 2026-07-26: Executor completed TASK PACK 6 (V2.1 feature audit harness & V2.2 feature matrix). Authored scripts/feature_audit.py and docs/FEATURE_MATRIX.md. Evaluated 15 features over WS and HTTP with spaced probes and ground-truth rules. Results: 12 PASS, 2 UNVERIFIABLE-FROM-CLIENT (seals_lie_detector, scheduler — VM commands provided), 1 NOT-WIRED (mesh — router trigger pending in processor.py), 0 FAIL. Flakiness gates 3/3 PASS across chat_persona, ist_clock, and calendar_read. Report saved to .data/feature_audit_20260726-1938.json. Stopped at ⛔ END OF EXECUTOR TASK PACK 6.
 
 
