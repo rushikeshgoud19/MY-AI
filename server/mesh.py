@@ -21,6 +21,16 @@ from .config import log_info
 from .ai import get_ai_response, get_api_key, _OPENAI_COMPAT
 
 
+def _looks_failed(text: str) -> bool:
+    """True when a provider returned Mizune's in-character failure line instead of an answer.
+    With no_fallback the cascade no longer rescues a dead provider, so this sentinel is the
+    ONLY signal that a call produced nothing usable — used for answers AND the verifier."""
+    t = str(text or "").strip().lower()
+    if not t:
+        return True
+    return any(kw in t for kw in ("tangled", "not configured", "trouble thinking"))
+
+
 def _is_provider_keyed(config: dict, p_name: str) -> bool:
     prof = _OPENAI_COMPAT.get(p_name)
     if not prof:
@@ -67,18 +77,19 @@ def mesh_answer(question: str, config: dict, providers: List[str] = None, verifi
                 "You are a careful analyst. Answer the question factually and concisely. "
                 "If you are unsure, say so."
             )
+            # no_fallback is LOAD-BEARING: without it the cascade silently answers with a
+            # different provider on 429 and the answer gets filed under the wrong name —
+            # observed 2026-07-27 (groq capped -> cerebras answered -> reported as 3 models).
             text_res, _ = get_ai_response(
                 question,
                 [],
                 config,
-                hints={"force_provider": p_name},
+                hints={"force_provider": p_name, "no_fallback": True},
                 system_prompt_override=prompt_override
             )
             duration = time.time() - start_t
             clean_text = str(text_res or "").strip()
-            if clean_text and not any(err_kw in clean_text.lower() for err_kw in ["tangled", "not configured", "trouble thinking"]):
-                return p_name, clean_text, duration, True
-            return p_name, clean_text, duration, False
+            return p_name, clean_text, duration, not _looks_failed(clean_text)
         except Exception as e:
             duration = time.time() - start_t
             log_info(f"[MESH] Provider '{p_name}' failed: {e}")
@@ -103,18 +114,19 @@ def mesh_answer(question: str, config: dict, providers: List[str] = None, verifi
             "latencies": latencies
         }
 
-    # 3. Choose Verifier
-    if not verifier:
-        # Prefer a provider that did NOT participate in answering
-        for candidate in ["gemini", "openrouter", "groq", "mistral", "cerebras"]:
-            if candidate not in answers and _is_provider_keyed(config, candidate):
-                verifier = candidate
-                break
-        if not verifier:
-            # Fall back to strongest available provider in answers
-            verifier = "mistral" if "mistral" in answers else list(answers.keys())[0]
-
-    log_info(f"[MESH] Reconciling claims using verifier '{verifier}'...")
+    # 3. Choose Verifier — build an ORDERED CANDIDATE LIST, not a single pick.
+    # Being "keyed" does not mean being usable: on 2026-07-27 groq was keyed but at its daily
+    # cap, so a single held-out pick failed and turned two perfectly good answers into a
+    # failure line. Held-out candidates come first (a model grading its own answer is weaker
+    # evidence), then the producers as a last resort — flagged as not held out.
+    if verifier:
+        verifier_candidates = [verifier]
+    else:
+        verifier_candidates = [c for c in ["gemini", "openrouter", "groq", "mistral", "cerebras"]
+                               if c not in answers and _is_provider_keyed(config, c)]
+        producers = (["mistral"] if "mistral" in answers else []) + \
+                    [p for p in answers if p != "mistral"]
+        verifier_candidates += producers
 
     formatted_answers = "\n\n".join(f"[Model: {p.upper()}]\n{ans}" for p, ans in answers.items())
     
@@ -136,22 +148,44 @@ def mesh_answer(question: str, config: dict, providers: List[str] = None, verifi
         f"CONSOLIDATED: <final factual verified answer>"
     )
 
-    verifier_start = time.time()
     consolidated_raw = ""
-    try:
-        verifier_res, _ = get_ai_response(
-            verifier_prompt,
-            [],
-            config,
-            hints={"force_provider": verifier},
-            system_prompt_override="You are a strict, impartial fact-verification system. Do NOT invoke tools. Output plain text only."
-        )
-        verifier_lat = round(time.time() - verifier_start, 2)
-        latencies[f"verifier_{verifier}"] = verifier_lat
-        consolidated_raw = str(verifier_res or "").strip()
-    except Exception as e:
-        log_info(f"[MESH] Verifier '{verifier}' error: {e}")
-        consolidated_raw = f"AGREEMENT: UNKNOWN\nNOTES: Verifier failed ({e})\nCONSOLIDATED: " + list(answers.values())[0]
+    verifier = None
+    for candidate in verifier_candidates:
+        log_info(f"[MESH] Reconciling claims using verifier '{candidate}' "
+                 f"(held_out={candidate not in answers})...")
+        verifier_start = time.time()
+        try:
+            verifier_res, _ = get_ai_response(
+                verifier_prompt,
+                [],
+                config,
+                hints={"force_provider": candidate, "no_fallback": True},
+                system_prompt_override="You are a strict, impartial fact-verification system. Do NOT invoke tools. Output plain text only."
+            )
+            latencies[f"verifier_{candidate}"] = round(time.time() - verifier_start, 2)
+            text = str(verifier_res or "").strip()
+        except Exception as e:
+            latencies[f"verifier_{candidate}"] = round(time.time() - verifier_start, 2)
+            log_info(f"[MESH] Verifier '{candidate}' error: {e}")
+            text = ""
+        if not _looks_failed(text):
+            verifier, consolidated_raw = candidate, text
+            break
+        log_info(f"[MESH] Verifier '{candidate}' unusable — trying next candidate")
+
+    if verifier is None:
+        # Every candidate is down. Return the producers' answers UNRECONCILED and say so —
+        # never present an unverified single answer as if it had been cross-checked.
+        log_info(f"[MESH] All verifier candidates failed ({verifier_candidates})")
+        return {
+            "mesh": False,
+            "reason": f"{len(answers)} models answered but no verifier was reachable",
+            "consolidated": list(answers.values())[0],
+            "answers": answers,
+            "latencies": latencies
+        }
+
+    verifier_held_out = verifier not in answers
 
     # 4. Parse Verifier Output
     agreement = "unknown"
@@ -175,6 +209,7 @@ def mesh_answer(question: str, config: dict, providers: List[str] = None, verifi
         "question": question,
         "providers_used": list(answers.keys()),
         "verifier": verifier,
+        "verifier_held_out": verifier_held_out,
         "answers": answers,
         "consolidated": consolidated,
         "agreement": agreement,

@@ -1580,6 +1580,16 @@ def _get_ai_response_body(text: str, history: list, config: dict, system_prompt_
     attempt_order = [model_choice] + [p for p in CASCADE if p != model_choice]
     attempt_order = [p for p in attempt_order if _has_key(p)]
 
+    # STRICT PROVENANCE (2026-07-27): a caller that forced a SPECIFIC provider and set
+    # no_fallback must never be silently served by a different one. Found via mesh: groq
+    # 429'd, the cascade quietly answered with cerebras, and mesh recorded that text under
+    # the key "groq" — so a 2-model agreement was reported as 3 independent models agreeing.
+    # That is the exact false-confidence bug cross-model verification exists to catch.
+    # Opt-in only: without the hint the cascade is byte-identical to before.
+    if (hints or {}).get("no_fallback"):
+        attempt_order = [model_choice] if _has_key(model_choice) else []
+        log_info(f"[AI] no_fallback: locked to '{model_choice}' (no cascade)")
+
     # CIRCUIT BREAKER (2026-07-20 audit: nvidia timed out 126x as primary — every
     # such request burned a 10s timeout before falling back). A provider with 3+
     # failures in the last 10 minutes gets demoted to the END of the order until it

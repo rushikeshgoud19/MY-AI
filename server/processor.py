@@ -286,6 +286,28 @@ def _get_session_lock(session_id: str) -> threading.Lock:
             _session_locks[session_id] = lock
         return lock
 
+def _format_mesh_reply(res: dict) -> str:
+    """Render a mesh result DETERMINISTICALLY. Code owns the agreement label, the provider
+    list and the verifier name — if a model voiced this it could narrate 'I double-checked'
+    over a single-provider answer, which is the exact failure mesh exists to catch."""
+    body = (res.get("consolidated") or "").strip()
+    if not res.get("mesh"):
+        reason = res.get("reason") or "cross-check unavailable"
+        return (body or "I couldn't cross-check that right now, Master.") + \
+               f"\n\n— NOT cross-checked ({reason})"
+    used = ", ".join(res.get("providers_used") or [])
+    agreement = str(res.get("agreement") or "unknown").upper()
+    notes = (res.get("notes") or "").strip()
+    # Say so when the verifier also produced one of the answers — a model grading its own
+    # work is weaker evidence, and hiding that would overstate the check.
+    vtag = f"verifier: {res.get('verifier')}" + ("" if res.get("verifier_held_out") else " (also answered)")
+    lines = [body or "(no consolidated answer returned)", "",
+             f"— cross-checked by {used} · {vtag} · agreement: {agreement}"]
+    if agreement in ("MIXED", "CONFLICT") and notes:
+        lines.append(f"where they differ: {notes[:400]}")
+    return "\n".join(lines).strip()
+
+
 def process_command(text: str, config: dict, broadcast_sync_fn, session_id: str = 'main') -> str:
     """Wrapper to prevent ghost inputs from cloning Mizune's brain (per-session)."""
     lock = _get_session_lock(session_id)
@@ -397,6 +419,22 @@ def _process_command_internal(text: str, config: dict, broadcast_sync_fn, sessio
             from server.knowledge import learn as _learn_fn
             log_info(f"[KNOWLEDGE] fast-path learn: {_src[:80]}")
             return _learn_fn(_src, config)
+
+    # ── MESH fast-path (Z5): cross-model verification MUST be deterministic. The engine
+    # (server/mesh.py) has existed and worked since 2026-07-24 but NOTHING called it — the
+    # model never picks it on its own, so "verify this: X" got a single-provider answer that
+    # READ like it had been verified. Colon/dash required, so ordinary use of the words
+    # ("can you verify this for me?") does not trigger a 3-model fan-out.
+    _mesh_m = re.search(
+        r"(?:^|\b)(?:mesh|verify this|double[-\s]?check(?:\s+this)?|cross[-\s]?check(?:\s+this)?)"
+        r"\s*[:\-]\s*(.+)",
+        text, re.IGNORECASE | re.DOTALL)
+    if _mesh_m and "[mission" not in lower_text and not text.startswith("[SYSTEM"):
+        _mq = _mesh_m.group(1).split("\n(SYSTEM:")[0].strip()
+        if _mq:
+            from server.mesh import mesh_answer
+            log_info(f"[MESH] fast-path trigger: {_mq[:80]}")
+            return _format_mesh_reply(mesh_answer(_mq, config))
 
     # ── CRAZY COMMANDS ──
     if lower_text == "/nuke_cache":
