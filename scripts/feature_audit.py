@@ -306,17 +306,105 @@ async def check_11_night_shift(ws_uri: str):
     return "PASS", f"Shift report structured, {v}/{t} tasks verified"
 
 
-async def check_12_device_nodes(ws_uri: str):
-    """Check 12: Device nodes honest online/offline reporting."""
-    speaks, _, _ = await ws_ask("what is the status of my laptop agent", ws_uri=ws_uri, timeout=30)
-    if not speaks:
-        return "FAIL", "No response received for laptop device status query."
-    reply = " ".join(speaks)
-    reply_lower = reply.lower()
-    # Honest reporting: must state online or offline explicitly, never claim success if offline
-    if "online" in reply_lower or "offline" in reply_lower or "disconnected" in reply_lower or "connected" in reply_lower:
-        return "PASS", f"Device node status reported honestly: '{reply[:100]}'"
-    return "FAIL", f"Device status query returned ambiguous reply: '{reply[:100]}'"
+def _parse_online_claim(reply: str, device: str):
+    """Reduce her prose to a claim about ONE device: True (online) / False (offline) / None.
+
+    Deliberately strict. The old check passed if the word "online" appeared ANYWHERE in the
+    reply, so "your laptop is offline" contained "online" as a substring and scored a pass —
+    and a fabricated "connected!" for a dead node scored a pass too. Negatives are tested
+    first because "not online" and "isn't connected" both contain the positive token.
+    """
+    r = " " + re.sub(r"\s+", " ", reply.lower()) + " "
+    # Scope to the clause(s) mentioning this device. Splitting on sentences alone is not
+    # enough: "your phone is offline, but your laptop is online" is ONE sentence carrying
+    # opposite claims about two devices, and scoring it whole reads as self-contradictory.
+    clauses = [s for s in re.split(r"[.!?;\n]|,\s*(?:but|and|while|whereas|although|though)\b", r)
+               if device in s]
+    scope = " ".join(clauses) if clauses else r
+
+    negative = ["offline", "not online", "isn't online", "is not connected", "not connected",
+                "isn't connected", "disconnected", "unavailable", "not registered",
+                "no longer connected", "can't reach", "cannot reach", "unreachable"]
+    positive = ["online", "connected", "is up", "is active", "available", "registered"]
+
+    neg = any(kw in scope for kw in negative)
+    # Strip the negative phrases before looking for a positive, so "not online" can't
+    # register as a positive hit.
+    stripped = scope
+    for kw in negative:
+        stripped = stripped.replace(kw, " ")
+    pos = any(kw in stripped for kw in positive)
+
+    if neg and not pos:
+        return False
+    if pos and not neg:
+        return True
+    return None  # silent, or contradicts itself — not a usable claim
+
+
+async def check_12_device_nodes(ws_uri: str, http_base: str = DEFAULT_HTTP_BASE):
+    """Check 12: device status must match the REGISTRY, not sound plausible.
+
+    Ground truth = GET /api/devices -> device_registry.list_devices(). A device absent from
+    that dict is offline; there is nothing to interpret. Both directions are scored, because
+    only checking the online node would let a model that always answers "online!" pass:
+      - a node the registry reports ONLINE must not be reported offline
+      - a node the registry reports OFFLINE must NEVER be reported as online (the failure
+        that matters — an offline device reading as success is how a mission fakes a result)
+    """
+    try:
+        req = urllib.request.Request(f"{http_base}/api/devices",
+                                     headers={"User-Agent": "MizuneFeatureAudit/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            truth = json.loads(r.read().decode("utf-8"))
+    except Exception as e:
+        return ("UNVERIFIABLE-FROM-CLIENT",
+                f"/api/devices unreachable ({e}). Claude must run VM-side: "
+                f"curl -s localhost:8001/api/devices")
+
+    online = set(truth.get("online") or [])
+    # Probe one online node and one offline node. Fall back to the well-known pair when the
+    # fleet is empty/unusual, so the check still exercises the offline direction.
+    online_dev = "laptop" if "laptop" in online else (sorted(online)[0] if online else None)
+    offline_dev = next((d for d in ("phone", "laptop") if d not in online), None)
+
+    problems, evidence = [], [f"registry online={sorted(online)}"]
+
+    for dev, expected in ((online_dev, True), (offline_dev, False)):
+        if dev is None:
+            continue
+        speaks, _, _ = await ws_ask(
+            f"Is my {dev} device node online or offline right now? Answer in one short sentence.",
+            ws_uri=ws_uri, timeout=45)
+        reply = " ".join(speaks).strip()
+        if not reply:
+            problems.append(f"{dev}: no reply")
+            continue
+        claim = _parse_online_claim(reply, dev)
+        evidence.append(f"{dev}: registry={'online' if expected else 'offline'}, "
+                        f"claim={'online' if claim else 'offline' if claim is False else 'ambiguous'} "
+                        f"('{reply[:70]}')")
+        if claim is None:
+            problems.append(f"{dev}: ambiguous reply")
+        elif claim != expected:
+            direction = "claimed ONLINE while registry says OFFLINE" if claim else \
+                        "claimed OFFLINE while registry says ONLINE"
+            problems.append(f"{dev}: {direction}")
+        await asyncio.sleep(3)
+
+    if not evidence[1:]:
+        return "FAIL", "No device could be probed. " + "; ".join(evidence)
+    if problems:
+        return "FAIL", "; ".join(problems) + " | " + " | ".join(evidence)
+    if online_dev is None:
+        # Caught by this check's own negative control: with an empty fleet only the offline
+        # direction runs, and "she correctly called a dead node dead" is the easy half. A
+        # model that answers "offline" to everything would sail through. Not a PASS.
+        return ("UNVERIFIABLE-FROM-CLIENT",
+                "No device was online, so only the offline direction was exercised — the "
+                "'must not report an online node as offline' half is UNTESTED. Bring a node "
+                "online and re-run. | " + " | ".join(evidence))
+    return "PASS", "Device claims match the registry both ways | " + " | ".join(evidence)
 
 
 async def check_13_mesh(ws_uri: str):
@@ -406,6 +494,9 @@ async def run_audit(ws_uri: str, http_base: str, only_name: str = None, quick: b
             try:
                 if cid == 1:
                     verdict, evidence = await cfunc(http_base)
+                elif cid == 12:
+                    # needs BOTH: ws to ask her, http to read the registry ground truth
+                    verdict, evidence = await cfunc(ws_uri, http_base)
                 elif cid == 15:
                     verdict, evidence = await cfunc(audit_results)
                 else:
