@@ -2890,6 +2890,50 @@ Desktop docs: `mizune-million-path.md`, `linkedin-content-plan.md`, `linkedin-pr
 - 2026-07-24: Executor completed Task A and Task B for Z3.1 SOVEREIGN. Authored pure stdlib scripts/mizune_export.py and scripts/mizune_import.py. Verified export bundle: 33 files, 0 secrets leaked (tokens, config.json, face, npy verified clean), row-count manifest included. Verified import round-trip: safe extraction path traversal guard tested, target non-empty overwrite guard confirmed (refuses without --force), SHA256 integrity 33/33 verified OK, SQLite row count verification 7/7 DBs OK, "WHO SHE IS" profile readout restored (Master, 216 history turns). Stopped at ⛔ END OF EXECUTOR TASK PACK 2.
 - 2026-07-24: Executor completed TASK PACK 3 (Z3.2 persona-fidelity benchmark). Authored scripts/persona_benchmark.py (pure stdlib + openai SDK). Evaluated groq, cerebras, and mistral across 10 fixed prompts (5 voice, 5 tool) with system prompt character/SOUL.md and TOOLS_SCHEMA. DRY safety verified (0 tool dispatchers called, raw tool_calls inspected only). Result: MISTRAL scored 10/10 (Voice 5/5, Tools 5/5, 1.71s avg), CEREBRAS scored 5/10 (Voice 4/5, Tools 1/5, 1.09s avg), GROQ scored 0/10 (rate limit 429 TPD hit). Detailed JSON report written to .data/persona_benchmark_20260724.json. Stopped at ⛔ END OF EXECUTOR TASK PACK 3.
 - 2026-07-24: Executor completed TASK PACK 4 (Z5 MESH cross-model verification). Authored server/mesh.py and scripts/test_mesh.py. Implemented parallel fan-out (mistral, cerebras, groq) and cross-model verifier reconciliation. READ-ONLY tool suppression verified (system_prompt_override used on all calls, _bg_guard blocked all tools). Verified Case 1 (capital of Australia -> agreement "high") and Case 2 (blood pressure 135/85 guidelines -> agreement "mixed", verifier caught split + produced consolidated consensus). JSON report written to .data/mesh_test_report.json. Stopped at ⛔ END OF EXECUTOR TASK PACK 4.
+- 2026-07-27 (Claude, session 2): HEALTH OK + **OPEN ITEM 1 (mesh trigger) DONE & DEPLOYED**
+  (158075f). Health first: smoke 4/4 before AND after, backend was up 12h43m, RAM 276MB
+  available, disk 62%, Xvfb=1 (leak fix holding), 0 tracebacks / 0 "all providers failed" in
+  the last 500 log lines, 6 crons registered, 133 seal rows. Marker-grepped every fix from
+  the previous session — DEVICE CHOICE (missions.py), text-mode recovery + host-OS grounding
+  + cooldown (ai.py) are all genuinely ON the VM this time.
+  ⚠️ `server/mesh.py` was NOT on the VM at all — the engine had never been deployed, only
+  committed. Wiring it required deploying it.
+  WIRING: deterministic fast-path in processor.py for `mesh:` / `verify this:` /
+  `double-check:` / `cross-check:` (colon or dash REQUIRED — 12/12 regex cases: 7 fire,
+  5 decoys like "can you verify this for me?" correctly stay quiet). `_format_mesh_reply()`
+  renders provenance in CODE, never the model.
+  **TWO REAL BUGS FOUND BY WIRING IT — both claim-without-effect, and both are the exact
+  defect the verification-library thesis is about:**
+  (1) `get_ai_response` CASCADED EVEN WHEN A PROVIDER WAS FORCED. groq was at its daily cap,
+      cerebras silently served the call, and mesh filed that text under the key "groq" — so
+      TWO models agreeing was reported to Master as THREE independent models agreeing, with
+      agreement HIGH. A verification feature that fakes its own provenance. FIX: opt-in
+      `no_fallback` hint locks attempt_order to the forced provider. A/B PROVEN: forced groq
+      WITHOUT the hint → falls back to cerebras and answers "PING"; WITH the hint → fails
+      honestly. Happy path untouched (hint absent everywhere else).
+  (2) Verifier was chosen by "is keyed", not "actually works" — with the cascade no longer
+      masking it, a capped verifier turned two good answers into her "tangled" line. FIX:
+      ordered verifier candidates (held-out first, producers last), `_looks_failed()` factored
+      into ONE helper used by answers AND verifier (rule #1), reply says "(also answered)"
+      when the verifier graded its own work, and mesh returns mesh=False rather than passing
+      one unreviewed answer off as cross-checked.
+  DEPLOY (rule 1 respected): ai.py shipped ALONE (162KB b64), processor.py+mesh.py together;
+  md5 of all three on the VM matches local EXACTLY; markers grepped post-copy; syntax-checked
+  on the VM before the copy, `.bak_mesh` saved. ⚠️ Checked for divergence first: VM ai.py ==
+  git HEAD; VM processor.py differed ONLY by CRLF line endings (md5 matches after `tr -d`),
+  so no divergence — but CHECK THIS EVERY TIME, don't assume.
+  LIVE PROOF: "verify this: is the Great Wall visible from the Moon" → correct answer +
+  "cross-checked by cerebras, mistral · verifier: mistral (also answered) · agreement: HIGH".
+  VM log ground truth: 4 fast-path triggers, 20 no_fallback locks, and the groq→mistral
+  verifier failover visible.
+  **ITEM 3 ANSWERED (text-mode recovery): `grep -c 'text-mode tool call' server.log` = 0
+  across 57,685 lines / 12h43m.** The CODE is deployed (marker present) but the path has
+  NEVER FIRED in production. That is not a pass and not a fail — it is UNEXERCISED. Proving
+  it needs a forced synthetic text-mode reply, not more waiting.
+  ⚠️ ALL 4 GROQ KEYS AT ~95-99k/100k TPD AGAIN (328 rate_limit_exceeded in the log). Rotation
+  can't fix an exhausted pool. Mesh currently runs 2-model (cerebras+mistral) because of it.
+  STILL OPEN: items 2 (device_nodes audit check), 3 (force-test the recovery path),
+  4 (regenerate FEATURE_MATRIX.md — still encodes the FALSE PASSes), then Stage 1.
 - 2026-07-26: Executor completed TASK PACK 6 (V2.1 feature audit harness & V2.2 feature matrix). Authored scripts/feature_audit.py and docs/FEATURE_MATRIX.md. Evaluated 15 features over WS and HTTP with spaced probes and ground-truth rules. Results: 12 PASS, 2 UNVERIFIABLE-FROM-CLIENT (seals_lie_detector, scheduler — VM commands provided), 1 NOT-WIRED (mesh — router trigger pending in processor.py), 0 FAIL. Flakiness gates 3/3 PASS across chat_persona, ist_clock, and calendar_read. Report saved to .data/feature_audit_20260726-1938.json. Stopped at ⛔ END OF EXECUTOR TASK PACK 6.
 
 
