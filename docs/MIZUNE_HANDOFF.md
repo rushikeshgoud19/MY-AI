@@ -3136,11 +3136,35 @@ Desktop docs: `mizune-million-path.md`, `linkedin-content-plan.md`, `linkedin-pr
   matching *.png"`, `"json {path} has server.port = 8001"` (values JSON-parsed so numbers and
   booleans keep type).
   **138 checks, all pass. Core still imports ZERO third-party modules. Demo re-run green.**
-  NEXT for Stage 1: nothing blocking — the library is feature-complete for a 0.1 release.
-  Stage 2 (all free): PyPI publish, then the post — "your agent passes its evals because your
-  evals only check the output" — with the 20-40% number and OUR OWN reproduction as the hook.
-  Kill criterion for Stage 2 is in mizune-million-path.md: <100 stars + zero unsolicited
-  users after 10 weeks → pivot.
+  ✅ **STAGE 2 PREPPED (29644b1) — NOTHING PUBLISHED YET, awaiting Rushi's go.**
+  SHIPPABILITY VERIFIED, not assumed: builds clean with hatchling; wheel ships exactly the 9
+  modules and nothing stray; **installs into a CLEAN venv pulling ZERO dependencies**; and
+  `@verified` catches a fake success FROM that clean install (not just from the repo).
+  ⚠️ **NAME COLLISION FOUND: `agentseal` v0.10.0 exists on PyPI — an AI-agent SECURITY
+  toolkit.** `agent-seal` is still free on PyPI AND GitHub (PyPI normalizes the two
+  differently, so both can coexist — not a legal/technical block). But it is a confusion +
+  search-leakage problem in the ONE niche where the whole pitch is trustworthiness.
+  DECISION: staying with `agent-seal` for now — "seal" is load-bearing vocabulary in the code
+  (`Seal`, the ledger, the `[TOOL RESULTS]` seals it came from) and Rushi didn't express a
+  preference. **The rename stays a ~10-min change right up until publication and becomes
+  expensive immediately after.** Available alternatives checked 2026-07-27: `stepproof`
+  (encodes the step-level-vs-output-level argument — my pick if he wants to switch),
+  `verifact`, `proofkit`, `did-it`.
+  - `docs/launch-post.md` — leads with the REPRODUCTION, not the pitch; admits the bug was
+    MINE and shipped for weeks; includes the mistake I made building the narration detector.
+    A post about verification that hides its own misses would be the wrong shape.
+  - `docs/RELEASE.md` — **ORDER: GitHub → PyPI → post.** Stars are the Stage-2 kill metric and
+    only exist on GitHub; the post needs something to point at; PyPI is the one step that
+    can't be undone (a version number is never reusable). Kill criterion has a blank for the
+    launch date so traction gets judged on evidence like everything else.
+  🧹 Also: `.gitignore` now ALLOWLISTS the repo root. The demo/shell tests deliberately run
+  redirects, which drop zero-byte junk into cwd on Windows; three such files got swept in by
+  `git add -A`, and each time I added a narrower pattern — same whack-a-mole that kept
+  failing. Inverted it: ignore everything at root, un-ignore what belongs. Verified junk is
+  now unstageable.
+  **138 checks pass. Mizune smoke 4/4 (untouched by all of this).**
+  ⛔ NEXT — needs RUSHI, not me: confirm the name, then `gh repo create` + push + PyPI token
+  + post. All free. Everything up to the publish button is done.
   STILL OPEN: the token budget (groq 100k/day is the ceiling; mistral is healthy and unused —
   measure before adding keys), phone-side playback test (phone was offline all session).
 - 2026-07-26: Executor completed TASK PACK 6 (V2.1 feature audit harness & V2.2 feature matrix). Authored scripts/feature_audit.py and docs/FEATURE_MATRIX.md. Evaluated 15 features over WS and HTTP with spaced probes and ground-truth rules. Results: 12 PASS, 2 UNVERIFIABLE-FROM-CLIENT (seals_lie_detector, scheduler — VM commands provided), 1 NOT-WIRED (mesh — router trigger pending in processor.py), 0 FAIL. Flakiness gates 3/3 PASS across chat_persona, ist_clock, and calendar_read. Report saved to .data/feature_audit_20260726-1938.json. Stopped at ⛔ END OF EXECUTOR TASK PACK 6.
