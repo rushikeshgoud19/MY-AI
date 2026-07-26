@@ -2378,6 +2378,129 @@ deterministic trigger ("mesh:" / "verify this:" / "double-check:") into processo
 mesh.py to the VM, smoke 4/4. Mesh is standalone + opt-in, so leaving it unwired breaks
 NOTHING. Z5 engine DONE; activation pending.
 
+# ═══════════════════════════════════════════════════════════════
+# EXECUTOR TASK PACK 5 (for Antigravity) — written 2026-07-26 by Claude
+# PHASE B — BUILD LOG: turn each day's real work into postable content
+# ═══════════════════════════════════════════════════════════════
+# GOAL (Rushi's words): "everyday it should give me a progress report with what I can
+# post on LinkedIn, and it should feel like it's NOT AI made."
+#
+# THE SHAPE, AND WHY:
+#   Mizune COLLECTS deterministically (git + GitHub API + her own telemetry), DRAFTS in
+#   Rushi's voice from ONE real item, LINTS the draft against an anti-slop checklist, and
+#   DELIVERS to WhatsApp at 21:00 IST. Rushi edits and posts. She never posts anywhere.
+#
+# THREE HARD CONSTRAINTS — do not design around these, design WITH them:
+#  1. NO LINKEDIN AUTOMATION. Their User Agreement §8.2 bans automated access, bots and
+#     headless browsers; measured restriction rate ~23% within 90 days; 2026 enforcement is
+#     permanent suspension. We generate drafts. A human posts. Not negotiable — and it is
+#     also fine: the bottleneck was never posting, it was knowing what to say.
+#  2. NO CREDENTIAL AUTOMATION. The TraceRoot dashboard (app.traceroot.ai) needs a login.
+#     Do NOT script a login, do NOT store credentials, do NOT reuse a session cookie.
+#     Screenshot only PUBLIC, auth-free URLs (PR pages, issues, repo pages). For anything
+#     behind a login, emit a MANUAL CAPTURE CHECKLIST telling Rushi exactly what to shoot.
+#     A checklist he follows in 30 seconds beats a fragile auth robot.
+#  3. "NOT AI-MADE" IS A LINTER PROBLEM, NOT A PROMPT PROBLEM. Prompting alone drifts back
+#     to slop. Deterministic checks reject the tells (B.2). Even then Rushi edits before
+#     posting — a fully automated post eventually reads as AI, and pretending otherwise is
+#     how the whole thing gets found out.
+
+## ENVIRONMENT FACTS (verified 2026-07-26 — do not re-discover)
+- Repo root: `C:\Users\rushi\OneDrive\Desktop\my Ai`. Python = `.venv\Scripts\python.exe`.
+  LOCAL ONLY. Never touch the VM. Never git add/commit/push (Claude owns git + deploys).
+- `scripts/content_engine.py` ALREADY EXISTS and works: parses git log deterministically,
+  picks ONE commit via `pick_story_commits()`, drafts via `get_ai_response(...,
+  system_prompt_override=...)` so tools are blocked. EXTEND it — do not rewrite it.
+  Its history matters: an earlier version fed the model 8 commits at once and it welded two
+  unrelated fixes into a FALSE causal chain. One commit per draft is load-bearing.
+- `playwright` + Chromium ARE installed locally (`ms-playwright/chromium-1208`). `PIL` too.
+- `gh` CLI is authenticated as rushikeshgoud19 (scopes incl. `repo`, `user`). Use it for
+  GitHub activity — no PAT handling needed.
+- Cron pattern: `server/briefing.py` holds `*_TASK_DESC` constants and
+  `ensure_briefing_scheduled()`; `server/processor.py::_scheduler_callback` has one branch
+  per task. Claude wires the cron — you only build the modules.
+- House rule everywhere here: **LLMs voice, code delivers.**
+
+## ══ B.1 — `server/build_log.py` (NEW FILE) — deterministic day collector ══
+NO LLM IN THIS FILE. Pure collection, so the model can never invent work that didn't happen.
+
+`def collect_day(days: int = 1, repo: str = None) -> dict`, each source in try/except (one
+dead source must never kill the digest):
+1. **Local git** — reuse `content_engine.build_work_digest()`; do not duplicate that logic.
+2. **GitHub activity** via `gh` (subprocess, JSON out):
+   - PRs he opened/updated, with state
+   - CI state of his open PRs: `gh pr checks <n> --json name,bucket` -> pass/fail counts
+   - Issues he opened; review comments he left (best-effort)
+   - WARNING: `gh search prs` has returned EMPTY when results existed (this bit me on
+     2026-07-26 — I wrongly told Rushi he had zero PRs). CROSS-CHECK with
+     `gh api "search/issues?q=repo:OWNER/REPO+author:rushikeshgoud19"` and prefer the larger
+     result set. Never report "none" off a single query.
+3. **Mizune's own telemetry** (read-only, tolerate missing files):
+   - missions completed/verified today from `.data/missions.db`
+   - `[TOOL RESULTS]` seal count today from `.data/mizune_memory.db`
+   - night-shift report if present (`.data/night_shift.db`)
+4. Return `{date, git: {...}, github: {...}, mizune: {...}, highlights: [...]}` where
+   `highlights` is a ranked list of candidate story items — CODE picks the ranking.
+
+`def render_digest(day: dict) -> str` — plain-text report for WhatsApp. Honest when the day
+was quiet: say "nothing substantial today" rather than padding it.
+
+DONE-WHEN: run it; paste the real digest for today AND for `--days 7`.
+
+## ══ B.2 — voice profile + anti-slop linter (EXTEND `content_engine.py`) ══
+1. **`character/VOICE.md`** (new file, allowed): the voice contract. Claude seeds it with
+   Rushi's real phrasing; you build the plumbing that LOADS it and injects it into the draft
+   prompt. If missing, fall back to current behaviour (do not crash).
+2. **`lint_draft(text, digest) -> (ok: bool, problems: list[str])`** — DETERMINISTIC. Reject on:
+   - banned openers: "Excited to share", "Thrilled to announce", "I'm happy to", "Delighted"
+   - banned words: leveraged, cutting-edge, game-changing, seamless, robust solution, delve,
+     unlock, elevate, harness, "in today's fast-paced", "journey" used as a metaphor
+   - more than 1 emoji, or more than 2 hashtags
+   - every sentence within +/-3 words of the same length (uniform rhythm is the biggest tell)
+   - more than 2 em-dashes  <- LLM fingerprint
+   - opens with a participial clause ("Having built...", "Being a developer...")
+   - **FABRICATED NUMBER CHECK (most important):** every numeral in the draft must appear in
+     the source digest. Catches invented metrics, which is the failure that would actually
+     embarrass him.
+3. Wire it: draft -> lint -> on fail, ONE regeneration with the problems fed back -> if it
+   fails again, return the draft WITH the problem list attached so Rushi sees what to fix.
+   Never silently ship a draft that failed the numeral check.
+
+DONE-WHEN: paste a draft that PASSED, and one you deliberately made fail (show its problem
+list). Show the numeral check catching an invented number.
+
+## ══ B.3 — `scripts/capture_shots.py` (NEW FILE) — auth-free screenshots ══
+Playwright, headless Chromium, **PUBLIC URLs ONLY**.
+- Targets (all public, no login): his PR page(s), issue page(s), MY-AI repo page, profile
+  README repo page. Driven by a `--targets` list with sensible defaults.
+- Viewport 1440x900, `wait_until="networkidle"`, full-page OFF (crop to the interesting
+  region where practical), PNG to `.data/shots/YYYY-MM-DD/<slug>.png`.
+- **HARD RULE: no login flow, no credentials, no cookie injection, no `storage_state`.** If
+  a target returns a login wall, SKIP it and add it to the manual checklist.
+- `def manual_checklist() -> list[str]` — precise instructions for auth-required visuals,
+  e.g. "TraceRoot dashboard -> Traces tab -> filter last 24h -> screenshot the latency
+  panel". Rushi captures those himself.
+
+DONE-WHEN: run it; paste the file list with byte sizes and confirm each PNG opens. State
+plainly which targets were skipped as auth-walled.
+
+## HOUSE RULES (unchanged)
+- LOCAL ONLY. No VM, no git commits/pushes. Claude deploys.
+- Reuse `content_engine.py`'s existing functions; no parallel implementations.
+- Every LLM call uses `system_prompt_override=` so tools are blocked (utility calls).
+- Data artifacts under `.data/` (gitignored) — never the repo root.
+- If a source is unavailable, SKIP + note. If ambiguous, write `BLOCKED: <what>`.
+- Test with REAL output pasted into RESULT — not "it should work".
+
+> **⛔ END OF TASK PACK 5 — STOP after B.3.** Claude then: seeds `character/VOICE.md` from
+> Rushi's real writing, wires the `MIZUNE_BUILD_LOG` cron (21:00 IST) + WhatsApp delivery,
+> deploys, and reviews. Do NOT edit briefing.py / processor.py, and do not deploy.
+
+### RESULT (executor writes here)
+- B.1:
+- B.2:
+- B.3:
+
 ## Progress log (executor: append one line per session)
 - 2026-07-08: Executor started, correctly blocked on dirty git status (per then-current rule).
 - 2026-07-08: Claude resolved — 0.1 was already ~done in the working tree; Claude finished the dedup (4/4 paths use helper), verified (import OK, test passes), deleted junk artifacts (`{`, `str`), and relaxed the git-safety rule so a dirty tree no longer blocks. NEXT: executor picks up at 0.2.
