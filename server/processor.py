@@ -452,10 +452,26 @@ def _process_command_internal(text: str, config: dict, broadcast_sync_fn, sessio
     # Parsed in steps rather than one regex: a single pattern greedily swallowed the filler
     # and produced who='a whatsapp message to Pranay'. Splitting on the body separator and
     # then taking the text after the LAST "to" is both correct and readable.
+    # STRIP THE PLATFORM WRAPPER FIRST. Inbound WhatsApp arrives as
+    #   "[MESSAGE FROM MASTER RUSHI (via WhatsApp)]: <what he typed>\n(SYSTEM: ...)"
+    # and the wrapper itself contains the word MESSAGE and a colon. Parsing the raw string
+    # matched those, so the recipient came out as 'FROM MASTER RUSHI (via WhatsApp)]'
+    # (reported live 2026-07-27). My unit tests used bare text and never saw the shape that
+    # actually reaches this code — the real input format IS part of the contract.
+    _wa_text = re.sub(r"^\s*\[[^\]]*\]\s*:\s*", "", text)
+    _wa_text = _wa_text.split("\n(SYSTEM:")[0].strip()
+
+    # MASTER ONLY. Stripping the wrapper also strips WHO SENT IT, so without this a friend
+    # could type "message Pranay saying <anything>" into their own chat and Mizune would
+    # send it from Rushi's account. Third-party messages arrive as
+    # "[WHATSAPP MESSAGE FROM <name>]:" — the same signal the history firewall uses.
+    _third_party = ("[WHATSAPP MESSAGE FROM" in text
+                    and "FROM Rushi" not in text and "FROM Rushikesh" not in text)
+
     _who = _body = ""
-    _verb = re.search(r"\b(?:send|message|msg|text|whatsapp)\b", text, re.IGNORECASE)
-    if _verb and "[mission" not in lower_text and not text.startswith("[SYSTEM"):
-        _rest = text[_verb.end():]
+    _verb = re.search(r"\b(?:send|message|msg|text|whatsapp)\b", _wa_text, re.IGNORECASE)
+    if _verb and not _third_party and "[mission" not in lower_text and not text.startswith("[SYSTEM"):
+        _rest = _wa_text[_verb.end():]
         _sep = re.search(r"\bsaying\b|\bthat says\b|\bsays\b|\bsay\b|:", _rest, re.IGNORECASE)
         if _sep:
             _left = _rest[:_sep.start()]
@@ -465,9 +481,13 @@ def _process_command_internal(text: str, config: dict, broadcast_sync_fn, sessio
             _who = re.sub(r"^(?:a|an|the)\s+", "", _who, flags=re.IGNORECASE).strip()
     if _who and _body:
         # Reject filler that is not a recipient — otherwise "send a whatsapp message saying
-        # hi" would try to deliver to a contact literally named "whatsapp message".
-        if _who.lower() not in ("a", "an", "the", "him", "her", "them", "whatsapp",
-                                "message", "whatsapp message", "msg", "text", "someone"):
+        # hi" would try to deliver to a contact literally named "whatsapp message". The
+        # bracket/length guard is a second line of defence: if wrapper text ever leaks
+        # through again, refuse rather than address a message to it.
+        _looks_like_wrapper = any(c in _who for c in "[]()") or len(_who) > 30 or "master" in _who.lower()
+        if not _looks_like_wrapper and _who.lower() not in (
+                "a", "an", "the", "him", "her", "them", "whatsapp",
+                "message", "whatsapp message", "msg", "text", "someone"):
             from server.commands import whatsapp_automation
             log_info(f"[WHATSAPP] fast-path send → {_who!r}: {_body[:60]!r}")
             _res = str(whatsapp_automation(_who, _body))
