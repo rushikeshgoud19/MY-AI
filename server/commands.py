@@ -237,8 +237,16 @@ def whatsapp_automation(contact: str, message: str = None) -> str:
     """Use the Node.js headless bridge to send a WhatsApp message securely and instantly."""
     from server.platforms.whatsapp.core import send_whatsapp_message
     
+    # A phone number is UNAMBIGUOUS — honour it before any name matching. Checked first
+    # because the self-list below is a trap: the model, unsure who "him" is, passes
+    # "Master" and the message quietly goes to Master's own chat while reporting success.
+    _digits = "".join(ch for ch in str(contact or "") if ch.isdigit())
+    if len(_digits) >= 10:
+        target = _digits
+        log_info(f"[ACTION] WhatsApp recipient taken from the number given: {target}")
+        contact = target
     # Mizune runs on Master's own WhatsApp, so "Master"/"Rushi"/"me" all mean send-to-self.
-    if contact.lower().strip() in ["me", "myself", "self", "master", "rushi", "rushikesh", "master rushi"]:
+    elif contact.lower().strip() in ["me", "myself", "self", "master", "rushi", "rushikesh", "master rushi"]:
         target = None # Default to self
         contact = "yourself"
     else:
@@ -262,13 +270,20 @@ def whatsapp_automation(contact: str, message: str = None) -> str:
 
     # If it's a phone number, use headless Baileys!
     if target is None or any(char.isdigit() for char in target):
-        log_info(f"[ACTION] Sending headless WhatsApp message to '{contact}'")
+        # NAME THE REAL DESTINATION, not the label. The old version logged and confirmed
+        # `contact` — so a message that went to Master's own chat was reported as
+        # "successfully sent to yourself" while he was asking for it to go to someone else.
+        # He could only tell by the other person never replying (observed 2026-07-27:
+        # "Mizune the message is not sent", three times, while she reported success each
+        # time). The seal recorded the label too, so the lie detector could not catch it.
+        where = "Master's own chat (SELF)" if target is None else str(target)
+        log_info(f"[ACTION] WhatsApp send → {where} (asked for: {contact!r})")
         from server.platforms.whatsapp.core import send_whatsapp_message
         success = send_whatsapp_message(message, target)
         if success:
-            return f"Done! Headless message successfully sent to {contact}!"
+            return f"Done! Message sent to {where}."
         else:
-            return f"Failed to send message! The WhatsApp bridge is not connected."
+            return f"Failed to send message to {where} — the WhatsApp bridge is not connected."
 
     # If target is still just a name, it means it wasn't found in contacts.json
     error_msg = f"I cannot send the message because '{contact}' is not in your contacts dot JSON file. Please add their phone number so I can send it instantly in the background!"

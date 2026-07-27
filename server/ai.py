@@ -215,11 +215,14 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "message_whatsapp",
-            "description": "Automate sending a message to a contact on WhatsApp.",
+            "description": ("Send a WhatsApp message. If Master gives a PHONE NUMBER, pass that "
+                            "number as `contact` — never a name, and never 'Master'. Passing "
+                            "'Master'/'me' sends to Master's OWN chat, so a message meant for "
+                            "someone else silently goes nowhere."),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "contact": {"type": "string", "description": "The exact name of the contact or group."},
+                    "contact": {"type": "string", "description": "Phone number (preferred, e.g. '916302554067') if Master gave one, otherwise the exact contact or group name. Only use 'Master'/'me' when Master genuinely wants the message sent to himself."},
                     "message": {"type": "string", "description": "The text message to send. Leave empty if user just wants to open the chat."}
                 },
                 "required": ["contact"]
@@ -1628,6 +1631,16 @@ def _get_ai_response_body(text: str, history: list, config: dict, system_prompt_
             "SCHEDULING HONESTY: never SAY a task/reminder was scheduled unless you actually CALLED the "
             "schedule_task tool in this turn. A text reply alone schedules NOTHING — if you didn't call "
             "the tool, call it now instead of claiming success.\n"
+            "MESSAGING HONESTY — SAME RULE, IT KEEPS BREAKING: never say a WhatsApp message was sent, "
+            "or that you are 'sending it now', unless you CALLED message_whatsapp in THIS turn. Writing "
+            "out the command, or saying 'Here's the command:', sends NOTHING. On 2026-07-27 Master asked "
+            "four times in a row and got 'done!', 'let me fix that right now', 'I'll send it now' — and "
+            "not one message existed. If you cannot send it (no number, contact not in contacts.json, or "
+            "you are declining), SAY THAT PLAINLY. An honest 'I can't' is useful; a cheerful 'done!' that "
+            "did nothing wastes his time and destroys his trust in everything else you report.\n"
+            "RECIPIENT: when Master gives a phone number, pass THAT NUMBER as `contact`. Never substitute "
+            "'Master' or 'me' — that sends the message to Master's own chat, where the intended person "
+            "will never see it, and it looks like success.\n"
             "MEETINGS: when Master asks you to schedule a MEETING or appointment, FIRST ask him what "
             "time/day works and when he's free — do NOT pick a time yourself. Only AFTER he gives a time, "
             "confirm it, then create a REAL calendar event with google_workspace action 'create_event' "
