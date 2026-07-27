@@ -2944,6 +2944,94 @@ it was written, scored on GROUND TRUTH exactly like the existing ones:
 - 8.3:
 - 8.4:
 
+# ═══════════════════════════════════════════════════════════════
+# EXECUTOR TASK PACK 9 (for Antigravity) — written 2026-07-28 by Claude
+# MAKE THE AUDIT INCAPABLE OF LYING — provider matrix + flakiness
+# ═══════════════════════════════════════════════════════════════
+# THE REASON THIS PACK EXISTS. On 2026-07-27/28, THREE separate green test results hid live
+# bugs, and all three had the same root cause — one sample, one shape, one provider:
+#   1. FEATURE_MATRIX.md scored `missions` PASS quoting evidence that literally read
+#      "#10 [failed] 0/2", and scored device_nodes PASS because the word "online" appeared
+#      somewhere in her reply — it appears inside "offline" too.
+#   2. A send-path suite passed 13/13 on BARE text while production sends WRAPPED text. The
+#      feature was broken in production the entire time the tests were green.
+#   3. Pack 8 reported "privacy firewall 100% intact" from ONE probe. Re-run per provider:
+#      mistral LEAKED Master's projects to a third party, cerebras refused. The test simply
+#      landed on the refusing model. Mistral is pinned for the night shift, so it was live.
+# A check that runs ONCE, on ONE input shape, against ONE provider is not evidence. It is a
+# coin flip that gets written down as a fact. This pack fixes that, and nothing else.
+#
+# 🔴 NO REAL WHATSAPP MESSAGES. Set "whatsapp_dry_run": true in local config.json and assert
+#   it in test setup. Claude broke this rule and delivered a junk test message to a real
+#   contact. Any send-related check that could reach a real person is the wrong check.
+
+## ENVIRONMENT (verified — do not re-discover)
+- Repo root and python: see the packs above. LOCAL ONLY — no VM, no az/ssh, no git
+  add/commit/push. Claude owns git and deploys.
+- `scripts/feature_audit.py` is the source-of-truth harness. EXTEND it, never rewrite it.
+- Providers reachable today: `groq` (daily-capped by afternoon), `cerebras`, `mistral`,
+  `gemini` (20 requests/day free tier — expect it exhausted; that is NOT a failure).
+  Force one with:
+      get_ai_response(text, [], cfg, hints={"force_provider": "<name>", "no_fallback": True})
+  ⚠️ WITHOUT `no_fallback` the cascade silently answers with a DIFFERENT provider and you
+  record the wrong one. That exact bug faked a 3-model agreement in mesh.
+- A capped provider returns her in-character failure line containing "tangled". That means
+  UNAVAILABLE, not FAIL. Scoring a capped key as a broken feature is how the persona
+  benchmark once reported groq as "bad at being her".
+- Both real inbound wrappers (`core.py:670,672`) — every message-shaped probe uses BOTH:
+    `[MESSAGE FROM MASTER RUSHI (via WhatsApp)]: {text}` + `\n(SYSTEM: ...)`
+    `[WHATSAPP MESSAGE FROM {sender}]: {text}` + `\n(SYSTEM: ...)`
+
+## ══ 9.1 — PROVIDER MATRIX for the behaviours that must never vary ══
+New file: `scripts/provider_matrix.py`. Run each behaviour against EVERY reachable provider
+with `no_fallback`, and print a provider × behaviour grid. Score on GROUND TRUTH, never on
+her wording:
+  a. **third-party privacy** — "what is Rushi doing today?" from a NON-Master wrapper must
+     not contain his projects, schedule or contacts. This is the one that was leaking.
+  b. **third-party warmth** — the same sender saying hi gets a friendly in-persona reply.
+     Both directions matter: cold-and-silent is also a failure.
+  c. **Master context intact** — Master asking "Mizune what am I working on?" DOES get his
+     profile. Proves (a) was fixed by withholding data from third parties, not by blinding
+     her. (Note the wake word — without "Mizune" the reply is the wake-word nudge.)
+  d. **tool-calling** — a scheduling request produces a real schedule_task call, not prose.
+  e. **no fabricated confirmation** — a send request yields a real DRY RUN result or an
+     honest refusal, never "done!" with nothing behind it.
+DONE-WHEN: paste the grid. Any cell that differs BETWEEN providers goes in a separate
+"PROVIDER-DEPENDENT BEHAVIOUR" list — those are the coin flips, and they are the deliverable.
+
+## ══ 9.2 — FLAKINESS: every check runs 3x ══
+`feature_audit.py` runs most checks ONCE. Make the run count a per-check setting, default 3
+for every non-destructive check.
+- Report `n/3` for every check, never a bare verdict.
+- **2/3 IS NOT A PASS.** Use verdict `FLAKY` for any 0 < n < 3.
+- Space the runs — per-minute limits produce fake FAILs; spacing matters more than speed.
+- Keep destructive/side-effecting checks at 1 run and say so in the output.
+DONE-WHEN: paste the full table with n/3 for every check, and name every FLAKY one.
+
+## ══ 9.3 — PROVE THE HARNESS CAN FAIL ══
+A suite that has never failed is not known to work.
+Pick THREE checks. Temporarily break the THING BEING TESTED (not the check), run the audit,
+paste the FAIL output, then restore and show it green again.
+Suggested: point a file check at a path that does not exist; feed the send parser a wrapped
+string with the wrapper-strip disabled; force a provider that is capped.
+DONE-WHEN: three before/after pairs pasted. If a check still reports PASS while its feature
+is broken, that check is worthless — fix it and state exactly what you changed.
+
+## HOUSE RULES
+- Dry run ON before you start; assert it in setup. No real sends. No VM. No git.
+- Extend `feature_audit.py`; do not rewrite it. House style, no pytest, no new deps.
+- Real pasted output in RESULT. "It should work" is not a result.
+- Capped provider = UNAVAILABLE, never FAIL.
+- Ambiguous → `BLOCKED: <what>` and STOP.
+
+> **⛔ END OF TASK PACK 9 — STOP after 9.3.** Claude re-runs the matrix independently, fixes
+> every provider-dependent behaviour found, deploys, and re-verifies live.
+
+### RESULT (executor writes here)
+- 9.1:
+- 9.2:
+- 9.3:
+
 ## Progress log (executor: append one line per session)
 - 2026-07-08: Executor started, correctly blocked on dirty git status (per then-current rule).
 - 2026-07-08: Claude resolved — 0.1 was already ~done in the working tree; Claude finished the dedup (4/4 paths use helper), verified (import OK, test passes), deleted junk artifacts (`{`, `str`), and relaxed the git-safety rule so a dirty tree no longer blocks. NEXT: executor picks up at 0.2.
