@@ -141,6 +141,10 @@ def build_briefing_sitrep() -> str:
 EVENING_TASK_DESC = "MIZUNE_EVENING_DIGEST"
 SHIFT_START_DESC = "MIZUNE_SHIFT_START"     # Z2: begin the queued night shift (22:00)
 SHIFT_REPORT_DESC = "MIZUNE_SHIFT_REPORT"   # Z2: deliver proof-of-work (07:40)
+# Phase B: 21:00 build log — the day's real work + a LinkedIn draft Rushi edits and posts.
+# 21:00 sits after the 20:00 evening digest and before the 22:00 night shift, so the three
+# evening jobs never contend for a provider at the same minute.
+BUILDLOG_TASK_DESC = "MIZUNE_BUILD_LOG"
 
 
 def _tomorrows_calendar() -> str:
@@ -177,6 +181,12 @@ def ensure_briefing_scheduled(config, cron_manager) -> None:
             (NIGHTLY_TASK_DESC, config.get("nightly_cron", "0 2 * * *")),      # 2:00 AM IST
             (BUGREPORT_TASK_DESC, config.get("bugreport_cron", "45 7 * * *")), # 7:45 AM IST
         ]
+        # Phase B build log. Opt-out via build_log_enabled=false. It is the ONE job here whose
+        # data lives on another machine (git + gh are on the laptop, not this VM), so it is
+        # also the one that can legitimately have nothing to send — see the processor branch.
+        if config.get("build_log_enabled", True):
+            jobs.append(
+                (BUILDLOG_TASK_DESC, config.get("build_log_cron", "0 21 * * *")))  # 9:00 PM IST
         # Phase Z2 night shift: only registered if a shift is enabled, so a box that
         # never uses it stays clean. Start 22:00, proof-of-work report 07:40 (before the
         # 07:45 bug report + 08:00 briefing — the night's work leads the morning).

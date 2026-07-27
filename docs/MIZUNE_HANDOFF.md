@@ -3706,3 +3706,110 @@ lines at all means the watcher itself died, which is the failure that hid for tw
 
 
 
+- 2026-07-28 (Claude, session 3): HEALTH OK. **ITEM 1 MEASURED, ITEM 2 DEPLOYED + FIRED LIVE,
+  ITEM 3 DRAFTED.** Health first: smoke 4/4 before AND after every deploy; VM RAM 319MB avail,
+  swap 161/2047, disk 62%, Xvfb=1 (leak fix holding), 0 tracebacks; dashboard 200 with a FRESH
+  keepalive heartbeat (116 lines today, one per minute — the watcher is alive AND logging).
+  🔬 **ITEM 1 — MISTRAL: MEASURED, AND THE HANDOFF'S DESCRIPTION WAS WRONG.**
+  New re-runnable harness `scripts/mistral_ablation.py`: captures the REAL production system
+  prompt by monkeypatching `ai._mistral_response` (so SOUL.md + context layer + capability
+  grounding + master_profile + emotion + skills + memory recall are all assembled by the
+  SHIPPING code path, not approximated), then replays it against mistral with ONE factor
+  changed per condition. 14 conditions x 3 probes x 3 input shapes x 3 reps = **378 calls, 0
+  errors**. DRY: raw `chat.completions.create`, reads `.tool_calls` only, no dispatcher
+  reachable — nothing was sent.
+  **THE PRODUCTION SHAPE REPRODUCES THE 1/3 EXACTLY**: reminder 1/3, calendar 1/3,
+  whatsapp 3/3. And the failure is **TOOL-SPECIFIC, NOT PROVIDER-WIDE**:
+  `message_whatsapp` 97%, `google_workspace` 80%, `schedule_task` 69%. Input shape costs real
+  accuracy: **bare 95% -> wrapped 79%**. Overall 82% TOOL_OK / 15.6% REFUSAL / 0.8% FAKE_SUCCESS.
+  ⚠️ **IT IS NOT ALWAYS A REFUSAL — IT IS SOMETIMES A FAKE SUCCESS.** First rep produced
+  "[EMOTION: relaxed] Done, Master. I'll make sure you remember to call Mom at 8 PM tonight."
+  with ZERO tool calls. That is strictly worse than a refusal: a refusal is visible and gets
+  retried, "Done, Master" is silent and the night shift would file it as completed work. The
+  harness now scores REFUSAL and FAKE_SUCCESS separately so they can never be averaged again.
+  **NO SINGLE PROMPT LAYER IS THE CAUSE** — largest lift was +0.22 (`tool_choice_required`, a
+  hammer not a diagnosis). Two results that DO hold: (a) `refusal_in_history` was the WORST of
+  all 14 conditions (-0.11) and `no_history` among the best (+0.19) — **rule #4's imitation
+  effect is now measured, not asserted**; (b) `no_capability_grounding` scored 0/3 REFUSAL on
+  two separate shapes, so last session's generated-capability-list fix is LOAD-BEARING. Do not
+  remove it.
+  ⭐ **THE ACTUAL ANSWER: `schedule_task` HAS NO DETERMINISTIC PRE-LLM FAST-PATH.** processor.py
+  has real fast-paths for mission / night shift / learn / mesh / whatsapp-send, but NOT for
+  reminders. `schedule_task` IS in `FAST_TRACK_TOOLS`, but that only skips the second LLM round
+  AFTER the model already chose to call it — it does nothing to make the model call it. So
+  every capability with a fast-path is reliable and the one without it is the one failing.
+  Rule #4 restated as a measurement. **NEXT: build the reminder fast-path** (mirror
+  `_parse_whatsapp_send_command`).
+  📌 **PIN QUESTION STAYS OPEN (Rushi's correction, carry it forward):** the exposed path is
+  WHY it can fail; the PROVIDER decides HOW OFTEN. Measured last session on the same exposed
+  path, same prompt: **mistral 1/3, cerebras 3/3 on schedule_task.** So fast-path first, THEN
+  reconsider `night_shift.py:47` for whatever tools still have no fast-path. Do not treat
+  "fast-path is the real fix" as closing the pin question.
+  🛠️ **ITEM 2 — PHASE B REVIEWED AGAIN (it was already "green") AND 3 MORE DEFECTS FOUND.**
+  Rule 1 earns its keep every single time. In `get_mizune_telemetry`:
+  (1) `SELECT status, title FROM missions` — **there is no `title` column** (schema: id, goal,
+      origin, status, created_at, updated_at, report). It raised `no such column: title` on
+      EVERY run and a bare `except: pass` ate it, so `completed_missions` was 0 by accident.
+      It looked fine locally ONLY because this laptop has 0 mission rows; **on the VM, where
+      missions actually run, the build log would have reported "0 missions" forever.**
+  (2) The seal count had **no date filter** (108 all-time vs 101 in the window), so every
+      night's log would present a LIFETIME running total as that day's output. ⚠️ The anti-slop
+      linter CANNOT catch this — the numeral IS in the source digest, so it passes the
+      fabricated-number check while being wrong. **The digest itself was the liar.**
+  (3) Making those excepts SPEAK instead of pass immediately surfaced a third dead source:
+      `night_shift.db` has no `shift_reports` table (it is `shifts`, different columns), so
+      night-shift reports had returned [] since the file was written.
+  Digest now prints a `COLLECTOR PROBLEMS` line, so a broken query and a quiet day are no
+  longer indistinguishable. PROVEN with a throwaway missions DB (4 known rows -> completed=2,
+  verified=1, correctly excluding an out-of-window row and an `active` one).
+  🔴 **THE VM CANNOT RUN THE BUILD LOG — the handoff's "wire the cron + deploy" was wrong as
+  specified.** `/home/azureuser` is **not a git repo at all** and there is **no gh binary**.
+  Deploying as planned would have fired at 21:00 nightly and sent "0 commits, 0 PRs, nothing
+  substantial today" FOREVER — the exact blindness just fixed in build_log.py, reintroduced by
+  DEPLOYMENT instead of by code, and smoke 4/4 + a marker grep would both have passed.
+  ARCHITECTURE (Rushi chose): **VM owns the cron and delivery, LAPTOP collects.**
+  `build_log.py --json` writes a compact transport payload (3781 bytes) because
+  `do_run_command` TRUNCATES stdout at 800 chars; the VM fetches it with `read_file`
+  (max_chars=20000) and drafts + sends. build_log.py stays laptop-only.
+  DEPLOYED: processor.py (branch), briefing.py (cron), scripts/content_engine.py, VOICE.md.
+  md5 of all four matches local EXACTLY; **no divergence beforehand** (both VM files matched
+  git HEAD byte-for-byte, CRLF-stripped). `MIZUNE_BUILD_LOG` @ `0 21 * * *` registered (7 crons).
+  ⚠️ **NEW DIVERGENCE LESSON — CHECK EVERY FILE THE NEW CODE *CALLS INTO*, NOT JUST THE FILES
+  YOU COPY.** First live fire died instantly: `send_command() got an unexpected keyword
+  argument 'wait_for_device'`. The `wait_online`/`wait_for_device` work is **27 lines of
+  UNCOMMITTED local work** that was never committed and never deployed, so the VM has the old
+  signature. I did NOT ship someone else's in-flight changes as a side effect — the branch now
+  uses only the argument set every deployed registry accepts, with its own 3x30s offline retry
+  (the laptop flaps 276/192). Audited whatsapp_automation / is_online / draft_post signatures
+  against the VM before redeploying.
+  ✅ **FIRED LIVE, END TO END** (in-process, via a due `one_time_tasks` row so no second python
+  process on the 898MB box — rule 9): `collector said: Exit 0. BUILD_LOG_OK bytes=3781
+  commits=17 open_prs=3` -> groq all 4 keys 429 (94,224/100,000 TPD) -> cascaded to cerebras
+  200 -> `[ACTION] WhatsApp send -> Master's own chat (SELF)` (logged by the SEND PATH, not
+  model narration) -> delivered. Draft passed the linter first try (no lint problems logged).
+  Rushi confirming receipt on his phone is the real ground truth.
+  ✍️ **ITEM 3 — LAUNCH POST REVISED, AWAITING RUSHI'S APPROVAL** (`agentse/docs/launch-post.md`).
+  🔴 **CUT AN UNSOURCED STATISTIC — the most dangerous line in the whole launch.** The post AND
+  README both claimed "Research puts a number on it: agents evaluated only on final-output
+  quality pass **20-40% more test cases**... roughly one in three passing agents is broken."
+  **There is NO citation for that anywhere in the repo.** A library whose entire pitch is
+  "your green checks are unearned" cannot lead with an unsourced number attributed to
+  "research" — if anyone on HN asks for the source it costs credibility on the exact axis the
+  project defends. Did NOT retrofit a citation (that is verifying backwards). Replaced with
+  what he actually MEASURED: the 3/3 reproduction against a stock LangChain agent with an
+  unsabotaged tool. His own evidence is stronger than a borrowed statistic AND unimpeachable.
+  Also: added `pip install stepproof` (README said `pip install -e .` — wrong for a PUBLISHED
+  package), fixed a rename-artifact misalignment, added the real CI facts, and softened an
+  unverifiable claim about LangSmith/Arize/Braintrust to what is actually checkable.
+  **RE-DERIVED THE 138 rather than trusting it: 42+37+31+28 = 138, all pass.** Verified PyPI is
+  genuinely live by pulling the wheel (`stepproof-0.1.0-py3-none-any.whl`, 22KB).
+  **Em-dashes 21 -> 0** (biggest AI tell, in the one post that cannot read as machine-written).
+  Post now passes the real `lint_draft`: **True, zero problems.**
+  🐛 **TWO MORE LINTER FALSE-POSITIVE CLASSES FOUND** (same family as the DATES bug fixed last
+  session, both only visible on a LONG markdown doc rather than a short post): (a) markdown
+  `---` horizontal rules are counted as em-dashes (3 of them tripped the >2 limit); (b) an
+  **HTTP status code** in prose ("did the call return 200") is flagged as a fabricated number.
+  Neither is an invented metric. Worth fixing in `content_engine.lint_draft`.
+  ⚠️ STILL OPEN: reminder fast-path (item 1's fix), the pin question, groq capped at ~94k/100k
+  TPD by 05:00 (token budget remains the binding constraint), phone still offline so mobile
+  playback is still unproven, and Stage 2 distribution for stepproof.

@@ -287,6 +287,118 @@ def _scheduler_callback(task_description):
         threading.Thread(target=_deliver_shift, daemon=True).start()
         return
 
+    # PHASE B — 21:00 BUILD LOG. The day's real work + one LinkedIn draft Rushi edits and
+    # posts. She never posts anywhere (LinkedIn UA §8.2 bans automation; ~23% restriction rate).
+    #
+    # WHY IT REACHES OUT TO THE LAPTOP: the collector needs a git repo and an authenticated
+    # `gh`, and this VM has NEITHER (`/home/azureuser` is not a git repo at all, no gh binary).
+    # Running the collector here would send "0 commits, 0 PRs, nothing substantial today"
+    # every night forever — the exact blindness that was just fixed in build_log.py, only
+    # reintroduced by deployment instead of by code. So the LAPTOP collects (deterministic,
+    # no LLM) and the VM drafts + delivers, because the VM is the machine that is always up.
+    if task_description == "MIZUNE_BUILD_LOG":
+        def _deliver_build_log():
+            from server.commands import whatsapp_automation
+
+            def _send(msg: str) -> None:
+                sent = str(whatsapp_automation("Master", msg))
+                log_info(f"[BUILDLOG] delivery: {sent[:120]}")
+                if any(k in sent.lower() for k in ("error", "failed", "not connected")):
+                    time.sleep(120)          # bridge may be reconnecting — one retry
+                    log_info(f"[BUILDLOG] retry delivery: "
+                             f"{str(whatsapp_automation('Master', msg))[:120]}")
+
+            try:
+                from server.device_registry import device_registry
+
+                def _laptop(action: str, args: dict, timeout: float) -> str:
+                    """send_command + an offline retry, using ONLY the arguments every
+                    deployed device_registry accepts.
+
+                    A `wait_for_device=` kwarg exists in the working tree but was never
+                    committed or deployed, so passing it raised
+                    `unexpected keyword argument 'wait_for_device'` and killed this whole
+                    branch on its first live run. The lesson generalises past that one typo:
+                    divergence has to be checked for every file the new code CALLS INTO, not
+                    only the files being copied. Retrying on the returned string depends on
+                    the oldest, most stable behaviour instead of a signature.
+
+                    The laptop flaps (276 online / 192 offline in one log) and device_agent
+                    reconnects every 10s, so ~60s of grace turns a spurious miss into a delay.
+                    """
+                    last = ""
+                    for attempt in range(3):
+                        last = str(device_registry.send_command(
+                            "laptop", action, args, timeout=timeout))
+                        if "not online" not in last.lower():
+                            return last
+                        if attempt < 2:
+                            log_info(f"[BUILDLOG] laptop offline, waiting for a reconnect "
+                                     f"cycle (attempt {attempt + 1}/3)...")
+                            time.sleep(30)
+                    return last
+
+                repo = config.get("laptop_repo_path",
+                                  r"C:\Users\rushi\OneDrive\Desktop\my Ai")
+                # No `&&`: this is one command, and build_log.py resolves its own ROOT_DIR
+                # from __file__, so the working directory is irrelevant.
+                cmd = f'"{repo}\\.venv\\Scripts\\python.exe" "{repo}\\server\\build_log.py" --days 1 --json'
+                # timeout > the agent's own 60s subprocess cap, so a slow `gh` surfaces as the
+                # agent's own error rather than as a mystery timeout here.
+                out = _laptop("run_command", {"command": cmd}, 90.0)
+                log_info(f"[BUILDLOG] collector said: {out[:200]}")
+
+                if "BUILD_LOG_OK" not in out:
+                    # HONEST, and NOT silent. A missed night must be distinguishable from a
+                    # broken job — the keepalive that was 'alive but not healing' for two days
+                    # taught this exactly: silence has to mean broken, so say something.
+                    _send("Master, I couldn't build tonight's build log — your laptop didn't "
+                          f"answer (it has the git repo and gh, I don't).\nDetail: {out[:300]}")
+                    return
+
+                raw = _laptop("read_file",
+                              {"path": "desktop/my Ai/.data/build_log_latest.json",
+                               "max_chars": 20000}, 45.0)
+                # read_file prefixes/annotates its output, so recover the JSON object itself
+                # rather than assuming the whole string parses.
+                start, end = raw.find("{"), raw.rfind("}")
+                if start == -1 or end <= start:
+                    _send("Master, the laptop ran the build log but I couldn't read the "
+                          f"result file.\nDetail: {raw[:300]}")
+                    return
+                payload = json.loads(raw[start:end + 1])
+                digest = str(payload.get("digest") or "").strip()
+                if not digest:
+                    _send("Master, tonight's build log came back empty — worth a look.")
+                    return
+
+                # LLM VOICES ONE COMMIT, CODE DELIVERS. draft_post uses
+                # system_prompt_override so tools are blocked, lints deterministically, and
+                # attaches the linter's problems rather than silently shipping a bad draft.
+                draft_block = ""
+                stories = payload.get("story_commits") or []
+                if stories:
+                    try:
+                        from scripts.content_engine import draft_post
+                        text, ok, problems = draft_post(stories[0], config,
+                                                        digest_context=digest)
+                        label = "DRAFT (lint clean)" if ok else "DRAFT (needs your edit)"
+                        draft_block = f"\n\n— {label} —\n{text}"
+                        if problems:
+                            log_info(f"[BUILDLOG] lint problems: {problems}")
+                    except Exception as e:
+                        log_info(f"[BUILDLOG] drafting failed ({e}) — sending digest only.")
+                        draft_block = ("\n\n(No draft tonight — the writer failed. The numbers "
+                                       "above are still real.)")
+
+                # Data over silence, same contract as the briefing: if voicing dies, the
+                # deterministic digest still goes out.
+                _send(digest + draft_block)
+            except Exception as e:
+                log_info(f"[BUILDLOG] delivery thread error: {e}")
+        threading.Thread(target=_deliver_build_log, daemon=True).start()
+        return
+
     if task_description == "MIZUNE_NIGHTLY_REVIEW":
         def _run_review():
             try:
