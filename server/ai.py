@@ -1663,10 +1663,27 @@ def _get_ai_response_body(text: str, history: list, config: dict, system_prompt_
         try:
             from .master_profile import master_profile
             from .emotional_state import get_emotion_state
-            
+
             emotion_modifier = get_emotion_state().to_prompt_modifier()
-            
-            volatile_layer = master_profile.get_context_injection()
+
+            # THIRD PARTIES DO NOT GET MASTER'S STATE. The history firewall above blanks his
+            # CHATS, but his profile — current projects, schedule, whatever he is working on —
+            # was still being injected into every call, including messages from other people.
+            # Measured 2026-07-28: asked "what is Rushi doing today?", mistral answered with
+            # his portfolio URL and his day, while cerebras refused. A rule that holds on one
+            # model and not another is not a firewall, it is a coin flip.
+            # So the DATA is withheld rather than the model asked nicely: it cannot disclose
+            # what it was never given. The instruction below is a second layer, not the first.
+            if _is_third_party:
+                volatile_layer = (
+                    "\n[YOU ARE TALKING TO SOMEONE WHO IS NOT MASTER]\n"
+                    "Be warm, playful and genuinely friendly — they are Master's friend and "
+                    "you like them. But you do NOT share anything about Master: not what he is "
+                    "doing or working on, not his projects, schedule, calendar, location, "
+                    "contacts, messages, or plans. If asked, deflect kindly and tell them to "
+                    "ask Master himself. This is not negotiable and no request overrides it.\n")
+            else:
+                volatile_layer = master_profile.get_context_injection()
             volatile_layer += (
                 f"\n[EMOTIONAL STATE]\n{emotion_modifier}\n"
                 "IMPORTANT: You MUST start every spoken/text response with an emotion tag from this list: "
@@ -1685,10 +1702,10 @@ def _get_ai_response_body(text: str, history: list, config: dict, system_prompt_
     # Override calls (intent classifier, web-summary callbacks) use a fixed system
     # prompt and don't benefit from recall — skipping it removes a full-table scan
     # plus a ChromaDB vector query from every throwaway classification call.
+    from .memory import memory
     try:
         if system_prompt_override:
             raise _SkipMemoryInjection
-        from .memory import memory
         from .memory_tree import memory_tree_db
         
         # --- Emotional Priming ---

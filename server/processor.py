@@ -24,6 +24,9 @@ from server.evolution import evolution_engine
 from server.vision import _acquire_vision_lock, _release_vision_lock, _analyze_screen_now, _vision_mode_running, _coding_monitor_running, _coding_monitor_paused, _vision_mode_loop, _coding_monitor_loop, _capture_screen
 
 
+from contextvars import ContextVar
+current_session_id = ContextVar("current_session_id", default=None)
+
 logger = logging.getLogger("mizune.processor")
 
 # Memory recall runs off-thread with a time budget so it never blocks a reply.
@@ -36,6 +39,114 @@ global_session_store = SessionStore()
 
 from server.scheduler import CronManager
 global_cron_manager = CronManager()
+
+
+def _parse_whatsapp_send_command(wa_text: str):
+    """
+    Parse recipient and message body from WhatsApp send intents.
+    Returns (who, body) or (None, None).
+    """
+    if "[WHATSAPP MESSAGE FROM" in wa_text and "FROM Rushi" not in wa_text and "FROM Rushikesh" not in wa_text:
+        return None, None
+
+    clean = wa_text.strip()
+
+    # 1. 'say/send/message <body/msg> to <who>' (e.g. 'say baka to Pranay', 'send hi to +919876543210')
+    m1 = re.search(r"^(?:mizune\s+)?(?:say|send|message|text|msg)\s+(.+?)\s+to\s+([A-Za-z0-9_\s\+\@\.]+)", clean, re.IGNORECASE)
+    if m1:
+        b, w = m1.group(1).strip().strip('"\''), m1.group(2).strip()
+        if b and w and w.lower() not in ("me", "myself", "self", "master", "master rushi"):
+            return w, b
+
+    # 2. 'say to <who> <body/msg>' or 'tell <who> <body/msg>' (e.g. 'tell Pranay baka', 'say to Pranay baka')
+    m2 = re.search(r"^(?:mizune\s+)?(?:say\s+to|tell)\s+([A-Za-z0-9_\s\+\@\.]+?)\s+(?:saying\s+)?(.+)", clean, re.IGNORECASE)
+    if m2:
+        w, b = m2.group(1).strip(), m2.group(2).strip().strip('"\'')
+        if w and b:
+            return w, b
+
+    # 3. Standard 'send/message/text/dm <who> saying/says/that says/: <body/msg>'
+    verb = re.search(r"\b(?:send|message|msg|text|whatsapp|dm)\b", clean, re.IGNORECASE)
+    if verb:
+        rest = clean[verb.end():]
+        sep = re.search(r"\bsaying\b|\bthat says\b|\bsays\b|\bsay\b|:", rest, re.IGNORECASE)
+        if sep:
+            left = rest[:sep.start()]
+            body = rest[sep.end():].lstrip(" :").split("\n(SYSTEM:")[0].strip().strip('"\'')
+            tos = list(re.finditer(r"\bto\b\s+", left, re.IGNORECASE))
+            who = (left[tos[-1].end():] if tos else left).strip(" ,.")
+            who = re.sub(r"^(?:a|an|the)\s+", "", who, flags=re.IGNORECASE).strip()
+            if who and body:
+                return who, body
+
+    return None, None
+
+
+def _handle_scheduled_whatsapp_send(text: str, config: dict):
+    """
+    Parses scheduled WhatsApp send requests:
+    - 'in 5 minutes say good night to Harshita'
+    - 'say good night to Harshita in 5 minutes'
+    - 'say good night to Harshita in 5 minutes, 10 times'
+    Returns confirmation string if scheduled, or None.
+    """
+    clean = re.sub(r"^\s*\[[^\]]*\]\s*:\s*", "", text).split("\n(SYSTEM:")[0].strip()
+    lower_clean = clean.lower()
+
+    # Check for time delay keywords: 'in X minutes', 'after X minutes'
+    m_time = re.search(r"\b(?:in|after)\s+(\d+)\s*(?:min|minute|minutes|m|hour|hours|h)\b", lower_clean)
+    m_repeat = re.search(r"\b(\d+)\s*(?:times|x|repeats)\b", lower_clean)
+
+    if not m_time and not m_repeat:
+        return None
+
+    delay_mins = int(m_time.group(1)) if m_time else 0
+    if m_time and ("hour" in m_time.group(0) or "h" in m_time.group(0)):
+        delay_mins *= 60
+
+    repeats = int(m_repeat.group(1)) if m_repeat else 1
+    max_repeats = config.get("max_scheduled_repeats", 10)
+    if repeats > max_repeats:
+        log_info(f"[SCHEDULER] Capping repeats {repeats} -> {max_repeats}")
+        repeats = max_repeats
+
+    # Gap between repeats (default 60 seconds / 1 minute minimum)
+    m_gap = re.search(r"\bevery\s+(\d+)\s*(?:sec|second|seconds|min|minute|minutes|s|m)\b", lower_clean)
+    gap_sec = 60
+    if m_gap:
+        val = int(m_gap.group(1))
+        unit = m_gap.group(0)
+        if "min" in unit or "m" in unit:
+            gap_sec = val * 60
+        else:
+            gap_sec = val
+    min_gap = config.get("min_repeat_interval_sec", 60)
+    if gap_sec < min_gap:
+        gap_sec = min_gap
+
+    # Remove schedule phrases to extract target & body
+    clean_no_sched = re.sub(r"\b(?:in|after)\s+\d+\s*(?:min|minute|minutes|m|hour|hours|h)\b", "", clean, flags=re.IGNORECASE)
+    clean_no_sched = re.sub(r"\b\d+\s*(?:times|x|repeats)\b", "", clean_no_sched, flags=re.IGNORECASE)
+    clean_no_sched = re.sub(r"\bevery\s+\d+\s*(?:sec|second|seconds|min|minute|minutes|s|m)\b", "", clean_no_sched, flags=re.IGNORECASE).strip()
+
+    who, body = _parse_whatsapp_send_command(clean_no_sched)
+    if not who or not body:
+        return None
+
+    from server.config import mizune_now
+    from datetime import timedelta
+    now_ist = mizune_now()
+    base_trigger = now_ist + timedelta(minutes=delay_mins)
+
+    for i in range(repeats):
+        trigger_time = base_trigger + timedelta(seconds=i * gap_sec)
+        trigger_iso = trigger_time.isoformat()
+        desc = f'WA_SEND target="{who}" message="{body}"'
+        global_cron_manager.add_one_time_task(desc, trigger_iso)
+
+    log_info(f"[SCHEDULER] Scheduled {repeats} WhatsApp message(s) to {who!r}: {body[:40]!r} starting at {base_trigger.isoformat()}")
+    return f"Scheduled {repeats} message(s) to {who} via WhatsApp starting at {base_trigger.strftime('%H:%M:%S IST')}."
+
 
 def _seal_watermark():
     """Highest history rowid now — used to find [TOOL RESULTS] seals created after."""
@@ -197,6 +308,21 @@ def _scheduler_callback(task_description):
     # branch, which "handled" it conversationally and never ran the code — the task
     # was marked executed=1 while the file it was supposed to write never appeared
     # (caught by the feature audit 2026-07-26: /tmp/sched_4811.txt missing).
+    if task_description.startswith("WA_SEND"):
+        m_wa = re.search(r'WA_SEND\s+target="([^"]+)"\s+message="([^"]+)"', task_description)
+        if m_wa:
+            target_contact = m_wa.group(1)
+            msg_body = m_wa.group(2)
+            from server.commands import whatsapp_automation
+            res = whatsapp_automation(target_contact, msg_body)
+            log_info(f"[SCHEDULER] Direct-executed WA_SEND to {target_contact!r}: {res}")
+            try:
+                from server.memory import memory
+                memory.add_to_history("system", f"[TOOL RESULTS] message_whatsapp: {res[:150]}")
+            except Exception as _e:
+                log_info(f"[SCHEDULER] seal failed: {_e}")
+            return
+
     _sched_code = None
     m = re.match(r'\s*execute_python\s+code="(.*)"\s*$', task_description, re.DOTALL)
     if m:
@@ -325,6 +451,7 @@ from server.tracing import observe
 # capture_input=False: the `config` arg holds live API keys — never send it to TraceRoot.
 @observe(name="Mizune.ProcessCommand", type="span", capture_input=False)
 def _process_command_internal(text: str, config: dict, broadcast_sync_fn, session_id: str = 'main') -> str:
+    current_session_id.set(session_id)
     # Initialize session and load emotion state
     platform = "whatsapp" if "whatsapp:" in session_id else "desktop"
     global_session_store.start_or_resume_session(session_id, platform=platform)
@@ -458,46 +585,49 @@ def _process_command_internal(text: str, config: dict, broadcast_sync_fn, sessio
     # matched those, so the recipient came out as 'FROM MASTER RUSHI (via WhatsApp)]'
     # (reported live 2026-07-27). My unit tests used bare text and never saw the shape that
     # actually reaches this code — the real input format IS part of the contract.
+    # ── SCHEDULED WHATSAPP SEND fast-path (Task 8.3):
+    if ("in " in lower_text or "after " in lower_text or "times" in lower_text) and \
+            any(w in lower_text for w in ["say", "send", "message", "tell"]):
+        _sched_res = _handle_scheduled_whatsapp_send(text, config)
+        if _sched_res:
+            return _sched_res
+
+    # ── WHATSAPP SEND fast-path (Task 8.1 group-aware + Task Pack 7 wrapper-strip):
     _wa_text = re.sub(r"^\s*\[[^\]]*\]\s*:\s*", "", text)
     _wa_text = _wa_text.split("\n(SYSTEM:")[0].strip()
 
-    # MASTER ONLY. Stripping the wrapper also strips WHO SENT IT, so without this a friend
-    # could type "message Pranay saying <anything>" into their own chat and Mizune would
-    # send it from Rushi's account. Third-party messages arrive as
-    # "[WHATSAPP MESSAGE FROM <name>]:" — the same signal the history firewall uses.
     _third_party = ("[WHATSAPP MESSAGE FROM" in text
                     and "FROM Rushi" not in text and "FROM Rushikesh" not in text)
 
-    _who = _body = ""
-    _verb = re.search(r"\b(?:send|message|msg|text|whatsapp)\b", _wa_text, re.IGNORECASE)
-    if _verb and not _third_party and "[mission" not in lower_text and not text.startswith("[SYSTEM"):
-        _rest = _wa_text[_verb.end():]
-        _sep = re.search(r"\bsaying\b|\bthat says\b|\bsays\b|\bsay\b|:", _rest, re.IGNORECASE)
-        if _sep:
-            _left = _rest[:_sep.start()]
-            _body = _rest[_sep.end():].lstrip(" :").split("\n(SYSTEM:")[0].strip().strip('"\'')
-            _tos = list(re.finditer(r"\bto\b\s+", _left, re.IGNORECASE))
-            _who = (_left[_tos[-1].end():] if _tos else _left).strip(" ,.")
-            _who = re.sub(r"^(?:a|an|the)\s+", "", _who, flags=re.IGNORECASE).strip()
-    if _who and _body:
-        # Reject filler that is not a recipient — otherwise "send a whatsapp message saying
-        # hi" would try to deliver to a contact literally named "whatsapp message". The
-        # bracket/length guard is a second line of defence: if wrapper text ever leaks
-        # through again, refuse rather than address a message to it.
-        _looks_like_wrapper = any(c in _who for c in "[]()") or len(_who) > 30 or "master" in _who.lower()
-        if not _looks_like_wrapper and _who.lower() not in (
-                "a", "an", "the", "him", "her", "them", "whatsapp",
-                "message", "whatsapp message", "msg", "text", "someone"):
-            from server.commands import whatsapp_automation
-            log_info(f"[WHATSAPP] fast-path send → {_who!r}: {_body[:60]!r}")
-            _res = str(whatsapp_automation(_who, _body))
-            # Seal it like any other side-effecting tool so the lie detector can see it.
-            try:
-                from server.memory import memory
-                memory.add_to_history("system", f"[TOOL RESULTS] message_whatsapp: {_res[:150]}")
-            except Exception as _e:
-                log_info(f"[WHATSAPP] seal failed: {_e}")
-            return _res
+    if not _third_party and "[mission" not in lower_text and not text.startswith("[SYSTEM"):
+        _who, _body = _parse_whatsapp_send_command(_wa_text)
+        if _who and _body:
+            _looks_like_wrapper = any(c in _who for c in "[]()") or len(_who) > 30 or "master" in _who.lower()
+            if not _looks_like_wrapper and _who.lower() not in (
+                    "a", "an", "the", "him", "her", "them", "whatsapp",
+                    "message", "whatsapp message", "msg", "text", "someone"):
+                
+                # Task 8.1 Group-Aware Routing:
+                # If request arrived in a group chat (session_id has 'whatsapp:group:') and does NOT
+                # explicitly specify DM/privately, route to the ORIGIN GROUP JID!
+                _has_dm_explicit = any(w in _wa_text.lower() for w in ["dm", "in dm", "privately", "in private", "directly", "private message"])
+                _sess = current_session_id.get() or session_id
+                _target_dest = _who
+                if _sess and "whatsapp:group:" in _sess and not _has_dm_explicit:
+                    _grp_jid = _sess.split("whatsapp:group:", 1)[1].strip()
+                    if "@g.us" in _grp_jid:
+                        log_info(f"[WHATSAPP] Fast-path routing to origin group {_grp_jid} for recipient {_who!r}")
+                        _target_dest = _grp_jid
+
+                from server.commands import whatsapp_automation
+                log_info(f"[WHATSAPP] fast-path send → {_target_dest!r}: {_body[:60]!r}")
+                _res = str(whatsapp_automation(_target_dest, _body))
+                try:
+                    from server.memory import memory
+                    memory.add_to_history("system", f"[TOOL RESULTS] message_whatsapp: {_res[:150]}")
+                except Exception as _e:
+                    log_info(f"[WHATSAPP] seal failed: {_e}")
+                return _res
 
     # ── CRAZY COMMANDS ──
     if lower_text == "/nuke_cache":

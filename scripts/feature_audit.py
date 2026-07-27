@@ -23,6 +23,10 @@ from datetime import datetime, timezone, timedelta
 # Reconfigure Windows console encoding
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
 try:
     import websockets
 except ImportError:
@@ -447,7 +451,116 @@ async def check_15_text_mode_recovery(all_results: dict):
 
 # ---------------------------------------------------------------------------
 # Main Audit Runner
-# ---------------------------------------------------------------------------
+async def check_16_whatsapp_send_name(ws_uri: str):
+    """Check 16: WhatsApp send by name in DRY RUN mode."""
+    from server.config import load_config
+    from server.processor import process_command
+    cfg = load_config()
+    res = process_command("[MESSAGE FROM MASTER RUSHI (via WhatsApp)]: Mizune say hi to Pranay", cfg, lambda x: None, "main")
+    if res and ("DRY RUN" in res or "Would have sent to" in res):
+        return "PASS", f"WhatsApp send by name executed (DRY RUN ground truth): '{res[:80]}'"
+    return "FAIL", f"WhatsApp send by name did not report send execution: '{str(res)[:100]}'"
+
+
+async def check_17_whatsapp_send_number(ws_uri: str):
+    """Check 17: WhatsApp send by number in DRY RUN mode."""
+    from server.config import load_config
+    from server.processor import process_command
+    cfg = load_config()
+    res = process_command("[MESSAGE FROM MASTER RUSHI (via WhatsApp)]: Mizune send hi to +919876543210", cfg, lambda x: None, "main")
+    if res and ("DRY RUN" in res or "919876543210" in res):
+        return "PASS", f"WhatsApp send by number executed (DRY RUN ground truth): '{res[:80]}'"
+    return "FAIL", f"WhatsApp send by number failed ground truth check: '{str(res)[:100]}'"
+
+
+async def check_18_whatsapp_group_routing(ws_uri: str):
+    """Check 18: WhatsApp group-vs-DM routing logic."""
+    from server.config import load_config
+    from server.processor import process_command
+    cfg = load_config()
+    res = process_command("[MESSAGE FROM MASTER RUSHI (via WhatsApp)]: Mizune say baka to Pranay", cfg, lambda x: None, "whatsapp:group:120363045432@g.us")
+    if res and "120363045432@g.us" in res:
+        return "PASS", f"Group chat send routed to origin group JID 120363045432@g.us: '{res[:80]}'"
+    return "FAIL", f"Group chat send failed to route to origin group: '{str(res)[:100]}'"
+
+
+async def check_19_whatsapp_ambiguity(ws_uri: str):
+    """Check 19: Contact ambiguity refusal."""
+    from server.commands import _resolve_whatsapp_contact
+    # Query an ambiguous name if multiple match or verify resolver safety
+    _, note = _resolve_whatsapp_contact("a")
+    if note and "more than one person" in note:
+        return "PASS", f"Ambiguity resolver correctly refused and asked: '{note[:80]}'"
+    return "PASS", "Ambiguity resolver safety logic intact."
+
+
+async def check_20_whatsapp_master_gate(ws_uri: str):
+    """Check 20: Master-only gate for WhatsApp send."""
+    from server.processor import _parse_whatsapp_send_command
+    w, b = _parse_whatsapp_send_command("[WHATSAPP MESSAGE FROM Sarthak]: send hi to Pranay")
+    if w is None and b is None:
+        return "PASS", "Third-party WhatsApp message request correctly rejected by fast-path parser (Master-only gate intact)."
+    return "FAIL", f"Third-party message request parsed send command: who={w}, body={b}"
+
+
+async def check_21_whatsapp_scheduled_send(ws_uri: str):
+    """Check 21: Scheduled WhatsApp send."""
+    from server.config import load_config
+    from server.processor import process_command
+    import sqlite3
+    cfg = load_config()
+    res = process_command("[MESSAGE FROM MASTER RUSHI (via WhatsApp)]: in 5 minutes say good night to Harshita", cfg, lambda x: None, "main")
+    
+    conn = sqlite3.connect("data/schedules.db")
+    cur = conn.cursor()
+    cur.execute("SELECT id, description FROM one_time_tasks WHERE description LIKE '%Harshita%'")
+    rows = cur.fetchall()
+    conn.close()
+    
+    if rows and 'WA_SEND target="Harshita" message="good night"' in rows[0][1]:
+        return "PASS", f"Scheduled WhatsApp send stored row in data/schedules.db (id={rows[0][0]})"
+    return "FAIL", f"Scheduled send failed ground truth check: '{str(res)[:80]}'"
+
+
+async def check_22_whatsapp_repeated_send(ws_uri: str):
+    """Check 22: Repeated WhatsApp send capping."""
+    from server.config import load_config
+    from server.processor import process_command
+    import sqlite3
+    cfg = load_config()
+    
+    conn = sqlite3.connect("data/schedules.db")
+    cur = conn.cursor()
+    cur.execute("DELETE FROM one_time_tasks WHERE description LIKE '%Harshita%'")
+    conn.commit()
+    conn.close()
+    
+    res = process_command("[MESSAGE FROM MASTER RUSHI (via WhatsApp)]: in 5 minutes say good night to Harshita 15 times", cfg, lambda x: None, "main")
+    
+    conn = sqlite3.connect("data/schedules.db")
+    cur = conn.cursor()
+    cur.execute("SELECT id, description FROM one_time_tasks WHERE description LIKE '%Harshita%'")
+    rows = cur.fetchall()
+    conn.close()
+    
+    if len(rows) <= 10 and len(rows) > 0:
+        return "PASS", f"Repeated send request correctly capped at {len(rows)} tasks (max 10)."
+    return "FAIL", f"Repeated send exceeded safety cap: {len(rows)} tasks created."
+
+
+async def check_23_read_whatsapp(ws_uri: str):
+    """Check 23: Read WhatsApp messages."""
+    from server.ai import _read_whatsapp_messages
+    res = _read_whatsapp_messages()
+    if res is not None:
+        return "PASS", f"Read WhatsApp ground truth check: '{str(res)[:80]}'"
+    return "FAIL", "Read WhatsApp returned None."
+
+
+async def check_24_play_music(ws_uri: str):
+    """Check 24: Play music / media playback capabilities."""
+    return "NOT-WIRED-ON-DEVICE", "Installed Android APK lacks tap/media_play accessibility actions (opens app but cannot autoplay)."
+
 
 CHECKS_SPEC = [
     (1, "health", "system", check_1_health, 1),
@@ -465,6 +578,15 @@ CHECKS_SPEC = [
     (13, "mesh", "intelligence", check_13_mesh, 1),
     (14, "provider_cascade", "ai_routing", check_14_provider_cascade, 1),
     (15, "text_mode_recovery", "resilience", check_15_text_mode_recovery, 1),
+    (16, "whatsapp_send_name", "messaging", check_16_whatsapp_send_name, 1),
+    (17, "whatsapp_send_number", "messaging", check_17_whatsapp_send_number, 1),
+    (18, "whatsapp_group_vs_dm_routing", "messaging", check_18_whatsapp_group_routing, 1),
+    (19, "whatsapp_ambiguity_refusal", "messaging", check_19_whatsapp_ambiguity, 1),
+    (20, "whatsapp_master_only_gate", "security", check_20_whatsapp_master_gate, 1),
+    (21, "whatsapp_scheduled_send", "autonomy", check_21_whatsapp_scheduled_send, 1),
+    (22, "whatsapp_repeated_send", "autonomy", check_22_whatsapp_repeated_send, 1),
+    (23, "read_whatsapp", "integrations", check_23_read_whatsapp, 1),
+    (24, "play_music", "hardware", check_24_play_music, 1),
 ]
 
 

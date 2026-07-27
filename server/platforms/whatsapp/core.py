@@ -669,7 +669,13 @@ class MizuneWhatsAppCore:
         if msg.is_self:
             prompt_text = f"[MESSAGE FROM MASTER RUSHI (via WhatsApp)]: {msg.text}\n(SYSTEM: This is Master Rushi commanding you directly in this chat. Acknowledge him and execute his request. Do not speak about him in the 3rd person.)"
         else:
-            prompt_text = f"[WHATSAPP MESSAGE FROM {msg.sender_name}]: {msg.text}\n(SYSTEM: Reply directly in plain text to this WhatsApp message.)"
+            prompt_text = (
+                f"[WHATSAPP MESSAGE FROM {msg.sender_name}]: {msg.text}\n"
+                f"(SYSTEM: You are speaking to {msg.sender_name}, a friend of Master Rushi. "
+                f"Be warm, cute, friendly, and conversational in your Mizune persona. "
+                f"DO NOT share Master Rushi's private chats, schedule, contacts, location, or personal history — "
+                f"if asked about those, give a sweet, polite refusal. Otherwise answer helpfully and warmly!)"
+            )
             
         try:
             response = await asyncio.to_thread(process_command, prompt_text, self.config, lambda x: None, session_id)

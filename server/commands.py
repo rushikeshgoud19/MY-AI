@@ -293,20 +293,23 @@ def whatsapp_automation(contact: str, message: str = None) -> str:
     """Use the Node.js headless bridge to send a WhatsApp message securely and instantly."""
     from server.platforms.whatsapp.core import send_whatsapp_message
     
-    # A phone number is UNAMBIGUOUS — honour it before any name matching. Checked first
-    # because the self-list below is a trap: the model, unsure who "him" is, passes
-    # "Master" and the message quietly goes to Master's own chat while reporting success.
-    _digits = "".join(ch for ch in str(contact or "") if ch.isdigit())
-    if len(_digits) >= 10:
-        target = _digits
-        log_info(f"[ACTION] WhatsApp recipient taken from the number given: {target}")
+    # A full JID (e.g. 120363045432@g.us) or phone number is UNAMBIGUOUS — honour it before any name matching.
+    if "@" in str(contact or ""):
+        target = str(contact).strip()
         contact = target
-    # Mizune runs on Master's own WhatsApp, so "Master"/"Rushi"/"me" all mean send-to-self.
-    elif contact.lower().strip() in ["me", "myself", "self", "master", "rushi", "rushikesh", "master rushi"]:
-        target = None # Default to self
-        contact = "yourself"
+        log_info(f"[ACTION] WhatsApp recipient is a full JID: {target}")
     else:
-        target = contact
+        _digits = "".join(ch for ch in str(contact or "") if ch.isdigit())
+        if len(_digits) >= 10:
+            target = _digits
+            log_info(f"[ACTION] WhatsApp recipient taken from the number given: {target}")
+            contact = target
+        # Mizune runs on Master's own WhatsApp, so "Master"/"Rushi"/"me" all mean send-to-self.
+        elif contact.lower().strip() in ["me", "myself", "self", "master", "rushi", "rushikesh", "master rushi"]:
+            target = None # Default to self
+            contact = "yourself"
+        else:
+            target = contact
         
     # Attempt to resolve name from contacts.json
     try:
@@ -329,16 +332,27 @@ def whatsapp_automation(contact: str, message: str = None) -> str:
     # Pranay" failed for anyone he hadn't manually added, which is most people.
     if target is not None and not any(ch.isdigit() for ch in str(target)):
         resolved, note = _resolve_whatsapp_contact(str(target))
-        if note:
-            # Ambiguous or unknown — say so. NEVER guess: picking the wrong row here sends
-            # Master's message to a real stranger, which is not a recoverable mistake.
-            log_info(f"[ACTION] Contact lookup for {target!r}: {note}")
-            return note
         if resolved:
             target = resolved
+        elif note:
+            try:
+                from server.config import load_config as _lc
+                if _lc().get("whatsapp_dry_run"):
+                    log_info(f"[ACTION] DRY RUN — would send to {target}: {str(message)[:80]!r}")
+                    return f"DRY RUN — not delivered. Would have sent to {target}: {str(message)[:120]}"
+            except Exception:
+                pass
+            log_info(f"[ACTION] Contact lookup for {target!r}: {note}")
+            return note
 
-    # If it's a phone number, use headless Baileys!
-    if target is None or any(char.isdigit() for char in target):
+    # If it's a phone number, JID, or in dry-run mode, use headless Baileys / dry-run report!
+    try:
+        from server.config import load_config as _lc
+        _dry = bool(_lc().get("whatsapp_dry_run"))
+    except Exception:
+        _dry = False
+
+    if _dry or target is None or any(char.isdigit() for char in str(target)) or "@" in str(target):
         # NAME THE REAL DESTINATION, not the label. The old version logged and confirmed
         # `contact` — so a message that went to Master's own chat was reported as
         # "successfully sent to yourself" while he was asking for it to go to someone else.
