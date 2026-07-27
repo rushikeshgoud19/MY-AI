@@ -628,12 +628,41 @@ class MizuneWhatsAppCore:
         msg = self.importance.analyze(msg, contact)
         self.memory.ingest_message(msg, contact)
         
+        # Z1 Guardian Fraud Shield Passive Scan (fail-safe, alerts Master ONLY, never replies to sender)
+        try:
+            from server.guardian import analyze_message
+            sender_info = msg.sender_name or msg.sender_phone or "Unknown"
+            if msg.text:
+                analyze_message("whatsapp", sender_info, msg.text)
+        except Exception as e:
+            log_info(f"[Core] Guardian scan failed: {e}")
+
         if msg.should_alert_user:
             await self.voice.trigger_alert(msg, contact)
             
         if not self._should_reply(msg, contact):
             return
-            
+
+        # Image vision — MUST stay AFTER the reply gate. It originally ran before it,
+        # which meant ANY image from ANY friend or group got an unsolicited AI reply,
+        # bypassing the privacy rule that she only engages when summoned (2026-07-23).
+        if msg.media and msg.media.get('type') == 'image':
+            try:
+                import base64
+                from server.ai import save_latest_image, describe_image
+                buf = msg.media.get('buffer', '')
+                if isinstance(buf, bytes):
+                    buf = base64.b64encode(buf).decode('utf-8')
+                if buf:
+                    save_latest_image(buf)
+                    question = msg.text.strip() if msg.text else "what does this say"
+                    vision_reply = await asyncio.to_thread(describe_image, buf, question, self.config)
+                    if vision_reply:
+                        await self.send_message(msg.chat_jid, vision_reply)
+                        return
+            except Exception as e:
+                log_info(f"[Core] Image vision failed: {e}")
+
         session_id = f"whatsapp:{msg.chat_type}:{msg.chat_jid}"
         prompt_text = msg.text
         
@@ -685,10 +714,16 @@ class MizuneWhatsAppCore:
             if not (msg.is_mentioned or has_wake_word):
                 return False
         else:
-            # 1.3 Gate who Mizune responds to + wake prefix
-            if not is_allowed and not has_wake_word:
+            # She lives on Master's PERSONAL number: friends texting him are talking
+            # to HIM, not to her. Auto-replying (and running brain/recall) on every
+            # VIP/allowed friend's message meant she processed Master's private
+            # conversations (observed 2026-07-19). Now she only engages when
+            # explicitly summoned ("mizune ..."), and only by allowed contacts.
+            if not has_wake_word:
                 return False
-                
+            if not is_allowed:
+                return False
+
         return True
 
     async def send_message(self, to_jid: str, text: str):
@@ -799,11 +834,16 @@ def send_whatsapp_message(text: str, to: str = None) -> bool:
     if _core_instance and _core_instance.bridge_ws:
         if to:
             import re
-            digits_only = re.sub(r'\D', '', to)
-            if digits_only:
-                to_jid = f"{digits_only}@s.whatsapp.net"
+            # A FULL JID IS ALREADY AN ADDRESS — never rebuild it from its digits.
+            # WhatsApp's newer privacy IDs look like "192689429586157@lid"; stripping the
+            # non-digits turned that into "192689429586157@s.whatsapp.net", which is a
+            # DIFFERENT account — possibly a real stranger's. Anything containing '@' is
+            # passed through untouched; only bare phone numbers get the s.whatsapp.net suffix.
+            if "@" in to:
+                to_jid = to.strip()
             else:
-                to_jid = to
+                digits_only = re.sub(r'\D', '', to)
+                to_jid = f"{digits_only}@s.whatsapp.net" if digits_only else to
         else:
             to_jid = "me"
 

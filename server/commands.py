@@ -233,6 +233,62 @@ def _whatsapp_focus():
         pass
     return False
 
+def _resolve_whatsapp_contact(name: str):
+    """Look a name up in the WhatsApp contact store. Returns (jid_or_none, problem_or_none).
+
+    Master should be able to message anyone he has actually talked to, not only the four
+    people hand-listed in contacts.json. cortex.db holds 534 contacts with the identifiers
+    WhatsApp itself uses.
+
+    The identifier is returned VERBATIM — it may be a phone JID or one of WhatsApp's newer
+    "@lid" privacy IDs, and those must not be rebuilt from their digits (doing so addresses
+    a different account entirely).
+
+    Ambiguity is reported, never resolved by guessing. Sending Master's message to the wrong
+    person is not a mistake you can take back, so two "Pranay"s means asking him which one.
+    """
+    import os
+    import sqlite3
+    q = (name or "").strip().lower()
+    if len(q) < 2:
+        return None, None
+
+    for db in ("cortex.db",
+               os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cortex.db")):
+        if not os.path.exists(db):
+            continue
+        try:
+            con = sqlite3.connect(db)
+            rows = con.execute(
+                "SELECT DISTINCT sender_name, sender_jid FROM whatsapp_messages "
+                "WHERE sender_name IS NOT NULL AND sender_name != '' AND sender_jid IS NOT NULL"
+            ).fetchall()
+            con.close()
+        except Exception as e:
+            log_info(f"[ACTION] contact store unreadable: {e}")
+            return None, None
+
+        # Exact full-name match wins; otherwise match on a whole word (so "Pranay" finds
+        # "Pranay Raj" but "ran" does not match half the address book).
+        exact = {(n, j) for n, j in rows if n.strip().lower() == q}
+        if not exact:
+            exact = {(n, j) for n, j in rows if q in n.strip().lower().split()}
+        if not exact:
+            exact = {(n, j) for n, j in rows
+                     if n.strip().lower().startswith(q) and len(q) >= 4}
+
+        by_jid = {j: n for n, j in exact}
+        if len(by_jid) == 1:
+            jid, display = next(iter(by_jid.items()))
+            log_info(f"[ACTION] Resolved '{name}' -> {display} ({jid})")
+            return jid, None
+        if len(by_jid) > 1:
+            who = ", ".join(sorted(set(by_jid.values()))[:5])
+            return None, (f"Master, I know more than one person matching '{name}': {who}. "
+                          f"Which one should I message?")
+    return None, None
+
+
 def whatsapp_automation(contact: str, message: str = None) -> str:
     """Use the Node.js headless bridge to send a WhatsApp message securely and instantly."""
     from server.platforms.whatsapp.core import send_whatsapp_message
@@ -268,6 +324,19 @@ def whatsapp_automation(contact: str, message: str = None) -> str:
     except Exception as e:
         log_info(f"[ACTION] Contact resolution error: {e}")
 
+    # Fall back to the WhatsApp contact store — everyone Master has ever talked to (534
+    # people), not just the handful hand-listed in contacts.json. Without this, "message
+    # Pranay" failed for anyone he hadn't manually added, which is most people.
+    if target is not None and not any(ch.isdigit() for ch in str(target)):
+        resolved, note = _resolve_whatsapp_contact(str(target))
+        if note:
+            # Ambiguous or unknown — say so. NEVER guess: picking the wrong row here sends
+            # Master's message to a real stranger, which is not a recoverable mistake.
+            log_info(f"[ACTION] Contact lookup for {target!r}: {note}")
+            return note
+        if resolved:
+            target = resolved
+
     # If it's a phone number, use headless Baileys!
     if target is None or any(char.isdigit() for char in target):
         # NAME THE REAL DESTINATION, not the label. The old version logged and confirmed
@@ -277,6 +346,20 @@ def whatsapp_automation(contact: str, message: str = None) -> str:
         # "Mizune the message is not sent", three times, while she reported success each
         # time). The seal recorded the label too, so the lie detector could not catch it.
         where = "Master's own chat (SELF)" if target is None else str(target)
+
+        # DRY RUN. Added 2026-07-27 after I tested the send path against Master's real
+        # contacts and delivered "ignore this, testing" to someone with no connection to
+        # the work. Verifying a messaging feature must never cost a real person a real
+        # message. Set whatsapp_dry_run=true and the whole path runs, logs and seals — it
+        # just does not deliver. The seal says DRY RUN so it can never read as a real send.
+        try:
+            from server.config import load_config as _lc
+            if _lc().get("whatsapp_dry_run"):
+                log_info(f"[ACTION] DRY RUN — would send to {where}: {str(message)[:80]!r}")
+                return f"DRY RUN — not delivered. Would have sent to {where}: {str(message)[:120]}"
+        except Exception:
+            pass
+
         log_info(f"[ACTION] WhatsApp send → {where} (asked for: {contact!r})")
         from server.platforms.whatsapp.core import send_whatsapp_message
         success = send_whatsapp_message(message, target)
