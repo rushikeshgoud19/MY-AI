@@ -3269,6 +3269,18 @@ If any is wrong, write `BLOCKED: <which> mis-parses wrapped input` with the evid
   🚀 **PUBLISHED 2026-07-27 (Rushi said go): https://github.com/rushikeshgoud19/agent-seal**
   Public, 8 commits, 9 topics. **Verified from a CLEAN CLONE, not the working copy** — all
   138 checks pass against exactly what a stranger downloads. Name shipped as `agent-seal`.
+  🔴 **PyPI 400 ROOT-CAUSED 2026-07-28 — IT WAS THE NAME ALL ALONG.** Verbose response:
+  `400 The name 'agent-seal' is too similar to an existing project.` PyPI's similarity guard
+  firing on `agentseal` v0.10.0. Enforced at PROJECT CREATION, which is why
+  `pypi.org/project/agent-seal` returning 404 made the name look free — **a 404 there does NOT
+  mean a name is usable.** No retry could ever have worked. (The earlier license-metadata 400
+  was a separate real bug, just not this one.)
+  ✅ **RENAMED TO `stepproof`** — https://github.com/rushikeshgoud19/stepproof (repo renamed,
+  CI green, 138 checks pass, build + twine check clean). Name and near-neighbours were checked
+  against the same guard first. ⚠️ The working directory on Desktop is `agentse`, not
+  `stepproof` — Rushi renamed the folder at some point; the git repo inside is correct.
+  ⚠️ `.gitignore` root allowlist named the old package dir; leaving it would have SILENTLY
+  UNTRACKED the whole library on the next commit. Check that after any package rename.
   ⛔ STILL NEEDS RUSHI: **PyPI** (free account + API token — Claude does not create accounts
   or handle credentials, so he runs `twine upload` or hands the token over himself) and
   **the post** (`docs/launch-post.md` — he edits before posting; a launch post that reads as
