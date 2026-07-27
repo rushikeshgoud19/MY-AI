@@ -563,30 +563,30 @@ async def check_24_play_music(ws_uri: str):
 
 
 CHECKS_SPEC = [
-    (1, "health", "system", check_1_health, 1),
+    (1, "health", "system", check_1_health, 3),
     (2, "chat_persona", "core", check_2_chat_persona, 3),
     (3, "tts_audio", "audio", check_3_tts_audio, 3),
     (4, "ist_clock", "system", check_4_ist_clock, 3),
     (5, "calendar_read", "integrations", check_5_calendar_read, 3),
-    (6, "semantic_recall", "memory", check_6_semantic_recall, 1),
-    (7, "guardian", "security", check_7_guardian, 1),
-    (8, "seals_lie_detector", "audit", check_8_seals_lie_detector, 1),
-    (9, "scheduler", "autonomy", check_9_scheduler, 1),
-    (10, "missions", "autonomy", check_10_missions, 1),
-    (11, "night_shift", "autonomy", check_11_night_shift, 1),
-    (12, "device_nodes", "hardware", check_12_device_nodes, 1),
-    (13, "mesh", "intelligence", check_13_mesh, 1),
-    (14, "provider_cascade", "ai_routing", check_14_provider_cascade, 1),
-    (15, "text_mode_recovery", "resilience", check_15_text_mode_recovery, 1),
-    (16, "whatsapp_send_name", "messaging", check_16_whatsapp_send_name, 1),
-    (17, "whatsapp_send_number", "messaging", check_17_whatsapp_send_number, 1),
-    (18, "whatsapp_group_vs_dm_routing", "messaging", check_18_whatsapp_group_routing, 1),
-    (19, "whatsapp_ambiguity_refusal", "messaging", check_19_whatsapp_ambiguity, 1),
-    (20, "whatsapp_master_only_gate", "security", check_20_whatsapp_master_gate, 1),
-    (21, "whatsapp_scheduled_send", "autonomy", check_21_whatsapp_scheduled_send, 1),
-    (22, "whatsapp_repeated_send", "autonomy", check_22_whatsapp_repeated_send, 1),
-    (23, "read_whatsapp", "integrations", check_23_read_whatsapp, 1),
-    (24, "play_music", "hardware", check_24_play_music, 1),
+    (6, "semantic_recall", "memory", check_6_semantic_recall, 3),
+    (7, "guardian", "security", check_7_guardian, 3),
+    (8, "seals_lie_detector", "audit", check_8_seals_lie_detector, 3),
+    (9, "scheduler", "autonomy", check_9_scheduler, 3),
+    (10, "missions", "autonomy", check_10_missions, 3),
+    (11, "night_shift", "autonomy", check_11_night_shift, 3),
+    (12, "device_nodes", "hardware", check_12_device_nodes, 3),
+    (13, "mesh", "intelligence", check_13_mesh, 3),
+    (14, "provider_cascade", "ai_routing", check_14_provider_cascade, 3),
+    (15, "text_mode_recovery", "resilience", check_15_text_mode_recovery, 3),
+    (16, "whatsapp_send_name", "messaging", check_16_whatsapp_send_name, 3),
+    (17, "whatsapp_send_number", "messaging", check_17_whatsapp_send_number, 3),
+    (18, "whatsapp_group_vs_dm_routing", "messaging", check_18_whatsapp_group_routing, 3),
+    (19, "whatsapp_ambiguity_refusal", "messaging", check_19_whatsapp_ambiguity, 3),
+    (20, "whatsapp_master_only_gate", "security", check_20_whatsapp_master_gate, 3),
+    (21, "whatsapp_scheduled_send", "autonomy", check_21_whatsapp_scheduled_send, 3),
+    (22, "whatsapp_repeated_send", "autonomy", check_22_whatsapp_repeated_send, 3),
+    (23, "read_whatsapp", "integrations", check_23_read_whatsapp, 3),
+    (24, "play_music", "hardware", check_24_play_music, 3),
 ]
 
 
@@ -632,21 +632,24 @@ async def run_audit(ws_uri: str, http_base: str, only_name: str = None, quick: b
                 print(f"   Run {r}/{runs}: {verdict} — {evidence[:60]}")
             
             # Space out probes between runs
-            await asyncio.sleep(2)
+            await asyncio.sleep(1)
 
         # Calculate final verdict and flakiness
-        pass_count = sum(1 for v in run_verdicts if v == "PASS")
-        final_verdict = "PASS" if pass_count == runs else run_verdicts[0]
-        if runs > 1:
-            flakiness_stats[cname] = f"{pass_count}/{runs}"
-            if pass_count < runs and pass_count > 0:
-                final_verdict = "FLAKY"
+        pass_count = sum(1 for v in run_verdicts if v == "PASS" or v == "PASS (REFUSED)")
+        if pass_count == runs:
+            final_verdict = "PASS"
+        elif 0 < pass_count < runs:
+            final_verdict = "FLAKY"
+        else:
+            final_verdict = run_verdicts[0]
+
+        flakiness_stats[cname] = f"{pass_count}/{runs}"
 
         audit_results[cname] = {
             "id": cid,
             "category": cat,
             "verdict": final_verdict,
-            "pass_rate": f"{pass_count}/{runs}" if runs > 1 else ("1/1" if final_verdict == "PASS" else "0/1"),
+            "pass_rate": f"{pass_count}/{runs}",
             "evidence": last_evidence
         }
 

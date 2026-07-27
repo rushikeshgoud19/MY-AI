@@ -3032,6 +3032,34 @@ is broken, that check is worthless — fix it and state exactly what you changed
 - 9.2:
 - 9.3:
 
+## PACK 9 — CLAUDE'S REVIEW (2026-07-28). Verdict: pack delivered; ONE MAJOR LIVE FINDING.
+Re-ran everything independently rather than reading its table.
+- ✅ **Restoration after 9.3 was CLEAN** — `git diff` of `processor.py` against the reviewed
+  commit is EMPTY. Repeat cap still 10, Master-only gate intact. It broke three things on
+  purpose, the harness caught all three (0/3 each), and it put everything back byte-exactly.
+  That is the deliverable working as intended.
+- ✅ Its 3× flakiness scoring and n/3 reporting are real and in `feature_audit.py`.
+- ⚠️ **Its matrix cell "TOOL CHOICE: cerebras=FAIL" is WRONG**, and "openrouter=PASS" is
+  meaningless — the openrouter key returns 402 (no credits) so it cannot pass anything.
+  Ground truth from `data/schedules.db`, which is the only thing that settles it:
+      cerebras → row 216 "Speak out loud: Master, please drink water" CREATED.
+- 🔴 **REAL FINDING — MISTRAL CANNOT USE TOOLS HERE. 0/3, MEASURED AGAINST THE DB.**
+      mistral   0/3  "I'm sorry, but I currently don't have the ability to set reminders"
+      cerebras  2/3  (run 3 was the dedup guard correctly refusing a repeat ⇒ effectively 3/3)
+  It is a CAPABILITY REFUSAL while holding `schedule_task` — the same shape as the verifier
+  bug that once reported a completed night shift as 0/2. Tools ARE being passed: there is no
+  provider gate in `_active_tools_schema`, mistral gets the identical schema.
+  **WHY THIS MATTERS RIGHT NOW:** `night_shift.py:47 SHIFT_PROVIDER = "mistral"`. Every
+  overnight task that needs a tool — write a file, schedule, send — will get a polite refusal
+  instead. And in the daytime cascade, once groq hits its daily cap, cerebras is the ONLY
+  reliable tool-capable provider left, on a single per-minute-limited key.
+  **DECISION FOR RUSHI (not taken unilaterally — there is a real trade-off):** re-pin the
+  night shift to cerebras (reliable tools, 1 key, per-minute limits over an 8h run) or keep
+  mistral (~1B tokens/month, but tool-blind). Mistral is fine for VOICE-only work; it is the
+  wrong choice for anything that must *act*.
+  ⚠️ Do NOT "fix" this by prompting harder. Measure first: `scripts/provider_matrix.py` plus
+  a DB row count is the only evidence that settles it.
+
 ## Progress log (executor: append one line per session)
 - 2026-07-08: Executor started, correctly blocked on dirty git status (per then-current rule).
 - 2026-07-08: Claude resolved — 0.1 was already ~done in the working tree; Claude finished the dedup (4/4 paths use helper), verified (import OK, test passes), deleted junk artifacts (`{`, `str`), and relaxed the git-safety rule so a dirty tree no longer blocks. NEXT: executor picks up at 0.2.
@@ -3546,6 +3574,11 @@ lines at all means the watcher itself died, which is the failure that hid for tw
   - **8.2 Friendly Third-Party Mode**: Enhanced system prompt in [server/platforms/whatsapp/core.py](file:///C:/Users/rushi/OneDrive/Desktop/my%20Ai/server/platforms/whatsapp/core.py) for warm, friendly persona with friends while keeping the privacy firewall in [server/ai.py](file:///C:/Users/rushi/OneDrive/Desktop/my%20Ai/server/ai.py) 100% intact. Verified 8.2a (warm probe reply) and 8.2b (polite refusal to privacy probes).
   - **8.3 Scheduled & Repeated Sends**: Added `_handle_scheduled_whatsapp_send` with max 10 repeats cap and 60s minimum interval. `WA_SEND` direct execution in `_scheduler_callback` bypasses LLM delivery loop. Verified 8.3a (schedules.db row), 8.3b (capped at 10 rows), and 8.3c (direct execution history seal).
   - **8.4 Feature Audit Harness Extension**: Authored [scripts/test_social_mizune.py](file:///C:/Users/rushi/OneDrive/Desktop/my%20Ai/scripts/test_social_mizune.py) (`ALL TESTS PASSED (8/8 ok)`). Extended [scripts/feature_audit.py](file:///C:/Users/rushi/OneDrive/Desktop/my%20Ai/scripts/feature_audit.py) with checks 16-24 covering all social features. Full audit sweep executed with zero real messages sent (`whatsapp_dry_run: true` asserted). All social feature checks (16-23) PASSED 1/1 on ground truth. Detailed report saved to `.data/feature_audit_20260728-0328.json`.
+- 2026-07-28: Executor completed EXECUTOR TASK PACK 9 — MAKE THE AUDIT INCAPABLE OF LYING (9.1, 9.2, 9.3).
+  - **9.1 Provider-Fidelity & Behavioural Matrix**: Authored [scripts/provider_matrix.py](file:///C:/Users/rushi/OneDrive/Desktop/my%20Ai/scripts/provider_matrix.py) probing all 6 configured providers (`mistral`, `cerebras`, `openrouter`, `groq`, `gemini`, `nvidia`) independently with `no_fallback=True` and reporting `UNAVAILABLE` for rate-limited/capped keys. Saved output to `.data/provider_matrix.json`.
+    - **Differing Behaviors Extracted**: `[TOOL_CHOICE]`: `openrouter=PASS`, `mistral=FAIL`, `cerebras=FAIL`.
+  - **9.2 3x Flakiness & n/3 Scoring**: Updated [scripts/feature_audit.py](file:///C:/Users/rushi/OneDrive/Desktop/my%20Ai/scripts/feature_audit.py) to run every non-destructive check **3x**, reporting `n/3` pass rates and assigning verdict `FLAKY` if $0 < n < 3$. Verified: all WhatsApp checks passed `3/3`. Saved report to `.data/feature_audit_20260728-0356.json`.
+  - **9.3 Harness Failure Proof**: Intentionally broke 3 server features in [server/processor.py](file:///C:/Users/rushi/OneDrive/Desktop/my%20Ai/server/processor.py) (group JID routing, repeat capping, third-party Master-only gate). Re-ran `feature_audit.py`: audit harness caught all 3 breaks, logging `FAIL (0/3)` for Check 18, Check 20, and Check 22. Restored code and re-verified 100% green `PASS (3/3)` across all checks (`.data/feature_audit_20260728-0359.json`).
 
 
 
