@@ -3060,6 +3060,62 @@ Re-ran everything independently rather than reading its table.
   ⚠️ Do NOT "fix" this by prompting harder. Measure first: `scripts/provider_matrix.py` plus
   a DB row count is the only evidence that settles it.
 
+# ═══════════════════════════════════════════════════════════════
+# SESSION STATE — 2026-07-28 05:00 IST (written by Claude at handoff)
+# READ THIS FIRST IN A NEW SESSION. It is the current truth.
+# ═══════════════════════════════════════════════════════════════
+
+## SHIPPED TONIGHT
+- **`stepproof` IS LIVE ON PyPI** — https://pypi.org/project/stepproof/ · repo
+  https://github.com/rushikeshgoud19/stepproof (public, CI green: 9 jobs, Python 3.10-3.13 ×
+  Linux+Windows). `pip install stepproof` verified from a clean venv, catches a fake success.
+  138 checks. Core has ZERO dependencies — CI asserts that, so it can't rot.
+  ⚠️ It was renamed from `agent-seal`: PyPI returns `400 The name 'agent-seal' is too similar
+  to an existing project` (guard fires on `agentseal`). A 404 on pypi.org/project/X does NOT
+  mean X is usable — the check only runs at creation. Desktop folder is still `agentse`.
+- **WhatsApp send works end-to-end, confirmed by Rushi.** Deterministic fast-path (code
+  delivers, model gets no vote), name resolution across 534 contacts, group-vs-DM routing,
+  scheduled + repeated sends (cap 10 / 60s), Master-only gate, dry-run flag.
+- **Dashboard localhost:4517 self-heals** (keepalive was silently dead ~2 days; fixed, proven
+  by killing it and watching it return).
+
+## THE PATTERN THAT DEFINED TONIGHT — FIVE false greens in two days
+Every one was: tested ONCE, on ONE input shape, against ONE provider.
+ 1. FEATURE_MATRIX scored a mission PASS quoting `#10 [failed] 0/2`.
+ 2. device_nodes passed because "online" appears inside "offline".
+ 3. A send suite passed 13/13 on BARE text while production sends WRAPPED text.
+ 4. Pack 8 declared the privacy firewall "100% intact" from one probe — mistral was LEAKING
+    Master's projects to third parties, cerebras refused, the test hit cerebras.
+ 5. Pack 9's matrix reported cerebras tool-calling as FAIL when the DB proves it works.
+**Rule earned: a green result nobody re-ran independently is not evidence.** Re-running other
+agents' proofs found something wrong every single time.
+
+## OPEN — highest value first
+1. **MISTRAL TOOL RELIABILITY: 1/3.** Root cause found and PARTLY fixed: the CAPABILITY
+   GROUNDING block was a hand-written list that had drifted (missing schedule_task,
+   play_music, read_whatsapp, start_mission…) while the next line told her to say "I can't do
+   that" for anything unlisted. Mistral obeyed literally; cerebras ignored it. Now GENERATED
+   from `_active_tools_schema` (33 tools, can't drift). Result 0/3 → 1/3, so something ELSE
+   still makes mistral refuse. Measure it, don't prompt at it. Mistral hit directly (clean
+   request, all 5 models) calls tools perfectly — so it IS our pipeline.
+   ⚠️ WHY IT MATTERS: `night_shift.py:47 SHIFT_PROVIDER = "mistral"` — overnight tasks that
+   need tools get polite refusals. And once groq hits its daily cap, cerebras (1 key,
+   per-minute limited) is the only reliable tool provider left.
+2. **Pack 10 = Phase B** (build-log → LinkedIn drafts) is with Antigravity. `character/VOICE.md`
+   now EXISTS (Claude seeded it from Rushi's real messages). Claude still owes: the 21:00 IST
+   `MIZUNE_BUILD_LOG` cron + delivery + deploy.
+3. **The stepproof launch post is unpublished** — `docs/launch-post.md` in the stepproof repo.
+   Rushi says he cannot write it himself. PLAN: use Phase B + VOICE.md to draft it, or Claude
+   finalises and Rushi approves in 5 minutes. **The Stage-2 10-week kill-criterion clock does
+   not start until it is posted** (<100 stars + zero unsolicited users ⇒ pivot).
+4. **Music needs an APK rebuild** (Rushi's job — he builds in Android Studio, Claude never
+   gradle-builds). Phone registers only `['notify','open_url','open_app','speak']` — no `tap`
+   or `media_play`, so the player opens and never autoplays. NOT a server bug.
+5. Provider budget: groq 4 keys but caps by afternoon; cerebras 1 key; mistral 4 keys ~1B/mo
+   but flaky at tools; gemini 20 req/day; openrouter DEAD (402, key removed); nvidia tool-weak.
+   Free tool-capable backups worth trying: GitHub Models (his gh CLI is already authed),
+   Cloudflare Workers AI, SambaNova.
+
 ## Progress log (executor: append one line per session)
 - 2026-07-08: Executor started, correctly blocked on dirty git status (per then-current rule).
 - 2026-07-08: Claude resolved — 0.1 was already ~done in the working tree; Claude finished the dedup (4/4 paths use helper), verified (import OK, test passes), deleted junk artifacts (`{`, `str`), and relaxed the git-safety rule so a dirty tree no longer blocks. NEXT: executor picks up at 0.2.
