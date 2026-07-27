@@ -2727,6 +2727,109 @@ renders fine at `github.com/rushikeshgoud19/rushikeshgoud19`).
 Desktop docs: `mizune-million-path.md`, `linkedin-content-plan.md`, `linkedin-profile-kit.md`,
 `traceroot-review-playbook.md`, `profile-todo.md`.
 
+# ═══════════════════════════════════════════════════════════════
+# EXECUTOR TASK PACK 7 (for Antigravity) — written 2026-07-28 by Claude
+# MESSAGING REGRESSION SUITE — lock down the send path that broke five ways in one night
+# ═══════════════════════════════════════════════════════════════
+# WHY THIS PACK EXISTS — read it, it determines how you build the thing:
+#   On 2026-07-27 the WhatsApp send path failed FIVE separate ways in a single evening, and
+#   every one of them reported success or looked fine from the inside:
+#     1. Messages for other people silently went to Master's own chat (model passed
+#        contact='Master'; the confirmation quoted the LABEL, so the seal said "sent to
+#        yourself" and the lie detector was blind).
+#     2. She narrated instead of acting — "done!", "I'll send it now", "Here's the command:"
+#        — four times in a row with ZERO message_whatsapp calls behind them.
+#     3. REFUSAL CONTAGION: her own earlier refusals sat in the chronicle, so the next send
+#        got refused by imitation regardless of content.
+#     4. The fast-path parsed the PLATFORM WRAPPER instead of the message. Inbound arrives as
+#        "[MESSAGE FROM MASTER RUSHI (via WhatsApp)]: <text>\n(SYSTEM: ...)" and that wrapper
+#        contains both the word MESSAGE and a colon → recipient came out as
+#        'FROM MASTER RUSHI (via WhatsApp)]'.
+#     5. A latent JID bug: send_whatsapp_message stripped non-digits and appended
+#        @s.whatsapp.net, so "192689429586157@lid" became a DIFFERENT account's JID.
+#   **My unit tests passed 13/13 while #4 was live in production, because I tested BARE text
+#   and production sends WRAPPED text.** That is the whole lesson of this pack: a test that
+#   uses an input shape the code never actually receives tests nothing.
+#
+# 🔴 ABSOLUTE RULE FOR THIS PACK — NO REAL MESSAGES. EVER.
+#   I broke this myself and delivered "ignore this, testing" to Ahilesh, a real contact with
+#   no connection to the work. Set `whatsapp_dry_run: true` in your LOCAL config.json before
+#   you write a single test, and assert it is on inside the test setup. Never call the live
+#   WS endpoint for a send. Never use a real contact name that isn't already in the fixtures
+#   you create. If a test would deliver anything, it is the wrong test.
+
+## ENVIRONMENT FACTS (verified 2026-07-27/28 — do not re-discover)
+- Repo root `C:\Users\rushi\OneDrive\Desktop\my Ai`, python `.venv\Scripts\python.exe`.
+  LOCAL ONLY. No VM, no `az`, no ssh, no git add/commit/push. Claude owns those.
+- The send path, end to end:
+  `processor.py` WhatsApp fast-path (parses recipient+body, Master-only gate)
+  → `commands.py::whatsapp_automation` (number-first → contacts.json → `_resolve_whatsapp_contact`)
+  → `platforms/whatsapp/core.py::send_whatsapp_message` (builds the JID).
+- `_resolve_whatsapp_contact` reads `cortex.db` `whatsapp_messages(sender_name, sender_jid)`
+  — 534 contacts. On MULTIPLE distinct matches it must REFUSE and ask, never guess.
+- The two real inbound wrappers, verbatim from `core.py:670,672`:
+    `[MESSAGE FROM MASTER RUSHI (via WhatsApp)]: {text}\n(SYSTEM: This is Master Rushi ...)`
+    `[WHATSAPP MESSAGE FROM {sender_name}]: {text}\n(SYSTEM: Reply directly ...)`
+- `scripts/test_text_mode_recovery.py` is the house style for a test file: plain python,
+  no pytest, prints `ok`/`BAD` per case and exits non-zero on failure. Match it.
+
+## ══ 7.1 — `scripts/test_whatsapp_send.py` (NEW FILE) ══
+A regression suite for the send path. Pure local. No network, no real delivery.
+
+MUST cover, each as an explicit case, and EVERY message-shaped case must be run through BOTH
+wrappers as well as bare text (that is the bug that escaped):
+1. **Recipient parsing** — number with `+`/spaces, plain number, contact name, name after
+   "to", `saying` / `that says` / `:` separators.
+2. **Wrapper immunity** — the exact strings above must yield the same recipient/body as the
+   bare text. Assert the recipient is NEVER `FROM MASTER RUSHI (via WhatsApp)]` or anything
+   containing brackets, parens, or "master".
+3. **Decoys stay silent** — "did you send him the message", "the message is not sent",
+   "you still didn't send him the message", "did you message pranay", "play kho gaye from
+   mismatched", "send a whatsapp message saying hi" (no recipient). None may fire.
+4. **Master-only gate** — a `[WHATSAPP MESSAGE FROM Sarthak]:` message asking to message
+   someone must NOT fire. Do this for three different sender names. This is a SECURITY
+   test: without the gate a friend can send from Master's account.
+5. **JID preservation** — `_build`-level: bare number → `<digits>@s.whatsapp.net`; anything
+   containing `@` (`...@lid`, `...@s.whatsapp.net`, `...@g.us`) passes through UNCHANGED.
+   Include the old broken behaviour in a comment so nobody "simplifies" it back.
+6. **Ambiguity refuses** — build a TEMP sqlite fixture with two contacts sharing a first
+   name; assert the resolver returns a question naming both and does NOT pick one.
+   Also assert a unique name resolves, and an unknown name doesn't crash.
+7. **Self-routing is honest** — contact "Master"/"me" must report "Master's own chat (SELF)",
+   never a bare "sent!". Assert the string names the destination.
+8. **Dry run** — with `whatsapp_dry_run` on, assert the result starts with "DRY RUN" and that
+   `send_whatsapp_message` was never called (monkeypatch it to a counter).
+
+DONE-WHEN: paste the full run output with the case count, plus deliberately break ONE thing
+(e.g. hand the parser a wrapped string with the wrapper-strip disabled) and paste the failure,
+proving the suite can actually fail. A suite that only ever prints ok proves nothing.
+
+## ══ 7.2 — audit the OTHER fast-paths for the same wrapper bug ══
+The WhatsApp fast-path parsed the wrapper because it ran on raw `text`. **The mission, night
+shift, learn and mesh fast-paths in `processor.py` also parse raw `text`.** Check each one
+against BOTH wrappers and report — do NOT fix them yet, this is reconnaissance:
+- Does "mission: X" still trigger when wrapped? Does the goal include wrapper text?
+- Does "learn this: <url>" capture the URL or the wrapper?
+- Does "mesh:"/"verify this:" capture the right question?
+- Does the night-shift queue parser pick up wrapper text as a task?
+Write findings as a table: fast-path · fires when wrapped? · captured value · correct?
+If any is wrong, write `BLOCKED: <which> mis-parses wrapped input` with the evidence and STOP
+— Claude fixes and deploys.
+
+## HOUSE RULES
+- `whatsapp_dry_run: true` in local config BEFORE writing tests; assert it in setup.
+- No real sends, no live WS sends, no VM, no git.
+- Reuse the house test style; no pytest, no new dependencies.
+- Real pasted output in RESULT, never "it should work".
+- Ambiguous or surprising → `BLOCKED: <what>` and stop.
+
+> **⛔ END OF TASK PACK 7 — STOP after 7.2.** Claude reviews by RE-RUNNING the suite, fixes
+> anything 7.2 found, deploys, and only then unlocks the next pack.
+
+### RESULT (executor writes here)
+- 7.1:
+- 7.2:
+
 ## Progress log (executor: append one line per session)
 - 2026-07-08: Executor started, correctly blocked on dirty git status (per then-current rule).
 - 2026-07-08: Claude resolved — 0.1 was already ~done in the working tree; Claude finished the dedup (4/4 paths use helper), verified (import OK, test passes), deleted junk artifacts (`{`, `str`), and relaxed the git-safety rule so a dirty tree no longer blocks. NEXT: executor picks up at 0.2.
