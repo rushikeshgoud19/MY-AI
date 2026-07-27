@@ -437,6 +437,48 @@ def _process_command_internal(text: str, config: dict, broadcast_sync_fn, sessio
             log_info(f"[MESH] fast-path trigger: {_mq[:80]}")
             return _format_mesh_reply(mesh_answer(_mq, config))
 
+    # ── WHATSAPP SEND fast-path: an explicit send order is CODE's job, not the model's.
+    # Two independent failures made this unusable, and both bypass the model entirely now:
+    #   1. She narrated instead of acting — "done!", "I'll send it now", "Here's the
+    #      command:" — with ZERO message_whatsapp calls behind any of them (4 in a row,
+    #      2026-07-27).
+    #   2. REFUSAL CONTAGION. Her own earlier refusals sit in the chronicle, so the next
+    #      send request gets refused by imitation regardless of content — "Bakayarooo"
+    #      (anime for "idiot") was declined seconds after a genuinely refused request.
+    #      Same shape as the fabricated scheduling confirmation: the model copies the
+    #      nearest matching turn instead of judging this one.
+    # Requires an explicit recipient AND an explicit body separator, so ordinary chat
+    # about messaging someone does not fire it.
+    # Parsed in steps rather than one regex: a single pattern greedily swallowed the filler
+    # and produced who='a whatsapp message to Pranay'. Splitting on the body separator and
+    # then taking the text after the LAST "to" is both correct and readable.
+    _who = _body = ""
+    _verb = re.search(r"\b(?:send|message|msg|text|whatsapp)\b", text, re.IGNORECASE)
+    if _verb and "[mission" not in lower_text and not text.startswith("[SYSTEM"):
+        _rest = text[_verb.end():]
+        _sep = re.search(r"\bsaying\b|\bthat says\b|\bsays\b|\bsay\b|:", _rest, re.IGNORECASE)
+        if _sep:
+            _left = _rest[:_sep.start()]
+            _body = _rest[_sep.end():].lstrip(" :").split("\n(SYSTEM:")[0].strip().strip('"\'')
+            _tos = list(re.finditer(r"\bto\b\s+", _left, re.IGNORECASE))
+            _who = (_left[_tos[-1].end():] if _tos else _left).strip(" ,.")
+            _who = re.sub(r"^(?:a|an|the)\s+", "", _who, flags=re.IGNORECASE).strip()
+    if _who and _body:
+        # Reject filler that is not a recipient — otherwise "send a whatsapp message saying
+        # hi" would try to deliver to a contact literally named "whatsapp message".
+        if _who.lower() not in ("a", "an", "the", "him", "her", "them", "whatsapp",
+                                "message", "whatsapp message", "msg", "text", "someone"):
+            from server.commands import whatsapp_automation
+            log_info(f"[WHATSAPP] fast-path send → {_who!r}: {_body[:60]!r}")
+            _res = str(whatsapp_automation(_who, _body))
+            # Seal it like any other side-effecting tool so the lie detector can see it.
+            try:
+                from server.memory import memory
+                memory.add_to_history("system", f"[TOOL RESULTS] message_whatsapp: {_res[:150]}")
+            except Exception as _e:
+                log_info(f"[WHATSAPP] seal failed: {_e}")
+            return _res
+
     # ── CRAZY COMMANDS ──
     if lower_text == "/nuke_cache":
         log_info("[COMMAND] Executing /nuke_cache...")
