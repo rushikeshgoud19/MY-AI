@@ -2830,6 +2830,120 @@ If any is wrong, write `BLOCKED: <which> mis-parses wrapped input` with the evid
 - 7.1:
 - 7.2:
 
+# ═══════════════════════════════════════════════════════════════
+# EXECUTOR TASK PACK 8 (for Antigravity) — written 2026-07-28 by Claude
+# SOCIAL MIZUNE — reply where she was asked, be human to Master's friends,
+# send on a schedule — and PROVE every feature still works
+# ═══════════════════════════════════════════════════════════════
+# Rushi's words, so the intent is not lost in translation:
+#   "if i say mizune say baka to pranay and if i say in the grp chat where he is present
+#    she should just say it" · "if i am chatting with someone and if they ask mizune she
+#    should be friendly with them, no restrainers" · "if i say mizune say good night to
+#    harshita in 5min, 10 times, she should do that"
+#
+# READ FIRST — the failure pattern this project keeps hitting, in three sentences:
+#   Every serious bug here has been a CLAIM WITHOUT AN EFFECT. She says "done!" and nothing
+#   happened; a tool returns exit 0 having written nothing; a test passes on an input shape
+#   production never sends. So for every step below, the DONE-WHEN is ground truth — a DB
+#   row, a log line, a seal, a real JID — never her reply text. If your evidence is
+#   something Mizune said, it is not evidence.
+#
+# 🔴 NO REAL WHATSAPP MESSAGES WHILE YOU BUILD OR TEST. Set "whatsapp_dry_run": true in the
+#   LOCAL config.json and assert it in every test's setup. Claude broke this rule on
+#   2026-07-27 and delivered a junk test message to Ahilesh, a real contact with nothing to
+#   do with the work. Fixtures and dry runs only. If a test could reach a real person, it is
+#   the wrong test.
+
+## ENVIRONMENT (verified — do not re-discover)
+- Repo `C:\Users\rushi\OneDrive\Desktop\my Ai`, python `.venv\Scripts\python.exe`.
+  LOCAL ONLY: no VM, no az/ssh, no git add/commit/push. Claude owns git and deploys.
+- Send path: `processor.py` WhatsApp fast-path (Master-only, wrapper-stripped) →
+  `commands.py::whatsapp_automation` (number → contacts.json → `_resolve_whatsapp_contact`
+  over cortex.db's 534 contacts, refuses on ambiguity) →
+  `platforms/whatsapp/core.py::send_whatsapp_message` (JIDs with '@' pass through untouched).
+- Inbound wrappers, verbatim (`core.py:670,672`) — TEST AGAINST THESE, not bare text:
+    `[MESSAGE FROM MASTER RUSHI (via WhatsApp)]: {text}\n(SYSTEM: ...)`
+    `[WHATSAPP MESSAGE FROM {sender_name}]: {text}\n(SYSTEM: ...)`
+- `_should_reply` in `core.py` is the gate for whether she answers at all. Anything that
+  changes who she talks to happens THERE, and per the standing rule any new auto-reply path
+  goes AFTER that gate, never before.
+- Scheduler: `data/schedules.db` (`one_time_tasks`, `recurring_tasks`), fired by
+  `processor.py::_scheduler_callback`, which already has a direct-exec path that runs stored
+  actions WITHOUT round-tripping through the model.
+- House test style: `scripts/test_text_mode_recovery.py` — plain python, no pytest, prints
+  ok/BAD, exits non-zero on failure.
+
+## ══ 8.1 — REPLY WHERE SHE WAS ASKED (group-aware sending) ══
+Today every send goes to a DM, because the fast-path only knows the recipient NAME. When
+Master types "Mizune say baka to Pranay" inside a group where Pranay is present, he means
+say it IN THAT GROUP.
+- The inbound message already carries `msg.chat_jid` and `msg.chat_type` in `core.py`. That
+  context is LOST before `processor.py` sees the text. Thread it through — a module-level
+  contextvar or an explicit argument, your call, but it must be per-request and must not
+  leak between concurrent messages (there is a per-session lock; read `process_command`).
+- Rule: if the request arrived in a GROUP and the body is "say X to <name>" (no explicit
+  "dm"/"privately"), send to the ORIGIN GROUP. If it arrived in a DM, or Master said
+  "dm/privately/directly", send to that person's chat as today.
+- `send_whatsapp_message` already passes any JID containing '@' through untouched, so a
+  group JID (`...@g.us`) works — do NOT rebuild it from digits.
+- DONE-WHEN: with dry run on, a wrapped group message produces a target ending `@g.us`, and
+  the same text in a DM produces the person's JID. Paste both.
+
+## ══ 8.2 — BE HUMAN TO MASTER'S FRIENDS ══
+When someone else addresses her ("Mizune, what's up"), she should answer warmly, in persona,
+like a friend of Rushi's — not stiff, not silent.
+- Work in `_should_reply` and the third-party prompt path. She already ANSWERS third parties
+  when addressed; the problem is tone and hedging, so this is mostly prompt work.
+- ⚠️ **THE PRIVACY FIREWALL STAYS. NON-NEGOTIABLE.** `ai.py` blanks history for third-party
+  messages so a stranger cannot read Master's chats. "No restraints" means WARMTH, never
+  access. She must still refuse to reveal Master's schedule, contacts, messages, location or
+  anything from his history. If you cannot make her warmer without touching that firewall,
+  write BLOCKED — do not weaken it.
+- DONE-WHEN: a third-party probe gets a friendly in-persona reply; a third-party probe asking
+  "what's Rushi doing today / who has he been messaging" gets a polite refusal. Paste both.
+
+## ══ 8.3 — SCHEDULED AND REPEATED SENDS ══
+"say good night to Harshita in 5 minutes" and "10 times" must both work.
+- Extend the scheduler's direct-exec path so a stored action can be a WhatsApp send:
+  recipient + body + optional repeat count + interval. Reuse `whatsapp_automation`; the
+  model must never be in the delivery loop (it narrates and it refuses by imitation — both
+  cost us a whole evening on 2026-07-27).
+- Times are IST via `mizune_now()`; store aware datetimes like the existing rows.
+- ⚠️ CAP THE REPEAT. Default max 10 sends and a minimum 60s gap, configurable. This is not
+  primness: rapid identical messages are exactly the pattern WhatsApp bans accounts for, and
+  the account at risk is Rushi's own. If he asks for more, it should warn and still obey the
+  cap unless he overrides it explicitly in config.
+- DONE-WHEN: with dry run on, "in 2 minutes say hi to <fixture contact>" creates a real row
+  in `data/schedules.db` with a correct IST trigger, and a repeat request creates the right
+  number of scheduled sends. Paste the rows.
+
+## ══ 8.4 — FULL FEATURE VERIFICATION SWEEP ══
+Extend `scripts/feature_audit.py` (do not rewrite it) with checks for everything added since
+it was written, scored on GROUND TRUTH exactly like the existing ones:
+  whatsapp send by name · send by number · group-vs-DM routing · ambiguity refusal ·
+  Master-only gate (a third party must NOT be able to make her send) · scheduled send ·
+  repeated send · mesh · read_whatsapp · play_music (report phone capabilities honestly —
+  the installed APK lacks `tap`/`media_play`, so music opens but cannot autoplay; that is an
+  APP-BUILD gap, mark it NOT-WIRED-ON-DEVICE, not FAIL).
+- Every send-related check runs in DRY RUN. A check that delivers a real message is a bug.
+- Re-run the whole audit and paste the full table plus the JSON path.
+
+## HOUSE RULES
+- `whatsapp_dry_run: true` before you write anything; assert it in setup.
+- Local only. No VM, no git. Claude reviews by RE-RUNNING your proof, then deploys.
+- Change ONE thing per step, test it, write the RESULT, then move on. Do not batch.
+- Real pasted output in RESULT — never "it should work".
+- Ambiguous, or it touches the privacy firewall → `BLOCKED: <what>` and STOP.
+
+> **⛔ END OF TASK PACK 8 — STOP after 8.4.** Claude re-runs everything, fixes what broke,
+> deploys, and then verifies live on the VM.
+
+### RESULT (executor writes here)
+- 8.1:
+- 8.2:
+- 8.3:
+- 8.4:
+
 ## Progress log (executor: append one line per session)
 - 2026-07-08: Executor started, correctly blocked on dirty git status (per then-current rule).
 - 2026-07-08: Claude resolved — 0.1 was already ~done in the working tree; Claude finished the dedup (4/4 paths use helper), verified (import OK, test passes), deleted junk artifacts (`{`, `str`), and relaxed the git-safety rule so a dirty tree no longer blocks. NEXT: executor picks up at 0.2.
