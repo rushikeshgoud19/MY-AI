@@ -623,6 +623,26 @@ TOOLS_SCHEMA = [
 # app or drive pyautogui on a headless server.
 _LOCAL_ONLY_TOOLS = {"open_app", "close_app", "execute_python", "run_command"}
 
+def _capability_lines(config: dict) -> str:
+    """One '- name: description' line per tool she ACTUALLY has, built from the live schema.
+
+    Written because the hardcoded version of this list drifted and started causing false
+    refusals: a model that follows the prompt literally reads a short list, does not find
+    'reminders' on it, and honestly answers "I don't have the ability to set reminders" —
+    while holding schedule_task. Generating it keeps the prompt and reality in sync by
+    construction rather than by remembering to update two places.
+    """
+    lines = []
+    for t in _active_tools_schema(config):
+        fn = t.get("function") or {}
+        name = fn.get("name")
+        if not name:
+            continue
+        desc = (fn.get("description") or "").strip().split(". ")[0].split("\n")[0][:110]
+        lines.append(f"- {name}: {desc}")
+    return "\n".join(lines) + "\n"
+
+
 def _active_tools_schema(config: dict):
     """Return TOOLS_SCHEMA, minus local-only tools when running in cloud mode."""
     try:
@@ -1616,14 +1636,19 @@ def _get_ai_response_body(text: str, history: list, config: dict, system_prompt_
             "Master's LAPTOP is a SEPARATE Windows machine reached only via "
             "remote_device_command; Windows paths belong ONLY inside those calls.\n"
             "\n[CAPABILITY GROUNDING - READ CAREFULLY]\n"
-            "You MUST be honest about what you can and cannot do. Your REAL capabilities are:\n"
-            "- open_app / close_app: Launch or close apps on Master's PC\n"
-            "- execute_python: Run Python scripts (you can use psutil, pyautogui, subprocess, requests)\n"
-            "- message_whatsapp: Send WhatsApp messages\n"
-            "- headless_web_agent: Browse websites and scrape data\n"
-            "- execute_skill: Run registered skills\n"
-            "- store_memory / search_memory: Remember and recall facts\n"
-            "- Screen vision and Camera vision (when asked to look)\n"
+            "You MUST be honest about what you can and cannot do. Your REAL capabilities are "
+            "EXACTLY these tools, and you genuinely have every one of them:\n"
+            # GENERATED FROM THE LIVE SCHEMA, NOT HAND-WRITTEN.
+            # This list used to be a hardcoded handful and had drifted badly — schedule_task,
+            # play_music, read_whatsapp, remote_device_command, start_mission and others were
+            # all missing while the very next line instructs her to say "I can't do that" for
+            # anything not listed. Measured 2026-07-28: mistral obeyed the list literally and
+            # refused reminders 0/3 with "I don't have the ability to set reminders", while
+            # cerebras ignored the list and scheduled 3/3. Same code, same request, opposite
+            # behaviour — the provider-dependent bug was OUR PROMPT lying to her about herself.
+            # Hit directly with a clean request every mistral model calls tools fine.
+            # Generating it means the list can never drift from reality again.
+            + _capability_lines(config) +
             "You CANNOT: install software, modify BIOS, run GPU-Z/HWiNFO unless they are already installed, "
             "change Windows registry, update drivers, or access admin-level system settings. "
             "If Master asks you to do something outside your capabilities, be HONEST and say "
