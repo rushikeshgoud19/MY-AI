@@ -3408,6 +3408,90 @@ worse than shipping nothing.
    `available`; a verdict whose evidence mentions TRUNCATED is `unmeasured`.
 4. Only then apply `patch_model_api.py` and deploy the selector.
 
+# ═══════════════════════════════════════════════════════════════
+# EXECUTOR TASK PACK 12 (for Antigravity) — written 2026-07-29 by Claude
+# CLOSE THE FRONT DOOR, AND STOP TRUSTING SIGNALS THAT WERE NEVER MEASURED
+# ═══════════════════════════════════════════════════════════════
+# Three jobs, one theme: every item here exists because something REPORTED a state it had
+# never actually verified.
+#
+# 🔴 THE MISTAKE THAT CAUSED TWO OF THESE THREE — understand it before you write anything.
+# Claude wrote a truncation guard for `message_whatsapp` that rejected any message under 45
+# chars without ending punctuation. That is how people text: it blocked "Hi", "ok",
+# "I love you" — 14 of 14 ordinary messages. It was never tested against a single real
+# message. Then:
+#   → Pack 9 probed `tool_choice` by asking models to send a WhatsApp message,
+#   → the guard rejected every attempt,
+#   → the matrix recorded mistral=FAIL and cerebras=FAIL,
+#   → Pack 11's dropdown read that file and would have steered Rushi AWAY from cerebras
+#     (his one reliable provider) and TOWARD openrouter, which returns HTTP 402 and cannot
+#     answer at all.
+# One untested filter, three layers of confident wrong answers.
+# **RULE: a capability probe must not route through another feature that can fail.**
+# **RULE: any filter/guard is tested against a list of REAL inputs before it ships.**
+
+## ══ 12.1 — LOCK `ws://…:8001/ws` (the biggest remaining security hole) ══
+`POST /chat` and five other routes are now behind `X-Mizune-Key`. **The WebSocket is not**,
+and it is the SAME command surface — anyone who finds the IP can drive `execute_python`,
+`run_command`, `remote_device_command` (Rushi's laptop) and `message_whatsapp`.
+**SEQUENCING IS THE WHOLE JOB. Get this wrong and you brick his assistant:**
+1. Teach every CLIENT to SEND the token first, while the server still accepts everything:
+   - `scripts/smoke_test.py` and `scripts/feature_audit.py` — read `dashboard_api_key` from
+     local `config.json`, send it, and still work if it is absent.
+   - the dashboard (`C:\Users\rushi\.claude\agentic-os`) — server-side only, never in
+     `public/` JS.
+   - the Android app (`mizune-android/.../MizuneWebSocket.kt`) — read from app settings.
+     ⚠️ Claude does NOT build APKs (Rushi builds in Android Studio), so the app ships last.
+2. Write the SERVER side as `scripts/patch_ws_auth.py` (idempotent, `ast.parse`-guarded,
+   same shape as `patch_model_api.py`) gated behind `config["ws_auth_required"]`, default
+   **false**. Enforcement is a config flip AFTER the APK is rebuilt — not a surprise.
+3. The handshake: accept the token as a `?key=` query param OR a first-message
+   `{"type":"auth","key":...}`, and on rejection close with a clear reason, never a silent
+   drop. A silent drop is indistinguishable from the flapping we already fight.
+DONE-WHEN: with the flag ON in a LOCAL test, an unauthenticated connect is refused with a
+readable reason and an authenticated one works; with the flag OFF, both work. Paste all four.
+
+## ══ 12.2 — REGENERATE THE PROVIDER MATRIX WITH AN INERT PROBE ══
+`.data/provider_matrix.json` is tainted (see above) — **delete it and start clean; do not
+patch around it.**
+- Probe `tool_choice` with a tool that CANNOT be blocked by another feature's guard.
+  `schedule_task` writes a row to `data/schedules.db` and is ground-truth checkable: count
+  rows before and after. **Do not probe tool-calling through `message_whatsapp`.**
+- Ground truth is the DB row, never her reply text.
+- Keep the `no_fallback` rule: without it the cascade answers with a different provider and
+  you record the wrong one.
+- A capped provider is `UNAVAILABLE`, never `FAIL`.
+- Record `n/3` per cell, not a single verdict.
+DONE-WHEN: paste the new grid. Mistral's true tool reliability is genuinely unknown right
+now — whatever the number is, that is the answer.
+
+## ══ 12.3 — MAKE `model_catalog` HONEST ══
+- A provider that returns **402 / insufficient credits is `available=False`** with that
+  reason. openrouter currently reports `available: true, detail: "live", tools: PASS` and
+  cannot serve a single request.
+- `detail: "keyed"` must NOT render as available — it means UNPROBED. Either probe it or say
+  `unprobed`.
+- Any reliability verdict whose evidence mentions `TRUNCATED` is `unmeasured`. Better: read
+  only the regenerated matrix from 12.2.
+- ⚠️ **Tests must use a FIXTURE config, never the real `config.json`.** Pack 11's suite
+  mutated the live file and left `ai_model = "nvidia"`, the provider `ai.py` deliberately
+  demotes for multi-tool work.
+DONE-WHEN: paste `list_models` output; every `available: true` must be backed by a real probe.
+
+## HOUSE RULES
+- LOCAL ONLY. No VM, no az/ssh, no git. Claude applies patches and deploys.
+- No secret in any response; no token in browser-served JS; fail closed on auth.
+- Real pasted output in RESULT. Prove each suite can fail. `BLOCKED: <what>` if unsure.
+
+> **⛔ END OF TASK PACK 12 — STOP after 12.3.** Claude re-runs everything, applies both patch
+> files in place, deploys, restarts matching on the SCRIPT NAME, and verifies process start
+> time > file mtimes before believing any of it.
+
+### RESULT (executor writes here)
+- 12.1:
+- 12.2:
+- 12.3:
+
 ## Progress log (executor: append one line per session)
 - 2026-07-29: Executor completed EXECUTOR TASK PACK 11 — MODEL SELECTOR (11.1, 11.2, 11.3, 11.4). Authored server/model_catalog.py (zero secrets, reads provider_matrix.json), scripts/patch_model_api.py (idempotent, fail-closed 401 auth, AST parse safety), dashboard model selector in agentic-os (server.js + public UI), and scripts/test_model_selector.py (100% pass + deliberate break proof verified). Stopped at ⛔ END OF TASK PACK 11 for Claude's review and patch application.
 - 2026-07-08: Executor started, correctly blocked on dirty git status (per then-current rule).
