@@ -66,7 +66,12 @@ def _parse_whatsapp_send_command(wa_text: str):
             return w, b
 
     # 3. Standard 'send/message/text/dm <who> saying/says/that says/: <body/msg>'
-    verb = re.search(r"\b(?:send|message|msg|text|whatsapp|dm)\b", clean, re.IGNORECASE)
+    # `mes{1,4}age` tolerates the fast-typing spellings: message / mesage / messsage.
+    # Rushi typed "messsage my brother abhish saying I love you" on 2026-07-29, the verb
+    # missed, and the request fell through to the model — which then hit the truncation
+    # guard and refused. A deterministic path that a typo can switch off isn't
+    # deterministic in practice; the whole point is that it never depends on the model.
+    verb = re.search(r"\b(?:send|mes{1,4}age|msg|text|whatsapp|dm)\b", clean, re.IGNORECASE)
     if verb:
         rest = clean[verb.end():]
         sep = re.search(r"\bsaying\b|\bthat says\b|\bsays\b|\bsay\b|:", rest, re.IGNORECASE)

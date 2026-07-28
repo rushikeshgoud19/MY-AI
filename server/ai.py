@@ -1098,9 +1098,31 @@ def _execute_tool_call_impl(tool_name: str, args: dict, config: dict, background
             # Truncation guard: some models cut the JSON arg at the first apostrophe
             # ("Good morning, Master! You" ← was "You've..."). Don't SEND fragments —
             # bounce them back so the model rewrites without apostrophes.
+            #
+            # NARROWED 2026-07-29. The old rule was "shorter than 45 chars and not ending in
+            # punctuation", which is how people actually text: it rejected "I love you", "Hi",
+            # "ok", "get lost", "happy birthday". Rushi hit it live trying to message his
+            # brother, and the same bounce appears three times in the seals. Blocking a real
+            # message is far worse than sending a rare fragment — the fragment is visible and
+            # he resends; the block silently makes the whole feature useless.
+            # So detect the ACTUAL signature instead: an apostrophe cut leaves the final
+            # sentence as a lone contraction stem ("...Master! You"), not a short sentence.
+            # "I love you" ends in the same word but is three words long, so it passes.
             _stripped = _wmsg.rstrip()
-            if _stripped and len(_stripped) < 45 and not _stripped.endswith((".", "!", "?", "~", "…", ")", "]")) \
-                    and not _stripped[-1:].isdigit():
+            # Two tiers, because the stems differ in how ambiguous they are.
+            # NEVER_FINAL can't end an English sentence at all, so they mean a cut wherever
+            # they appear. AMBIGUOUS_FINAL are perfectly good last words ("I love you",
+            # "yes you can"), so they only signal a cut when the trailing sentence is that
+            # single word alone — which is what an apostrophe cut actually leaves behind.
+            _NEVER_FINAL = {"don", "won", "isn", "aren", "wasn", "weren", "couldn", "shouldn",
+                            "wouldn", "didn", "doesn", "hasn", "haven", "hadn", "ain"}
+            _AMBIGUOUS_FINAL = {"i", "you", "we", "they", "he", "she", "it", "that", "there",
+                                "what", "who", "let", "can", "y"}
+            _last_sentence = _re.split(r"[.!?~…]+\s*", _stripped)[-1].strip(" ,;:")
+            _words = _last_sentence.split()
+            _last_word = _words[-1].lower().strip(" ,;:") if _words else ""
+            if _last_word in _NEVER_FINAL or (
+                    len(_words) == 1 and _last_word in _AMBIGUOUS_FINAL):
                 return ("Error: your 'message' argument arrived TRUNCATED (it ends mid-sentence: "
                         f"'{_stripped[-25:]}'). Rewrite the full message WITHOUT apostrophes and call again.")
             # Use the real return value so a missing contact / disconnected bridge
