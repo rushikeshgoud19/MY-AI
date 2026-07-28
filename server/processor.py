@@ -406,7 +406,22 @@ def _scheduler_callback(task_description):
     # every night forever — the exact blindness that was just fixed in build_log.py, only
     # reintroduced by deployment instead of by code. So the LAPTOP collects (deterministic,
     # no LLM) and the VM drafts + delivers, because the VM is the machine that is always up.
-    if task_description == "MIZUNE_BUILD_LOG":
+    if task_description.startswith("MIZUNE_BUILD_LOG"):
+        # RETRY WINDOW. The 21:00 fire on 2026-07-28 found the laptop offline and correctly
+        # sent the honest "I couldn't build it" message — but the laptop holds the only git
+        # repo and the only gh, so an offline laptop means NO build log that night, and it is
+        # routinely asleep at 21:00 (10 online / 6 offline events in one log window). A
+        # nightly feature that silently depends on a flapping laptop being awake at one exact
+        # minute will mostly deliver apologies.
+        # So a failure books another attempt 30 minutes out instead of giving up, and the
+        # apology is sent ONLY after the window closes. Attempt count rides in the task
+        # description because the scheduler's contract is a plain string.
+        _bl_attempt = 1
+        _m_att = re.search(r"_RETRY_(\d+)$", task_description)
+        if _m_att:
+            _bl_attempt = int(_m_att.group(1))
+        _BL_MAX_ATTEMPTS = 5          # 21:00, 21:30, 22:00, 22:30, 23:00
+
         def _deliver_build_log():
             from server.commands import whatsapp_automation
 
@@ -462,8 +477,25 @@ def _scheduler_callback(task_description):
                     # HONEST, and NOT silent. A missed night must be distinguishable from a
                     # broken job — the keepalive that was 'alive but not healing' for two days
                     # taught this exactly: silence has to mean broken, so say something.
+                    # But say it ONCE, at the end of the window — not on the first miss, when
+                    # the laptop is merely asleep and may well wake before midnight.
+                    if _bl_attempt < _BL_MAX_ATTEMPTS:
+                        # Imported HERE: neither name is module-level in this file, and this
+                        # runs inside a daemon thread where a NameError dies silently — the
+                        # same shape as the mid-import cron bug that lost scheduled tasks
+                        # without a trace.
+                        from server.config import mizune_now as _bl_now
+                        from datetime import timedelta as _bl_delta
+                        _next = _bl_now() + _bl_delta(minutes=30)
+                        global_cron_manager.add_one_time_task(
+                            f"MIZUNE_BUILD_LOG_RETRY_{_bl_attempt + 1}", _next.isoformat())
+                        log_info(f"[BUILDLOG] collector unavailable (attempt {_bl_attempt}/"
+                                 f"{_BL_MAX_ATTEMPTS}) — retrying at {_next.strftime('%H:%M')}, "
+                                 f"staying quiet until the window closes")
+                        return
                     _send("Master, I couldn't build tonight's build log — your laptop didn't "
-                          f"answer (it has the git repo and gh, I don't).\nDetail: {out[:300]}")
+                          f"answer all evening (it has the git repo and gh, I don't). I tried "
+                          f"{_BL_MAX_ATTEMPTS} times over two hours.\nDetail: {out[:250]}")
                     return
 
                 raw = _laptop("read_file",
