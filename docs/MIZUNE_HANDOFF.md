@@ -3326,12 +3326,52 @@ DONE-WHEN: full output pasted, plus one deliberate break showing the suite can f
 > 2026-07-29 finding), and verifies the process start time is after the file mtimes.
 
 ### RESULT (executor writes here)
-- 11.1:
-- 11.2:
-- 11.3:
-- 11.4:
+- 11.1: [x] Created `server/model_catalog.py` listing all 6 providers (`groq`, `cerebras`, `mistral`, `gemini`, `openrouter`, `nvidia`), checking key status, probing live `/v1/models` availability, and reading tool reliability from `.data/provider_matrix.json` without exposing any secrets.
+- 11.2: [x] Created `scripts/patch_model_api.py` inserting `GET /api/models` and `POST /api/model` endpoints into `backend_main.py` with fail-closed authentication (`X-Mizune-Key` vs `dashboard_api_key`), AST syntax validation, and verified idempotency.
+- 11.3: [x] Created dashboard model selector dropdown in `C:\Users\rushi\.claude\agentic-os` (`index.html`, `style.css`, `server.js`, `app.js`) rendering tool reliability and live availability for each option, with client-side revert on error and zero hardcoded keys in browser JS.
+- 11.4: [x] Created `scripts/test_model_selector.py` covering key leak prevention, unknown provider rejection, fail-closed auth, patch idempotency/AST safety, and deliberate failure proof (`--break`). All tests PASSED (`RESULT: ALL TESTS PASSED ok`).
+
+## 🔒 SECURITY AUDIT — 2026-07-29 (Claude). Probed from the PUBLIC INTERNET, not from the VM.
+
+### GOOD NEWS FIRST
+- **No key material has ever been committed.** Scanned 400 commits of history for `gsk_`,
+  `csk-`, `AIzaSy`, `GOCSPX-`, `nvapi-`, `sk-or-`: **0 hits**. `config.json` is gitignored
+  and untracked. MY-AI is a PUBLIC repo, so this mattered — the exposure was live-endpoint
+  only, which is now closed.
+
+### WHAT WAS OPEN TO ANYONE WHO SCANNED PORT 8001 (all now 401)
+| endpoint | what it gave away |
+|---|---|
+| `POST /chat` | text straight into her brain, which holds `execute_python`, `run_command`, `remote_device_command` (his LAPTOP) and `message_whatsapp`. **Effectively remote code execution + the ability to send WhatsApp as him.** |
+| `GET /memory/export` | **887KB of private history**: 2 phone numbers, 24 email addresses, 207 WhatsApp messages — including THIRD PARTIES who never consented. Keys can be rotated; this cannot be un-leaked. |
+| `POST /api/traceroot_sql` | LLM-driven SQL against his data |
+| `POST /notify` | makes her speak arbitrary text (impersonation) |
+| `POST /memory/obsidian/sync` | writes files on the host |
+| `GET /api/self_review` | internal diagnostics |
+| `GET /config` | every API key (fixed earlier the same night) |
+FIX: `_require_key(request)` on each, comparing `X-Mizune-Key` to `config["dashboard_api_key"]`,
+**failing closed** when the header is missing OR the key is unconfigured. Verified from
+outside: all 401. Smoke 4/4, dashboard unaffected (it uses `/ws`).
+
+### ⛔ STILL OPEN — THE BIGGEST REMAINING HOLE
+- **`ws://40.123.215.32:8001/ws` accepts unauthenticated connections**, and it is the SAME
+  command surface as `POST /chat`. Anyone who finds the IP can drive her tools. It is not
+  locked yet **because doing so breaks the Android app, the dashboard and every
+  smoke/audit harness at the same instant** — it needs a coordinated change: token in the
+  app's `MizuneWebSocket`, in the dashboard, and in `scripts/smoke_test.py` +
+  `feature_audit.py`. **This is the top security item and should be the next pack.**
+- Port 22 (SSH) is open to the world. Key-only auth should be confirmed, and ideally the
+  Azure NSG should restrict 8001 + 22 to known addresses.
+- `GET /health` and `GET /api/devices` remain open by design (harnesses use them).
+  `/api/devices` does reveal laptop capabilities — low value to an attacker, but note it.
+
+### ⚠️ RUSHI DECLINED KEY ROTATION FOR NOW (2026-07-29)
+His call, recorded so nobody assumes it was done. The keys were served publicly for an
+unknown period; the leak is closed but anything already scraped is still valid. If any
+provider reports unexpected usage, rotation is the first response.
 
 ## Progress log (executor: append one line per session)
+- 2026-07-29: Executor completed EXECUTOR TASK PACK 11 — MODEL SELECTOR (11.1, 11.2, 11.3, 11.4). Authored server/model_catalog.py (zero secrets, reads provider_matrix.json), scripts/patch_model_api.py (idempotent, fail-closed 401 auth, AST parse safety), dashboard model selector in agentic-os (server.js + public UI), and scripts/test_model_selector.py (100% pass + deliberate break proof verified). Stopped at ⛔ END OF TASK PACK 11 for Claude's review and patch application.
 - 2026-07-08: Executor started, correctly blocked on dirty git status (per then-current rule).
 - 2026-07-08: Claude resolved — 0.1 was already ~done in the working tree; Claude finished the dedup (4/4 paths use helper), verified (import OK, test passes), deleted junk artifacts (`{`, `str`), and relaxed the git-safety rule so a dirty tree no longer blocks. NEXT: executor picks up at 0.2.
 - 2026-07-08: Executor did 0.2 — Part 1 memory clear (already gone, `scripts/fix_memory.py` authored), Part 2 correctly BLOCKED with accurate root-cause trace. Claude verified the diagnosis, wrote a localized fix design (see 0.2 RESULT), and DEFERRED implementation to itself. Phase 0 CLOSED. NEXT: executor starts Phase 1 at 1.1.
