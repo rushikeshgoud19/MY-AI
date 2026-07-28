@@ -3177,6 +3177,43 @@ agents' proofs found something wrong every single time.
    Free tool-capable backups worth trying: GitHub Models (his gh CLI is already authed),
    Cloudflare Workers AI, SambaNova.
 
+## 🔴 2026-07-29 — TWO FINDINGS THAT INVALIDATE OLD ASSUMPTIONS. READ BEFORE DEPLOYING.
+
+### 1. THE RESTART SCRIPT WAS SILENTLY NO-OPPING. SMOKE STAYED GREEN THE WHOLE TIME.
+The scratchpad restart did `pkill -f "python -u backend_main.py"`. The live launcher had
+become `venv311/bin/python backend_main.py` — **no `-u`** — so the pattern matched NOTHING,
+nothing was killed, and the process kept running code from **Jul 28 00:13, over 24 hours
+old**. Every "deployed, restarted, smoke 4/4" in that window was true about the FILES and
+false about the RUNNING PROCESS.
+**ALWAYS pkill on the SCRIPT NAME, never the interpreter flags:** `pkill -f "backend_main.py"`.
+**AND ALWAYS verify the process START TIME is AFTER the file mtimes** — that is the only
+evidence a copy actually took effect:
+    ps -eo lstart,cmd | grep backend_main.py | grep -v xvfb-run
+    stat -c '%y  %n' server/ai.py server/processor.py backend_main.py
+This is rule 1 wearing a new costume: the marker grep passed (files were correct), smoke
+passed 4/4 (old code still answers fine), and the fix was not live. **A marker grep proves
+the file; only the process start time proves the deploy.**
+
+### 2. `GET /config` WAS SERVING EVERY API KEY TO THE PUBLIC INTERNET.
+`http://40.123.215.32:8001/config` returned 70 fields unauthenticated, including
+`gemini_api_key`, `google_client_secret`, `opencode_api_key`, `nvidia_api_key`,
+`groq_api_key` (×4), `cerebras_api_key`, `mistral_api_key` (×4). `POST /config` was writable
+by anyone as well.
+CAUSE: the repo copy of `legacy/backend_main.py` HAS `Depends(get_api_key)` on both routes.
+The deployed VM copy had diverged and lost it, and no auth helper exists there to restore —
+divergence as a security hole rather than a feature gap.
+FIX (patched in place, rule 2): `_redact_secrets()` on GET so no secret is ever serialised,
+and POST fails closed with 401 unless `X-Mizune-Key` matches `config["dashboard_api_key"]`.
+Nothing in the dashboard or the Android app reads or writes `/config` (checked), so failing
+closed breaks nothing.
+VERIFIED FROM THE PUBLIC INTERNET after a real restart: every secret reads `***REDACTED***`,
+POST returns 401, 58 non-secret fields still served, smoke 4/4.
+⛔ **RUSHI MUST ROTATE EVERY EXPOSED KEY.** Duration of exposure is unknown — assume
+compromised. Claude cannot do this (no credential handling): groq ×4, mistral ×4, cerebras,
+gemini, nvidia ×3, opencode, and the Google OAuth client secret.
+⚠️ Any NEW state-changing endpoint (e.g. the model selector) MUST require the same header.
+The VM has no auth dependency, so each route has to enforce it itself.
+
 ## Progress log (executor: append one line per session)
 - 2026-07-08: Executor started, correctly blocked on dirty git status (per then-current rule).
 - 2026-07-08: Claude resolved — 0.1 was already ~done in the working tree; Claude finished the dedup (4/4 paths use helper), verified (import OK, test passes), deleted junk artifacts (`{`, `str`), and relaxed the git-safety rule so a dirty tree no longer blocks. NEXT: executor picks up at 0.2.
