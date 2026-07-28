@@ -3370,6 +3370,44 @@ His call, recorded so nobody assumes it was done. The keys were served publicly 
 unknown period; the leak is closed but anything already scraped is still valid. If any
 provider reports unexpected usage, rotation is the first response.
 
+## PACK 11 REVIEW (Claude, 2026-07-29) — ⛔ NOT DEPLOYED. The data feeding it is wrong.
+The code is fine. The *guidance* it would show Rushi is inverted, so shipping it would be
+worse than shipping nothing.
+
+- 🔴 **`.data/provider_matrix.json` IS TAINTED — do not consume it until regenerated.**
+  Both `tool_choice: FAIL` verdicts (mistral AND cerebras) carry the evidence
+  `"Error: your 'message' argument arrived TRUNCATED"`. That was **my own bug**, fixed hours
+  later the same night: the truncation guard was rejecting 14/14 ordinary messages. Pack 9
+  measured tool-calling *through* `message_whatsapp`, so it measured the broken guard, not
+  the models. 2/24 cells are contaminated — and they are precisely the two the dropdown
+  depends on.
+  ⇒ LESSON: a capability probe must not route through another feature that can fail. Probe
+  `tool_choice` with something inert, or the verdict measures the wrong component.
+- 🔴 **openrouter is reported `available: true, detail: "live", tool_reliability: PASS`. It
+  returns HTTP 402** — "Insufficient credits. This account never purchased credits." It is
+  the ONLY `PASS` in the matrix, because the two real providers were failed by my bug.
+  ⇒ The dropdown would steer him AWAY from cerebras (measured 3/3, his one reliable tool
+  provider) and TOWARD a dead endpoint. Exactly the failure the pack existed to prevent.
+- ⚠️ `available: true, detail: "keyed"` for gemini and nvidia means it never probed them; it
+  assumed from key presence. "keyed" must not render as available.
+- ⚠️ **Its test suite mutated the REAL `config.json`**, leaving `ai_model = "nvidia"` (was
+  `groq`). nvidia is the provider `ai.py` explicitly demotes for multi-tool work. VM config
+  was untouched; local restored to `groq`. Tests must use a fixture, never live config.
+- ✅ What DID hold up: the patch file is idempotent and `ast.parse`-guarded; the auth test
+  covers missing / wrong / correct / **unset-key-fails-closed**; the security assertion that
+  no configured key appears in `list_models` passes and genuinely fails on `--break`; the
+  dashboard proxies the token server-side with nothing in browser JS.
+
+### NEXT, IN ORDER
+1. **Lock `ws://…:8001/ws`** — still the biggest hole; unauthenticated, same command surface
+   as `/chat`. Needs a coordinated token across the Android app, the dashboard,
+   `scripts/smoke_test.py` and `feature_audit.py`.
+2. **Regenerate the provider matrix** with an inert tool probe, now that the truncation guard
+   is fixed — mistral's real tool reliability is still unknown.
+3. **Fix `model_catalog`**: a 402/no-credit provider is UNAVAILABLE; `keyed` is not
+   `available`; a verdict whose evidence mentions TRUNCATED is `unmeasured`.
+4. Only then apply `patch_model_api.py` and deploy the selector.
+
 ## Progress log (executor: append one line per session)
 - 2026-07-29: Executor completed EXECUTOR TASK PACK 11 — MODEL SELECTOR (11.1, 11.2, 11.3, 11.4). Authored server/model_catalog.py (zero secrets, reads provider_matrix.json), scripts/patch_model_api.py (idempotent, fail-closed 401 auth, AST parse safety), dashboard model selector in agentic-os (server.js + public UI), and scripts/test_model_selector.py (100% pass + deliberate break proof verified). Stopped at ⛔ END OF TASK PACK 11 for Claude's review and patch application.
 - 2026-07-08: Executor started, correctly blocked on dirty git status (per then-current rule).
