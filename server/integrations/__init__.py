@@ -107,7 +107,12 @@ class IntegrationsManager:
             scope=" ".join(config["scopes"]),
             redirect_uri=redirect_uri
         )
-        uri, state = session.create_authorization_url(config["auth_url"])
+        extra = {}
+        if provider == "google":
+            # Without access_type=offline Google never issues a refresh_token,
+            # and without prompt=consent it omits it on re-consent too.
+            extra = {"access_type": "offline", "prompt": "consent"}
+        uri, state = session.create_authorization_url(config["auth_url"], **extra)
 
         # Save state temporarily for verification
         self.save_token(f"{provider}_state", {"state": state})

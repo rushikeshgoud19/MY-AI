@@ -61,6 +61,33 @@ class GoogleAPIBridge:
         except Exception:
             return {}, None
 
+    @staticmethod
+    def _fmt_time_local(start: dict) -> str:
+        """Event start → HH:MM in Master's timezone. The raw Google dateTime is UTC
+        ('...T12:30:00Z') — slicing it showed UTC times to an IST user (caught by
+        the mission verifier 2026-07-20)."""
+        dt = start.get("dateTime")
+        if not dt:
+            return "all day"
+        try:
+            from server.config import mizune_now
+            d = datetime.datetime.fromisoformat(dt.replace("Z", "+00:00"))
+            return d.astimezone(mizune_now().tzinfo).strftime("%I:%M %p").lstrip("0")
+        except Exception:
+            return dt[11:16]
+
+    @staticmethod
+    def _fmt_dt_local(start: dict) -> str:
+        dt = start.get("dateTime")
+        if not dt:
+            return start.get("date", "")
+        try:
+            from server.config import mizune_now
+            d = datetime.datetime.fromisoformat(dt.replace("Z", "+00:00"))
+            return d.astimezone(mizune_now().tzinfo).strftime("%Y-%m-%d %I:%M %p")
+        except Exception:
+            return dt[:16].replace("T", " ")
+
     def get_todays_calendar(self):
         from server.config import mizune_now
         now = mizune_now()
@@ -78,9 +105,30 @@ class GoogleAPIBridge:
         lines = []
         for ev in items:
             s = ev.get("start", {})
-            when = s["dateTime"][11:16] if s.get("dateTime") else "all day"
+            when = self._fmt_time_local(s)
             lines.append(f"- {when} {ev.get('summary', '(no title)')}")
         return "Today's calendar:\n" + "\n".join(lines)
+
+    def get_tomorrows_calendar(self):
+        from server.config import mizune_now
+        import datetime as _dt
+        t = mizune_now().replace(hour=0, minute=0, second=0, microsecond=0) + _dt.timedelta(days=1)
+        tmin, tmax = t.isoformat(), (t + _dt.timedelta(days=1)).isoformat()
+        url = ("https://www.googleapis.com/calendar/v3/calendars/primary/events"
+               f"?timeMin={urllib.parse.quote(tmin)}&timeMax={urllib.parse.quote(tmax)}"
+               "&singleEvents=true&orderBy=startTime&maxResults=15")
+        data, err = self._api(url)
+        if err:
+            return err
+        items = data.get("items", [])
+        if not items:
+            return "Nothing on tomorrow's calendar, Master."
+        lines = []
+        for ev in items:
+            s = ev.get("start", {})
+            when = self._fmt_time_local(s)
+            lines.append(f"- {when} {ev.get('summary', '(no title)')}")
+        return "Tomorrow's calendar:\n" + "\n".join(lines)
 
     def list_upcoming(self, max_results=10):
         from server.config import mizune_now
@@ -97,7 +145,7 @@ class GoogleAPIBridge:
         lines = []
         for ev in items:
             s = ev.get("start", {})
-            when = s.get("dateTime", s.get("date", ""))[:16].replace("T", " ")
+            when = self._fmt_dt_local(s)
             lines.append(f"- {when} — {ev.get('summary', '(no title)')}")
         return "Upcoming events:\n" + "\n".join(lines)
 
@@ -122,6 +170,34 @@ class GoogleAPIBridge:
             return err
         link = data.get("htmlLink", "")
         return f"✅ Scheduled '{summary}' on your calendar, Master! {link}"
+
+    def delete_event(self, query):
+        """Cancel the next upcoming event whose title matches [query]."""
+        if not query:
+            return "Which event should I cancel, Master?"
+        from server.config import mizune_now
+        tmin = mizune_now().isoformat()
+        url = ("https://www.googleapis.com/calendar/v3/calendars/primary/events"
+               f"?timeMin={urllib.parse.quote(tmin)}&singleEvents=true&orderBy=startTime"
+               f"&q={urllib.parse.quote(query)}&maxResults=5")
+        data, err = self._api(url)
+        if err:
+            return err
+        items = data.get("items", [])
+        match = next(
+            (ev for ev in items if query.lower() in ev.get("summary", "").lower()),
+            items[0] if items else None,
+        )
+        if not match:
+            return f"I couldn't find an upcoming event matching '{query}', Master."
+        del_url = ("https://www.googleapis.com/calendar/v3/calendars/primary/events/"
+                   + match["id"])
+        _, err = self._api(del_url, method="DELETE")
+        if err:
+            return err
+        s = match.get("start", {})
+        when = self._fmt_dt_local(s)
+        return f"🗑️ Cancelled '{match.get('summary')}' ({when}), Master."
 
     def read_unread_emails(self, max_results=5):
         # Real recent mail is served by google_workspace action 'list_emails' (local store).

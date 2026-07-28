@@ -145,12 +145,37 @@ class DeviceRegistry:
 
     # ── Command routing (called from dispatcher worker threads) ──
 
-    def send_command(self, device_name: str, action: str, args: dict, timeout: float = 45.0) -> str:
+    def wait_online(self, device_name: str, seconds: float) -> bool:
+        """Block up to `seconds` for a device to (re)appear. Returns True if it's online.
+
+        WHY: a laptop flaps — sleep, wifi drops, agent restarts (measured 276 online / 192 offline
+        events in one log). device_agent retries every 10s, so a command that arrives during a gap
+        used to fail instantly even though the device was back moments later. Waiting one reconnect
+        cycle turns a spurious failure into a short delay."""
+        deadline = time.time() + max(0.0, seconds)
+        while True:
+            if self.is_online(device_name):
+                return True
+            if time.time() >= deadline:
+                return False
+            time.sleep(1.0)
+
+    def send_command(self, device_name: str, action: str, args: dict, timeout: float = 45.0,
+                     wait_for_device: float = 12.0) -> str:
         with self._lock:
             device = self._devices.get(device_name)
+        if not device and wait_for_device > 0:
+            # One reconnect cycle of grace before declaring it offline (see wait_online).
+            log_info(f"[DEVICES] '{device_name}' not online; waiting up to "
+                     f"{wait_for_device:.0f}s for it to reconnect...")
+            if self.wait_online(device_name, wait_for_device):
+                log_info(f"[DEVICES] '{device_name}' came back online — proceeding.")
+                with self._lock:
+                    device = self._devices.get(device_name)
         if not device:
             online = ", ".join(self.list_devices().keys()) or "none"
-            return f"Device '{device_name}' is not online. Online devices: {online}."
+            return (f"Device '{device_name}' is not online (waited "
+                    f"{wait_for_device:.0f}s). Online devices: {online}.")
         if not self._loop:
             return "Device routing unavailable: server event loop not ready."
 
