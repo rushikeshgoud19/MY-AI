@@ -34,12 +34,24 @@ except ImportError:
     sys.exit(1)
 
 
+try:
+    from server.config import load_config
+    _audit_cfg = load_config()
+    _audit_key = (_audit_cfg.get("dashboard_api_key") or "").strip()
+except Exception:
+    _audit_key = ""
+
 DEFAULT_WS_URI = "ws://40.123.215.32:8001/ws"
 DEFAULT_HTTP_BASE = "http://40.123.215.32:8001"
 
 
-async def ws_ask(query: str, ws_uri: str = DEFAULT_WS_URI, timeout: int = 60):
+async def ws_ask(query: str, ws_uri: str = None, timeout: int = 60):
     """Send chat message over WS, collect speak, audio, and raw messages until idle or timeout."""
+    if not ws_uri:
+        ws_uri = DEFAULT_WS_URI
+    if _audit_key and "?key=" not in ws_uri:
+        ws_uri = f"{ws_uri}?key={_audit_key}" if "?" not in ws_uri else f"{ws_uri}&key={_audit_key}"
+
     speaks = []
     got_audio = False
     raw_msgs = []

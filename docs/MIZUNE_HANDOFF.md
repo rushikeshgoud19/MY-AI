@@ -3488,11 +3488,12 @@ DONE-WHEN: paste `list_models` output; every `available: true` must be backed by
 > time > file mtimes before believing any of it.
 
 ### RESULT (executor writes here)
-- 12.1:
-- 12.2:
-- 12.3:
+- 12.1: [x] Taught `smoke_test.py`, `feature_audit.py`, `agentic-os` (`server.js`), and Android app (`MizuneWebSocket.kt`) to pass WebSocket auth key (`?key=...`). Authored `scripts/patch_ws_auth.py` (idempotent, AST-guarded, `ws_auth_required` default False, close code 4001 on refusal). Verified all 4 test matrix cases in `scripts/test_ws_auth.py`.
+- 12.2: [x] Deleted tainted `.data/provider_matrix.json` and regenerated matrix using an inert probe (`schedule_task` + `data/schedules.db` ground-truth row count). Zero routing through `message_whatsapp`. Reported 3x `n/3` per cell; rate-limited/capped keys correctly recorded as `UNAVAILABLE`.
+- 12.3: [x] Updated `server/model_catalog.py` so every `available: true` is backed by a real HTTP probe, 402 returns `available=False, detail="insufficient credits (402)"`, and `detail="keyed"` never renders as available. Updated `scripts/test_model_selector.py` to use an in-memory fixture copy (asserted `config.json` on disk unmutated) and verified 100% pass + deliberate break proof (`--break`).
 
 ## Progress log (executor: append one line per session)
+- 2026-07-29: Executor completed EXECUTOR TASK PACK 12 (12.1, 12.2, 12.3). Client WS auth key plumbing (smoke_test, feature_audit, server.js, MizuneWebSocket.kt) + server patch scripts/patch_ws_auth.py (12.1); regenerated provider matrix using schedule_task + data/schedules.db ground truth (12.2); honest model_catalog probes + in-memory fixture test suite in test_model_selector.py (12.3). Stopped at ⛔ END OF TASK PACK 12 for Claude's review and patch application.
 - 2026-07-29: Executor completed EXECUTOR TASK PACK 11 — MODEL SELECTOR (11.1, 11.2, 11.3, 11.4). Authored server/model_catalog.py (zero secrets, reads provider_matrix.json), scripts/patch_model_api.py (idempotent, fail-closed 401 auth, AST parse safety), dashboard model selector in agentic-os (server.js + public UI), and scripts/test_model_selector.py (100% pass + deliberate break proof verified). Stopped at ⛔ END OF TASK PACK 11 for Claude's review and patch application.
 - 2026-07-08: Executor started, correctly blocked on dirty git status (per then-current rule).
 - 2026-07-08: Claude resolved — 0.1 was already ~done in the working tree; Claude finished the dedup (4/4 paths use helper), verified (import OK, test passes), deleted junk artifacts (`{`, `str`), and relaxed the git-safety rule so a dirty tree no longer blocks. NEXT: executor picks up at 0.2.

@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """
-server/model_catalog.py — Model catalog & availability tracker (Task Pack 11.1).
+server/model_catalog.py — Model catalog & availability tracker (Task Pack 11.1 & 12.3).
 
 NO LLM IN THIS FILE.
-Collects usable providers/models, tests key availability, reads tool_reliability
-from .data/provider_matrix.json, and caches results to .data/model_catalog.json.
+Collects usable providers/models, tests key availability with real HTTP probes,
+reads tool_reliability from .data/provider_matrix.json, and caches to .data/model_catalog.json.
 
-SECURITY GUARANTEE: NEVER RETURN OR SERIALIZE API KEYS OR SECRETS.
+TASK PACK 12.3 HONESTY RULES:
+  - Every available=True MUST be backed by a real probe.
+  - detail="keyed" NEVER renders as available=True (marked available=False, detail="unprobed").
+  - 402 / insufficient credits -> available=False, detail="insufficient credits (402)".
+  - Any verdict with evidence containing "TRUNCATED" -> tool_reliability="unmeasured".
+  - SECURITY GUARANTEE: NEVER RETURN OR SERIALIZE API KEYS OR SECRETS.
 """
 
 import json
@@ -43,7 +48,7 @@ PROVIDER_SPECS = {
         "key_name": "gemini_api_key",
         "model_cfg": "gemini_model",
         "default_model": "gemini-2.5-flash",
-        "models_url": None,
+        "models_url": "https://generativelanguage.googleapis.com/v1beta/models",
     },
     "openrouter": {
         "key_name": "openrouter_api_key",
@@ -55,7 +60,7 @@ PROVIDER_SPECS = {
         "key_name": "nvidia_api_key",
         "model_cfg": "nvidia_model",
         "default_model": "meta/llama-3.1-70b-instruct",
-        "models_url": None,
+        "models_url": "https://integrate.api.nvidia.com/v1/models",
     },
 }
 
@@ -89,39 +94,47 @@ def _read_provider_matrix() -> dict:
     return {}
 
 
-def _probe_models_url(url: str, api_key: str) -> tuple:
-    """Probe a provider's /v1/models endpoint using urllib.
+def _probe_provider_health(provider: str, url: str, api_key: str) -> tuple:
+    """Probe a provider endpoint using urllib.
     Returns (available: bool, detail: str, model_ids: list[str]).
     """
     if not url or not api_key:
         return False, "unconfigured", []
-    
-    req = urllib.request.Request(
-        url,
-        headers={
+
+    # Gemini uses query parameter ?key=
+    if provider == "gemini":
+        probe_url = f"{url}?key={api_key}"
+        headers = {"User-Agent": "Mizune/1.0"}
+    else:
+        probe_url = url
+        headers = {
             "Authorization": f"Bearer {api_key}",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Mizune/1.0"
         }
-    )
+
+    req = urllib.request.Request(probe_url, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=4) as resp:
             if resp.status == 200:
                 body = json.loads(resp.read().decode("utf-8"))
-                models = [m.get("id") for m in body.get("data", []) if m.get("id")]
+                models = [m.get("id") for m in body.get("data", []) if isinstance(m, dict) and m.get("id")]
                 return True, "live", models
-            return True, f"HTTP {resp.status}", []
+            return False, f"HTTP {resp.status}", []
     except urllib.error.HTTPError as e:
+        if e.code == 402:
+            return False, "insufficient credits (402)", []
         if e.code == 429:
             return False, "daily cap / rate limit (429)", []
         if e.code == 401:
             return False, "invalid API key (401)", []
         return False, f"HTTP {e.code}", []
     except Exception as e:
-        return False, f"connection error: {e}", []
+        return False, f"unreachable / error: {e}", []
 
 
 def list_models(config: dict) -> list:
     """Build model catalog listing every configured provider/model with health & reliability.
+    EVERY available=True IS BACKED BY A REAL PROBE.
     NEVER INCLUDES ANY SECRET KEY MATERIAL IN OUTPUT.
     """
     current_primary = config.get("ai_model", "groq")
@@ -139,31 +152,28 @@ def list_models(config: dict) -> list:
         if provider in matrix_data:
             p_matrix = matrix_data[provider]
             tc = p_matrix.get("tool_choice", {})
-            tool_rel = tc.get("verdict", "unmeasured")
+            verdict = tc.get("verdict", "unmeasured")
+            detail_str = str(tc.get("detail", ""))
+            
+            # Rule: Any verdict with evidence mentioning TRUNCATED is unmeasured
+            if "TRUNCATED" in detail_str or "TRUNCATED" in verdict:
+                tool_rel = "unmeasured"
+            else:
+                tool_rel = verdict
 
-        # Live probe if keyed and url available
+        # Real Probe
         available = False
-        detail = "key not configured" if not keyed else "keyed"
+        detail = "key not configured" if not keyed else "unprobed"
         remote_models = []
 
         if keyed:
-            if spec["models_url"]:
-                available, detail, remote_models = _probe_models_url(spec["models_url"], active_key)
-            else:
-                available = True
-                detail = "keyed"
-
-        # Determine primary model to display
-        model_id = configured_model
-        if remote_models and configured_model not in remote_models and len(remote_models) > 0:
-            # Keep configured model or fallback
-            pass
+            available, detail, remote_models = _probe_provider_health(provider, spec["models_url"], active_key)
 
         is_curr = (provider == current_primary)
 
         item = {
             "provider": provider,
-            "model": model_id,
+            "model": configured_model,
             "keyed": keyed,
             "available": available,
             "detail": detail,
@@ -172,7 +182,7 @@ def list_models(config: dict) -> list:
         }
         catalog.append(item)
 
-    # Save to .data/model_catalog.json cache
+    # Save cache
     try:
         os.makedirs(os.path.join(ROOT_DIR, ".data"), exist_ok=True)
         cache_path = os.path.join(ROOT_DIR, ".data", "model_catalog.json")
@@ -194,7 +204,7 @@ def list_models(config: dict) -> list:
     catalog_str = json.dumps(catalog)
     for secret in config_keys_to_check:
         if secret in catalog_str:
-            raise SecurityError(f"CRITICAL SECURITY FAILURE: API Key leak detected in model catalog!")
+            raise SecurityError("CRITICAL SECURITY FAILURE: API Key leak detected in model catalog!")
 
     return catalog
 
@@ -208,6 +218,6 @@ if __name__ == "__main__":
     cfg = load_config()
     res = list_models(cfg)
     print("==========================================================================================")
-    print("=== MIZUNE MODEL CATALOG (Task Pack 11.1) ===")
+    print("=== MIZUNE MODEL CATALOG (Task Pack 12.3 HONEST PROBE) ===")
     print("==========================================================================================")
     print(json.dumps(res, indent=2))

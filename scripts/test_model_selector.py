@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """
-scripts/test_model_selector.py — Test suite for Task Pack 11 (Model Selector).
+scripts/test_model_selector.py — Test suite for Task Pack 11 & 12 (Model Selector).
+
+FIXTURE RULE (TASK PACK 12.3):
+  Tests MUST use an in-memory copy / fixture config, NEVER mutate config.json on disk!
 
 TEST COVERAGE:
   1. Security check: list_models NEVER returns any string containing any configured API key.
@@ -11,12 +14,14 @@ TEST COVERAGE:
      - Unset dashboard_api_key -> 401 (fail closed)
      - Valid header + valid provider -> 200 / ok
   4. Patch idempotency and AST parse-failure refusal safety.
-  5. Harness failure proof: --break flag deliberately breaks one check to prove suite CAN fail.
+  5. Fixture integrity assertion: config.json on disk is NOT mutated.
+  6. Harness failure proof: --break flag deliberately breaks one check to prove suite CAN fail.
 
 House style: pure python, no pytest, prints ok/BAD, exits non-zero on failure.
 """
 
 import ast
+import copy
 import json
 import os
 import sys
@@ -34,23 +39,28 @@ from scripts.patch_model_api import patch_file
 
 def run_tests(deliberate_break: bool = False) -> bool:
     print("==========================================================================================")
-    print(f"=== RUNNING TASK PACK 11 TEST SUITE {'[DELIBERATE BREAK MODE]' if deliberate_break else ''} ===")
+    print(f"=== RUNNING MODEL SELECTOR TEST SUITE {'[DELIBERATE BREAK MODE]' if deliberate_break else ''} ===")
     print("==========================================================================================")
 
+    # Load initial disk state for fixture integrity check
+    config_file_path = os.path.join(ROOT_DIR, "config.json")
+    with open(config_file_path, "r", encoding="utf-8") as f:
+        disk_config_before = f.read()
+
     failures = 0
-    cfg = load_config()
+    # Use FIXTURE copy in-memory — NEVER mutate live file on disk!
+    cfg_fixture = copy.deepcopy(load_config())
 
     # ----------------------------------------------------------------------------------
     # TEST 1: SECURITY — NO API KEYS EXPOSED IN LIST_MODELS
     # ----------------------------------------------------------------------------------
     print("\n--- TEST 1: Security — API Key Leak Prevention ---")
     try:
-        catalog = list_models(cfg)
+        catalog = list_models(cfg_fixture)
         catalog_str = json.dumps(catalog)
 
-        # Collect all secret values from config
         secrets = []
-        for k, v in cfg.items():
+        for k, v in cfg_fixture.items():
             if any(term in k.lower() for term in ["key", "secret", "token"]):
                 if isinstance(v, str) and len(v.strip()) > 8:
                     secrets.append((k, v.strip()))
@@ -61,7 +71,7 @@ def run_tests(deliberate_break: bool = False) -> bool:
 
         leaked = []
         if deliberate_break and secrets:
-            # Intentionally inject the first real secret into catalog_str to prove leak detection works!
+            # Intentionally inject first real secret into catalog_str to prove test catches leaks
             catalog_str += f" LEAK_TEST: {secrets[0][1]} "
 
         for key_name, secret_val in secrets:
@@ -113,7 +123,7 @@ def run_tests(deliberate_break: bool = False) -> bool:
             return 401
         return 200
 
-    real_dash_key = cfg.get("dashboard_api_key", "secret_dash_pass_123")
+    real_dash_key = cfg_fixture.get("dashboard_api_key", "secret_dash_pass_123")
 
     auth_cases = [
         ("Missing header", real_dash_key, "", 401),
@@ -150,15 +160,12 @@ def run_tests(deliberate_break: bool = False) -> bool:
         with open(bad_backend, "w", encoding="utf-8") as f:
             f.write("def broken(:\n    pass\n")
 
-        # Run 1: First patch
         ok1, msg1 = patch_file(test_backend)
         pass1 = ok1 and "PATCH_SUCCESS" in msg1
 
-        # Run 2: Second patch (Idempotency)
         ok2, msg2 = patch_file(test_backend)
         pass2 = ok2 and "IDEMPOTENT" in msg2
 
-        # Run 3: Bad AST syntax refusal
         ok3, msg3 = patch_file(bad_backend)
         pass3 = (not ok3) and "REFUSED WRITE" in msg3
 
@@ -170,6 +177,19 @@ def run_tests(deliberate_break: bool = False) -> bool:
             failures += 1
     except Exception as e:
         print(f"BAD  TEST 4: Exception during patch safety test: {e}")
+        failures += 1
+
+    # ----------------------------------------------------------------------------------
+    # TEST 5: FIXTURE INTEGRITY — ASSERT CONFIG.JSON ON DISK UNMUTATED
+    # ----------------------------------------------------------------------------------
+    print("\n--- TEST 5: Fixture Integrity Assertion ---")
+    with open(config_file_path, "r", encoding="utf-8") as f:
+        disk_config_after = f.read()
+
+    if disk_config_before == disk_config_after:
+        print("ok   TEST 5: Fixture integrity verified. config.json on disk was NOT mutated by tests.")
+    else:
+        print("BAD  TEST 5: SECURITY/ISOLATION FAILURE: config.json on disk was mutated during testing!")
         failures += 1
 
     print("\n==========================================================================================")
