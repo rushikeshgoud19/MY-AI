@@ -82,6 +82,116 @@ def _parse_whatsapp_send_command(wa_text: str):
     return None, None
 
 
+_REMINDER_UNITS = {
+    "min": 1, "mins": 1, "minute": 1, "minutes": 1, "m": 1,
+    "hour": 60, "hours": 60, "hr": 60, "hrs": 60, "h": 60,
+    "day": 1440, "days": 1440,
+}
+
+# Asking ABOUT reminders is not setting one. Without this gate "cancel my reminder for 8pm"
+# parses a time and a body and would silently schedule the very thing it asked to cancel.
+_REMINDER_NEGATIVE = re.compile(
+    r"\b(cancel|delete|remove|clear|list|show|what|which|when|any|how many|do i have)\b[^.?!]*"
+    r"\breminder", re.IGNORECASE)
+
+
+def _parse_reminder_command(text: str):
+    """Parse 'remind me …' into (delay_minutes, what). Returns (None, None) if not a reminder.
+
+    WHY THIS EXISTS — it is a MEASURED fix, not a guess. 378-call ablation on 2026-07-28
+    (`scripts/mistral_ablation.py`): mistral emitted a `schedule_task` tool call on only
+    **69%** of reminder requests, versus **97%** for `message_whatsapp`. The difference is not
+    the model and not the prompt — every capability with a deterministic pre-LLM fast-path is
+    reliable, and `schedule_task` was the one without one. It IS in `FAST_TRACK_TOOLS`, but
+    that only skips the second LLM round AFTER the model already decided to call it, which
+    does nothing to make it decide. Input shape cost real accuracy too (bare 95% -> wrapped
+    79%), so this parses the WRAPPED shape as a first-class case, not an afterthought.
+
+    And the failure mode was not always a visible refusal. One measured reply was
+    "[EMOTION: relaxed] Done, Master. I'll make sure you remember to call Mom at 8 PM tonight."
+    with ZERO tool calls — a silent fake success that the night shift would file as completed
+    work. Rule #4: anything that MUST happen gets a fast-path. The model narrates; code books.
+    """
+    # Strip the WhatsApp wrapper: "[MESSAGE FROM MASTER RUSHI (via WhatsApp)]: <text>\n(SYSTEM: …)"
+    clean = re.sub(r"^\s*\[[^\]]*\]\s*:\s*", "", text).split("\n(SYSTEM:")[0].strip()
+    low = clean.lower()
+
+    # `\bremind\b` deliberately does NOT match "reminded", so "she reminded me at 3am" — a
+    # statement about the past — cannot book anything.
+    if not re.search(r"\bremind\b|\breminder\b", low):
+        return None, None
+    if _REMINDER_NEGATIVE.search(low):
+        return None, None
+
+    import datetime
+    from server.config import mizune_now
+
+    delay = None
+    # ── RELATIVE: "in 20 minutes", "after 2 hours", "for 20 minutes" ──
+    # "for" belongs here, not only on the clock branch: "set a reminder FOR 20 MINUTES" is a
+    # duration. The test caught the clock regex reading "for 20" as 20:00 and booking it 862
+    # minutes out — a reminder that arrives 14 hours late is indistinguishable from one that
+    # never fired.
+    m_rel = re.search(r"\b(?:in|after|for)\s+(\d+)\s*([a-z]+)", low)
+    if m_rel and m_rel.group(2) in _REMINDER_UNITS:
+        delay = int(m_rel.group(1)) * _REMINDER_UNITS[m_rel.group(2)]
+
+    # ── ABSOLUTE clock: "at 8pm", "at 8:30 pm", "at 20:00", "tomorrow at 9am" ──
+    m_abs = None
+    if delay is None:
+        # The lookahead stops a DURATION being misread as a wall-clock time: without it,
+        # "for 20 minutes" matches as 20:00. A bare hour must not be followed by a time unit.
+        m_abs = re.search(r"\b(?:at|for|by)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b"
+                          r"(?!\s*(?:min|sec|hour|hr|day)[a-z]*)", low)
+        if m_abs:
+            hh = int(m_abs.group(1))
+            mm = int(m_abs.group(2) or 0)
+            ap = m_abs.group(3)
+            if ap == "pm" and hh < 12:
+                hh += 12
+            elif ap == "am" and hh == 12:
+                hh = 0
+            elif ap is None and hh <= 7:
+                # No meridiem and a small hour: "at 8" in the evening means 20:00, not 08:00
+                # tomorrow morning. Only nudge genuinely ambiguous small hours.
+                hh += 12
+            if not (0 <= hh <= 23 and 0 <= mm <= 59):
+                return None, None
+            now = mizune_now()
+            target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+            if "tomorrow" in low:
+                target += datetime.timedelta(days=1)
+            elif target <= now:
+                # The time already passed today, so he means the next one. Rolling forward is
+                # the only non-surprising reading — scheduling it in the past would silently
+                # never fire.
+                target += datetime.timedelta(days=1)
+            delay = max(1, int(round((target - now).total_seconds() / 60.0)))
+
+    if not delay or delay <= 0:
+        return None, None          # no time expressed -> let the model ask him
+
+    # ── The task body ──
+    what = clean
+    m_to = re.search(r"\bto\s+(.+)", clean, re.IGNORECASE)
+    m_that = re.search(r"\breminder\s*(?:for|:)\s*(.+)", clean, re.IGNORECASE)
+    if m_to:
+        what = m_to.group(1)
+    elif m_that:
+        what = m_that.group(1)
+    # Remove the time phrase from the body so the reminder does not read
+    # "call mom at 8pm at 8pm".
+    what = re.sub(r"\b(?:in|after)\s+\d+\s*[a-z]+\b", "", what, flags=re.IGNORECASE)
+    what = re.sub(r"\b(?:at|by)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b", "", what, flags=re.IGNORECASE)
+    what = re.sub(r"\b(?:tonight|tomorrow|today)\b", "", what, flags=re.IGNORECASE)
+    what = re.sub(r"^\s*(?:me\s+to|me)\s+", "", what, flags=re.IGNORECASE)
+    what = what.strip(" ,.:;-").strip()
+
+    if not what or len(what) < 2:
+        return None, None
+    return delay, what
+
+
 def _handle_scheduled_whatsapp_send(text: str, config: dict):
     """
     Parses scheduled WhatsApp send requests:
@@ -710,6 +820,42 @@ def _process_command_internal(text: str, config: dict, broadcast_sync_fn, sessio
 
     _third_party = ("[WHATSAPP MESSAGE FROM" in text
                     and "FROM Rushi" not in text and "FROM Rushikesh" not in text)
+
+    # ── REMINDER fast-path: booking a reminder is CODE's job (measured, see
+    # _parse_reminder_command — mistral called schedule_task on only 69% of these).
+    # Sits AFTER the scheduled-WhatsApp-send path so "in 5 min say hi to Owais" stays a SEND,
+    # and it is keyword-gated on "remind" so it cannot capture that phrasing anyway.
+    # MASTER ONLY: a third party must never be able to schedule work on his system.
+    if not _third_party and not text.startswith("[SYSTEM"):
+        _rem_delay, _rem_what = _parse_reminder_command(text)
+        if _rem_delay and _rem_what:
+            from server.config import mizune_now
+            import datetime as _dt
+            _trigger = mizune_now() + _dt.timedelta(minutes=_rem_delay)
+            # Origin decides DELIVERY, and both shapes are deterministic where they can be.
+            # A WhatsApp-origin reminder is stored as WA_SEND, which _scheduler_callback
+            # direct-executes without the model touching it. A desktop/voice reminder keeps
+            # the spoken wakeup path.
+            _via_wa = "(via WhatsApp)" in text or "[WHATSAPP MESSAGE FROM" in text
+            if _via_wa:
+                _safe = _rem_what.replace('"', "'")
+                _action = f'WA_SEND target="Master" message="Reminder, Master: {_safe}"'
+            else:
+                _action = f"Speak out loud: Master, reminder — {_rem_what}"
+            global_cron_manager.add_one_time_task(_action, _trigger.isoformat())
+            log_info(f"[REMINDER] fast-path booked +{_rem_delay}min "
+                     f"({_trigger.strftime('%I:%M %p')}): {_rem_what[:60]!r} via="
+                     f"{'whatsapp' if _via_wa else 'voice'}")
+            # Seal it like any other tool result, so the audit and the lie-detector see a
+            # real scheduling event rather than an unexplained gap.
+            try:
+                from server.memory import memory
+                memory.add_to_history("system", f"[TOOL RESULTS] schedule_task: booked "
+                                                f"{_trigger.isoformat()} — {_rem_what[:100]}")
+            except Exception as _e:
+                log_info(f"[REMINDER] seal failed: {_e}")
+            return (f"[EMOTION: happy] Got it, Master — I'll remind you to {_rem_what} at "
+                    f"{_trigger.strftime('%I:%M %p')}.")
 
     if not _third_party and "[mission" not in lower_text and not text.startswith("[SYSTEM"):
         _who, _body = _parse_whatsapp_send_command(_wa_text)

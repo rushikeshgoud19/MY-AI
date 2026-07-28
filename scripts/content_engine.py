@@ -159,11 +159,38 @@ def is_emoji(char: str) -> bool:
     return unicodedata.category(char) in ("So", "Symbol, other") or (0x1F300 <= ord(char) <= 0x1FAFF)
 
 
+def _strip_notation(text: str) -> str:
+    """Remove NOTATION so the prose checks only judge prose.
+
+    THE PATTERN, learned four times the hard way: the em-dash and fabricated-number checks
+    must skip anything that is notation rather than a CLAIM. Every false positive so far has
+    been the same mistake in a new costume —
+      1. ISO dates read as invented metrics ("On 2026-07-28 I fixed…" -> "2026", "28").
+      2. Uniform-rhythm firing on three short honest sentences.
+      3. Markdown `---` horizontal rules counted as em-dashes.
+      4. An HTTP status code in prose ("did the call return 200") read as a fabricated number.
+    And a fifth this fix prevents before it bites: `--json` / `--repo` / `--days` each count as
+    an em-dash under a bare `count("--")`, so any draft about CLI work self-rejects.
+
+    A linter Rushi stops trusting is a linter he turns off, and then it protects nothing. So
+    the rule is: strip code, rules, URLs and flags FIRST, then judge what is left.
+    """
+    t = re.sub(r"```.*?```", " ", text, flags=re.S)        # fenced code blocks
+    t = re.sub(r"`[^`]*`", " ", t)                          # inline code spans
+    t = re.sub(r"^\s*[-*_]{3,}\s*$", " ", t, flags=re.M)    # markdown horizontal rules
+    t = re.sub(r"https?://\S+", " ", t)                     # URLs
+    t = re.sub(r"(?<!\w)--[a-zA-Z][\w-]*", " ", t)          # CLI flags: --json, --days
+    return t
+
+
 def lint_draft(text: str, digest: str) -> tuple:
     """DETERMINISTIC LINTER for anti-slop checks.
     Returns (ok: bool, problems: list[str]).
     """
     problems = []
+    # Prose-only view for the checks that judge WRITING rather than content. The banned-word
+    # and opener checks still use the full text: a banned word is banned wherever it appears.
+    prose = _strip_notation(text)
 
     # 1. Banned openers
     openers = ["excited to share", "thrilled to announce", "i'm happy to", "delighted"]
@@ -191,8 +218,9 @@ def lint_draft(text: str, digest: str) -> tuple:
     if len(hashtags) > 2:
         problems.append(f"Too many hashtags ({len(hashtags)} > max 2)")
 
-    # 5. Em-dash cap (max 2)
-    em_dashes = text.count("—") + text.count("--")
+    # 5. Em-dash cap (max 2) — PROSE ONLY. Counted on the raw text this fired on markdown
+    # `---` rules and on every CLI flag, both of which are notation (see _strip_notation).
+    em_dashes = prose.count("—") + prose.count("--")
     if em_dashes > 2:
         problems.append(f"Too many em-dashes ({em_dashes} > max 2)")
 
@@ -219,10 +247,18 @@ def lint_draft(text: str, digest: str) -> tuple:
     # was rejected for the fabricated numbers "2026" and "28". Strip those shapes first, then
     # judge what remains. The check exists to catch an invented statistic, which is the thing
     # that would actually embarrass him; it is not a ban on writing down the date.
-    _scrubbed = re.sub(r"\b\d{4}-\d{2}-\d{2}\b", " ", text)          # ISO dates
+    # Start from the PROSE view: a number inside a code block or a URL is notation, not a
+    # claim about the world. `ledger.verify_chain()` returning `record 0` is not a statistic.
+    _scrubbed = re.sub(r"\b\d{4}-\d{2}-\d{2}\b", " ", prose)         # ISO dates
     _scrubbed = re.sub(r"\b\d{1,2}[:/]\d{2}(?::\d{2})?\s*(?:am|pm)?\b", " ", _scrubbed, flags=re.I)  # times
     _scrubbed = re.sub(r"\bv?\d+\.\d+(?:\.\d+)?\b", " ", _scrubbed)  # versions like 0.1.0, 3.11
     _scrubbed = re.sub(r"\b(?:19|20)\d{2}\b", " ", _scrubbed)        # bare years
+    # HTTP status codes named in an explicit status context. Scoped deliberately narrow rather
+    # than allowlisting "200" outright, because "200 users" IS a metric and must still be
+    # caught — it is the context that makes it notation, not the digits.
+    _scrubbed = re.sub(
+        r"\b(?:HTTP|status(?:\s+code)?|code|return(?:s|ed|ing)?|responded?(?:\s+with)?)\s+"
+        r"(?:a\s+)?[1-5]\d{2}\b", " ", _scrubbed, flags=re.I)
 
     numbers_in_draft = re.findall(r"\b\d+(?:\.\d+)?%?\b", _scrubbed)
     # Standard static numbers allowed from system context: 898 (VM MB), 24, 7, 96, 4 (months)

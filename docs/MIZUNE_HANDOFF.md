@@ -3813,3 +3813,57 @@ lines at all means the watcher itself died, which is the failure that hid for tw
   ⚠️ STILL OPEN: reminder fast-path (item 1's fix), the pin question, groq capped at ~94k/100k
   TPD by 05:00 (token budget remains the binding constraint), phone still offline so mobile
   playback is still unproven, and Stage 2 distribution for stepproof.
+- 2026-07-28 (Claude, session 3b): **REMINDER FAST-PATH SHIPPED + DEPLOYED + PROVEN LIVE**, and
+  the linter's notation false positives fixed.
+  ⭐ **`_parse_reminder_command` in processor.py — the MEASURED fix for item 1.** The ablation
+  said `schedule_task` was at 69% while `message_whatsapp` was at 97%, and the only structural
+  difference was a deterministic pre-LLM fast-path. Now reminders have one. Handles relative
+  ("in 20 minutes", "for 20 minutes"), absolute clock ("at 8pm", "at 8:30 pm", "at 20:00",
+  "tomorrow at 9am", rolling forward when the time already passed today), and the WRAPPED
+  WhatsApp shape as a first-class case. Master-only gated. Origin decides delivery: a
+  WhatsApp-origin reminder is stored as the existing deterministic `WA_SEND` shape that
+  `_scheduler_callback` direct-executes, so the model touches neither the booking NOR the
+  delivery; a desktop reminder keeps the spoken wakeup. Seals a `[TOOL RESULTS] schedule_task`
+  row so the audit sees a real scheduling event.
+  **`scripts/test_reminder_fastpath.py` — 44/44, every case in BOTH input shapes.** 24 of the
+  44 are DECOYS that must stay quiet, and they matter more than the positives: "remind me what
+  we did yesterday" (no time -> let her ask), "cancel my reminder for 8pm" (asking ABOUT a
+  reminder is not setting one -> without that gate it would have silently booked the thing it
+  was told to cancel), "she reminded me at 3am" (`remind` does not match "reminded", so a
+  statement about the past cannot book anything), and "in 5 minutes say good night to Owais"
+  (stays a SEND).
+  🐛 **THE TEST CAUGHT A REAL BUG IN MY OWN PARSER:** "set a reminder **for 20 minutes**" hit
+  the wall-clock branch, read "for 20" as 20:00, and booked it **862 minutes** out. A reminder
+  that arrives 14 hours late is indistinguishable from one that never fired. Fixed with "for"
+  on the relative branch plus a negative lookahead so a DURATION can never be read as a clock
+  time. (A second "failure" was the TEST being wrong, not the code — "tomorrow at 9am" asked at
+  05:40 really is ~27h out, and my plausibility ceiling was one day.)
+  ✅ **PROVEN LIVE ON THE VM AGAINST GROUND TRUTH, in the real wrapped shape:** schedules.db row
+  20 = `WA_SEND target="Master" message="Reminder, Master: check the FASTPATH_PROBE_9042
+  marker"` at 15:45 IST, plus the code-written log line `[REMINDER] fast-path booked +600min
+  ... via=whatsapp`. **And 0 provider calls for that turn** — the LLM was never consulted, so
+  the 69% no longer applies; booking is 100% by construction. Probe row deleted afterwards
+  (0 pending). md5 matched local, smoke 4/4 before and after, 0 tracebacks, Xvfb=1.
+  🧹 **LINTER: the notation pattern, written down as a RULE.** New `_strip_notation()` in
+  content_engine.py, used by the em-dash AND fabricated-number checks. Rushi's framing, kept
+  verbatim because it is the actual invariant: **the numeral and em-dash checks must skip
+  anything that is notation rather than a claim.** Four instances of the same bug so far —
+  (1) ISO dates as invented metrics, (2) uniform rhythm on 3 short sentences, (3) markdown
+  `---` rules counted as em-dashes, (4) an HTTP status code read as a fabricated number — and
+  a fifth this prevents before it bites: **every CLI flag (`--json`, `--days`) counted as an
+  em-dash**, so any draft about command-line work self-rejected. Now strips fenced code,
+  inline code, markdown rules, URLs and flags first. HTTP codes are scoped to an explicit
+  status context, NOT allowlisted, because "200 users" IS a metric and must still be caught.
+  **10/10 in `scratchpad/test_linter.py`, half of them negative controls proving the linter
+  still REJECTS invented metrics, prose em-dash pile-ups, banned words and banned openers.**
+  A linter Rushi stops trusting is one he turns off, and then it protects nothing.
+  📌 The launch post now passes `lint_draft` on the RAW file with no manual stripping — before
+  the fix it needed code blocks hand-stripped and `200` pre-seeded into the facts.
+  ⚠️ OBSERVED, NOT CHANGED: the uniform-rhythm check fired on honest test prose at lengths
+  [6,4,5,5,3] (spread 3, 5 sentences). That is real writing variance. Rushi tuned this
+  threshold last session so I left it alone, but it is worth another look. Also the em-dash cap
+  of 2 is calibrated for a ~150-word post, not a 1000-word technical one.
+  ⚠️ STILL OPEN: the PIN QUESTION (mistral 1/3 vs cerebras 3/3 on the same exposed path —
+  now that reminders are fast-pathed, revisit `night_shift.py:47` for whatever tools still have
+  no fast-path); groq capped ~94k/100k TPD by 05:00; phone offline so mobile playback unproven;
+  Stage 2 distribution for stepproof; and Rushi confirming the 21:00 build log lands in WhatsApp.
