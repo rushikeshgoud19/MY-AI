@@ -3214,6 +3214,123 @@ gemini, nvidia ×3, opencode, and the Google OAuth client secret.
 ⚠️ Any NEW state-changing endpoint (e.g. the model selector) MUST require the same header.
 The VM has no auth dependency, so each route has to enforce it itself.
 
+# ═══════════════════════════════════════════════════════════════
+# EXECUTOR TASK PACK 11 (for Antigravity) — written 2026-07-29 by Claude
+# MODEL SELECTOR — pick Mizune's brain from the dashboard, with honesty about each one
+# ═══════════════════════════════════════════════════════════════
+# Rushi's words: "lets start working on the agent orchestra for mizune so that i should be
+# able to choose model for mizune so that she messages properly in the dashboard — give me a
+# drop down of all the models i can use."
+#
+# 🔴 READ THIS FIRST — A SECURITY RULE THAT DID NOT EXIST YESTERDAY.
+# On 2026-07-29 we found `GET /config` on the VM serving EVERY API KEY to the public
+# internet, unauthenticated — gemini, google_client_secret, opencode, nvidia, groq ×4,
+# cerebras, mistral ×4 — and `POST /config` writable by anyone. The repo copy has
+# `Depends(get_api_key)`; the deployed copy had diverged and lost it.
+# Therefore, for anything you build here:
+#   1. **NO ENDPOINT MAY EVER RETURN A SECRET.** Not masked-but-present, not "last 4" —
+#      the model list must expose provider NAMES and health, never key material.
+#   2. **EVERY STATE-CHANGING ENDPOINT ENFORCES AUTH ITSELF.** The VM has NO auth
+#      dependency to lean on. Copy the pattern now in `backend_main.py`: compare the
+#      `X-Mizune-Key` header against `config["dashboard_api_key"]`, and FAIL CLOSED with 401
+#      when the header is missing OR the config value is unset.
+#
+# WHY A DROPDOWN OF NAMES IS THE WRONG FEATURE, AND WHAT TO BUILD INSTEAD:
+# Measured this week, on the SAME prompt and the SAME code path — models do not differ in
+# taste, they differ in whether they DO ANYTHING:
+#   mistral   schedule_task 1/3   ("I'm sorry, I don't have the ability to set reminders")
+#   cerebras  schedule_task 3/3
+#   by tool:  message_whatsapp 97% · google_workspace 80% · schedule_task 69%
+#   by input: bare text 95% → production wrapped text 79%
+# A plain list of names invites Rushi to pick a model that cannot act, and it will fail
+# SILENTLY — she says "Done, Master" and nothing happens. So every option in the dropdown
+# carries its measured tool-reliability and its live availability. The dropdown's job is to
+# stop him choosing a brain that can't use its hands.
+
+## ENVIRONMENT (verified — do not re-discover)
+- Mizune repo `C:\Users\rushi\OneDrive\Desktop\my Ai`, python `.venv\Scripts\python.exe`.
+- Dashboard is a SEPARATE codebase: `C:\Users\rushi\.claude\agentic-os` (node `server.js`
+  + `public/`), served at `http://localhost:4517`, kept alive by `keepalive.vbs`.
+- ⚠️ **YOU CANNOT DEPLOY.** The VM route belongs in `backend_main.py`, which lives ONLY on
+  the VM and has DIVERGED from the repo — it must be patched in place by Claude. So write
+  the VM-side code as a **self-contained patch file** `scripts/patch_model_api.py` that
+  Claude applies: it takes a path, inserts the routes, `ast.parse`s the result, and refuses
+  to write on any error. Do NOT edit `legacy/backend_main.py` expecting it to ship.
+- Provider config today: `ai_model` selects the primary; per-provider model in
+  `groq_model` / `cerebras_model` / `mistral_model`. `_OPENAI_COMPAT` in `server/ai.py`
+  holds base_url + key name + default model for groq/cerebras/mistral.
+- Force one provider for a probe with
+  `hints={"force_provider": name, "no_fallback": True}` — WITHOUT `no_fallback` the cascade
+  silently answers with a different provider and you record the wrong one.
+- A capped provider returns her failure line containing "tangled" ⇒ UNAVAILABLE, never FAIL.
+
+## ══ 11.1 — `server/model_catalog.py` (NEW) — what can she actually run? ══
+NO LLM IN THIS FILE. Pure collection, like `build_log.py`.
+- `list_models(config) -> list[dict]`, one entry per usable provider/model:
+  `{provider, model, keyed: bool, available: bool, detail, tool_reliability, is_current}`.
+- Model names come from each provider's own `/v1/models` endpoint where it exists (groq,
+  cerebras, mistral are all OpenAI-compatible), so the list cannot drift from reality.
+  Cache to `.data/model_catalog.json` with a timestamp; fall back to the cache when a
+  provider is unreachable, and SAY the entry is cached rather than pretending it is live.
+- `available` is measured, not assumed: a 429/quota response ⇒ `available=False`,
+  `detail="daily cap"`. A missing key ⇒ `keyed=False`. Never a bare boolean with no reason.
+- `tool_reliability` is read from `.data/provider_matrix.json` if present (pack 9 wrote it),
+  else `"unmeasured"`. **Do not invent a number.** "unmeasured" is a real, useful answer.
+- ⚠️ NEVER put key material in the output. Provider name and health only.
+DONE-WHEN: paste the real output for every configured provider.
+
+## ══ 11.2 — the two VM routes, as a patch file ══
+`scripts/patch_model_api.py` inserts into `backend_main.py`:
+- `GET /api/models` → `{models: [...], current: {...}}` from `list_models`. Read-only, no
+  secrets, no auth needed (it exposes nothing sensitive) — but assert in a test that no
+  value in the response matches any configured key.
+- `POST /api/model` → `{provider, model}`; validates against `list_models` (reject an
+  unknown pair with 400), persists to `config.json`, returns the new current selection.
+  **Auth: `X-Mizune-Key` vs `config["dashboard_api_key"]`, fail closed with 401.**
+- The patch must be IDEMPOTENT: running it twice changes nothing the second time, and it
+  must `ast.parse` the result before writing. Print a clear marker on success.
+DONE-WHEN: run the patch against a COPY of a backend file, paste the diff, prove it is
+idempotent, and prove it refuses to write when the result would not parse.
+
+## ══ 11.3 — the dashboard dropdown ══
+In `C:\Users\rushi\.claude\agentic-os` (`server.js` + `public/`), on the Mizune page:
+- A dropdown listing every model, each labelled with provider, model, and its honest state —
+  e.g. `cerebras · gpt-oss-120b — tools 3/3` / `mistral · mistral-medium-2508 — tools 1/3` /
+  `groq · llama-3.3-70b — daily cap reached`.
+- Unavailable and unkeyed entries render disabled, with the reason visible.
+- Selecting one POSTs to the VM with the header; on non-200 it shows the server's message
+  and REVERTS the dropdown. A selector that looks like it worked when it didn't is the exact
+  bug this project keeps fighting.
+- Show the current selection on load, read from the VM, not from browser state.
+- The dashboard needs the token: read it from an env var or a local file — **never hardcode
+  it into `public/` JavaScript**, which is served to the browser.
+DONE-WHEN: screenshot or paste of the rendered dropdown, plus the behaviour on a rejected
+POST.
+
+## ══ 11.4 — tests ══
+`scripts/test_model_selector.py`, house style, no pytest:
+- `list_models` never returns a string equal to any configured API key (loop the real config).
+- An unknown provider/model pair is rejected.
+- The auth check: missing header ⇒ 401, wrong header ⇒ 401, correct ⇒ 200, and **unset
+  `dashboard_api_key` ⇒ 401** (fail closed, not fail open).
+- Patch idempotency and the parse-failure refusal.
+DONE-WHEN: full output pasted, plus one deliberate break showing the suite can fail.
+
+## HOUSE RULES
+- LOCAL ONLY. No VM, no az/ssh, no git. Claude applies the patch and deploys.
+- No secret ever leaves a route. No hardcoded token in browser-served JS.
+- Real pasted output in RESULT. Ambiguous ⇒ `BLOCKED: <what>` and STOP.
+
+> **⛔ END OF TASK PACK 11 — STOP after 11.4.** Claude reviews by re-running, applies the
+> patch to the VM in place, deploys, restarts (matching on the SCRIPT NAME — see the
+> 2026-07-29 finding), and verifies the process start time is after the file mtimes.
+
+### RESULT (executor writes here)
+- 11.1:
+- 11.2:
+- 11.3:
+- 11.4:
+
 ## Progress log (executor: append one line per session)
 - 2026-07-08: Executor started, correctly blocked on dirty git status (per then-current rule).
 - 2026-07-08: Claude resolved — 0.1 was already ~done in the working tree; Claude finished the dedup (4/4 paths use helper), verified (import OK, test passes), deleted junk artifacts (`{`, `str`), and relaxed the git-safety rule so a dirty tree no longer blocks. NEXT: executor picks up at 0.2.
