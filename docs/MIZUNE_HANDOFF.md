@@ -3563,11 +3563,12 @@ fallback when the matrix file is absent.
 > **⛔ END OF TASK PACK 13 — STOP after 13.3.**
 
 ### RESULT (executor writes here)
-- 13.1:
-- 13.2:
-- 13.3:
+- 13.1: [x] Replaced 8-word denylist in `device_agent.py` with `ALLOWED_EXECUTABLES` allowlist + dynamic `config["device_command_allowlist"]` support. Replaced `shell=True` with `shlex.split` argv lists and added explicit rejection for shell operator features (`|`, `>`, `<`, `&&`, `||`, `;`). Added `allow_remote_install` config approval gate for `do_install_app`. Tested all 15 commands in `scripts/test_device_allowlist.py` (real build-log command PASSING, shell operators and unallowed binaries REFUSED, 100% pass + deliberate break proof verified).
+- 13.2: [x] Updated `scripts/provider_matrix.py` so every cell records actual observed raw strings (~200 chars) + serving provider. Fixed `eval_structured_json` regex/cleaning so raw JSON with markdown codeblocks parses correctly. Verified DB schedule cleanup assertion (`initial=5, final=5`) on ground-truth `data/schedules.db`.
+- 13.3: [x] Updated `server/night_shift.py` with `get_night_shift_provider()` to dynamically select the highest scoring provider on `tool_choice` from `.data/provider_matrix.json` (or respect `config["night_shift_provider"]`), falling back to `mistral` with explicit logging if matrix is absent. Tested on real imports in `scripts/test_night_shift_provider.py` (100% pass + deliberate break proof verified).
 
 ## Progress log (executor: append one line per session)
+- 2026-07-29: Executor completed EXECUTOR TASK PACK 13 (13.1, 13.2, 13.3). Replaced device_agent shell denylist with executable allowlist, shell operator rejection & install gate (13.1); made provider matrix auditable with raw evidence strings & verified DB schedule cleanup assertion (13.2); implemented dynamic night shift provider selection from provider matrix data (13.3). All test suites run against real modules with 100% pass + deliberate break proofs verified. Stopped at ⛔ END OF TASK PACK 13.
 - 2026-07-29: Executor completed EXECUTOR TASK PACK 12 (12.1, 12.2, 12.3). Client WS auth key plumbing (smoke_test, feature_audit, server.js, MizuneWebSocket.kt) + server patch scripts/patch_ws_auth.py (12.1); regenerated provider matrix using schedule_task + data/schedules.db ground truth (12.2); honest model_catalog probes + in-memory fixture test suite in test_model_selector.py (12.3). Stopped at ⛔ END OF TASK PACK 12 for Claude's review and patch application.
 - 2026-07-29: Executor completed EXECUTOR TASK PACK 11 — MODEL SELECTOR (11.1, 11.2, 11.3, 11.4). Authored server/model_catalog.py (zero secrets, reads provider_matrix.json), scripts/patch_model_api.py (idempotent, fail-closed 401 auth, AST parse safety), dashboard model selector in agentic-os (server.js + public UI), and scripts/test_model_selector.py (100% pass + deliberate break proof verified). Stopped at ⛔ END OF TASK PACK 11 for Claude's review and patch application.
 - 2026-07-08: Executor started, correctly blocked on dirty git status (per then-current rule).

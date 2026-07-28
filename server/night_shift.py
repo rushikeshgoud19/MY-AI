@@ -53,6 +53,54 @@ DEFAULT_BUDGET_TOKENS = 400_000
 _shift_lock = threading.Lock()   # only one shift runs at a time on this box (898MB RAM)
 
 
+def get_night_shift_provider(config: dict = None) -> str:
+    """Determine the optimal night shift provider dynamically.
+    Priority:
+      1. Explicit config['night_shift_provider'] override if present.
+      2. Highest scoring provider on 'tool_choice' in .data/provider_matrix.json.
+      3. Fallback to 'mistral' with explicit log if matrix is absent.
+    """
+    config = config or {}
+    override = config.get("night_shift_provider")
+    if override and isinstance(override, str) and override.strip():
+        chosen = override.strip()
+        log_info(f"[SHIFT] Provider override set in config: '{chosen}'")
+        return chosen
+
+    matrix_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".data", "provider_matrix.json")
+    if os.path.exists(matrix_file):
+        try:
+            import json
+            with open(matrix_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            matrix = data.get("matrix", {})
+
+            best_provider = None
+            best_score = -1.0
+
+            for p, specs in matrix.items():
+                tc = specs.get("tool_choice", {})
+                verdict = str(tc.get("verdict", "")).strip()
+                if "/" in verdict:
+                    try:
+                        num, den = verdict.split("/")
+                        score = float(num) / float(den)
+                        if score > best_score:
+                            best_score = score
+                            best_provider = p
+                    except Exception:
+                        pass
+
+            if best_provider and best_score >= 0:
+                log_info(f"[SHIFT] Dynamic provider selected from matrix 'tool_choice': '{best_provider}' (score: {best_score:.2f})")
+                return best_provider
+        except Exception as e:
+            log_info(f"[SHIFT] Could not parse matrix at {matrix_file}: {e}")
+
+    log_info("[SHIFT] No valid provider matrix found at .data/provider_matrix.json. Falling back to default shift provider 'mistral'.")
+    return "mistral"
+
+
 # ── storage ──────────────────────────────────────────────────────────────────
 
 def _db():
@@ -84,12 +132,13 @@ def queue_shift(label: str, goals: list, config: dict,
     goals = [g.strip() for g in (goals or []) if g and g.strip()]
     if not goals:
         return 0
+    provider = get_night_shift_provider(config)
     con = _db()
     now = mizune_now().isoformat()
     cur = con.execute(
         "INSERT INTO shifts (label, status, provider, deadline, budget_tokens, "
         "created_at, updated_at, report) VALUES (?, 'queued', ?, ?, ?, ?, ?, '')",
-        (label or "Night shift", SHIFT_PROVIDER, deadline_iso,
+        (label or "Night shift", provider, deadline_iso,
          budget_tokens or DEFAULT_BUDGET_TOKENS, now, now))
     sid = cur.lastrowid
     for i, g in enumerate(goals):
