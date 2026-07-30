@@ -426,6 +426,47 @@ def _scheduler_callback(task_description):
         if _m_att:
             _bl_attempt = int(_m_att.group(1))
         _BL_MAX_ATTEMPTS = 5          # 21:00, 21:30, 22:00, 22:30, 23:00
+        # Daytime cache-filling runs: collect while the laptop is actually awake, deliver
+        # nothing. This is what makes the 21:00 report possible at all on a night when the
+        # laptop never wakes.
+        _bl_collect_only = task_description.endswith("_CACHE")
+        _BL_CACHE_PATH = os.path.join(".data", "build_log_cache.json")
+        _BL_CACHE_MAX_AGE_MIN = 20 * 60      # 20h: yesterday's numbers are not today's report
+
+        def _save_cached_digest(payload: dict) -> None:
+            try:
+                from server.config import mizune_now as _n
+                os.makedirs(os.path.dirname(_BL_CACHE_PATH), exist_ok=True)
+                with open(_BL_CACHE_PATH, "w", encoding="utf-8") as f:
+                    json.dump({"collected_at": _n().isoformat(), "payload": payload}, f)
+                log_info("[BUILDLOG] cached this collection for later fallback.")
+            except Exception as e:
+                # Never let caching break a delivery that is otherwise working.
+                log_info(f"[BUILDLOG] cache write failed: {e}")
+
+        def _load_cached_digest():
+            """Return (payload, age_minutes, human_when) or None when there is nothing usable.
+
+            Returns None rather than a stale payload past the age limit: a report labelled
+            'today' built from three-day-old numbers is worse than an honest apology, and it
+            is the exact false-freshness this project keeps getting bitten by.
+            """
+            try:
+                from server.config import mizune_now as _n
+                import datetime as _d
+                with open(_BL_CACHE_PATH, encoding="utf-8") as f:
+                    blob = json.load(f)
+                when = _d.datetime.fromisoformat(blob["collected_at"])
+                age = int((_n() - when).total_seconds() // 60)
+                if age < 0 or age > _BL_CACHE_MAX_AGE_MIN:
+                    log_info(f"[BUILDLOG] cache is {age}min old — too stale to send.")
+                    return None
+                return blob["payload"], age, when.strftime("%I:%M %p")
+            except FileNotFoundError:
+                return None
+            except Exception as e:
+                log_info(f"[BUILDLOG] cache read failed: {e}")
+                return None
 
         def _deliver_build_log():
             from server.commands import whatsapp_automation
@@ -437,6 +478,39 @@ def _scheduler_callback(task_description):
                     time.sleep(120)          # bridge may be reconnecting — one retry
                     log_info(f"[BUILDLOG] retry delivery: "
                              f"{str(whatsapp_automation('Master', msg))[:120]}")
+
+            def _deliver_payload(payload: dict, header: str = "") -> None:
+                """Digest + one drafted post. Shared by the live and cached paths.
+
+                Factored out because the cached path needs byte-identical formatting: three
+                near-copies of "render the digest and draft" is precisely the shape that gets
+                fixed in one place out of three around here.
+                """
+                digest = str(payload.get("digest") or "").strip()
+                if not digest:
+                    _send("Master, tonight's build log came back empty — worth a look.")
+                    return
+                # LLM VOICES ONE COMMIT, CODE DELIVERS. draft_post uses
+                # system_prompt_override so tools are blocked, lints deterministically, and
+                # attaches the linter's problems rather than silently shipping a bad draft.
+                draft_block = ""
+                stories = payload.get("story_commits") or []
+                if stories:
+                    try:
+                        from scripts.content_engine import draft_post
+                        text, ok, problems = draft_post(stories[0], config,
+                                                        digest_context=digest)
+                        label = "DRAFT (lint clean)" if ok else "DRAFT (needs your edit)"
+                        draft_block = f"\n\n— {label} —\n{text}"
+                        if problems:
+                            log_info(f"[BUILDLOG] lint problems: {problems}")
+                    except Exception as e:
+                        log_info(f"[BUILDLOG] drafting failed ({e}) — sending digest only.")
+                        draft_block = ("\n\n(No draft tonight — the writer failed. The numbers "
+                                       "above are still real.)")
+                # Data over silence, same contract as the briefing: if voicing dies, the
+                # deterministic digest still goes out.
+                _send(header + digest + draft_block)
 
             try:
                 from server.device_registry import device_registry
@@ -478,6 +552,14 @@ def _scheduler_callback(task_description):
                 out = _laptop("run_command", {"command": cmd}, 90.0)
                 log_info(f"[BUILDLOG] collector said: {out[:200]}")
 
+                if "BUILD_LOG_OK" not in out and _bl_collect_only:
+                    # A cache-filling run is opportunistic BY DESIGN — the laptop being asleep
+                    # at noon is the normal case, not an incident. It must never retry and
+                    # never message him, or a background optimisation becomes daytime spam.
+                    log_info(f"[BUILDLOG] collect-only: laptop unavailable, skipping quietly. "
+                             f"{out[:120]}")
+                    return
+
                 if "BUILD_LOG_OK" not in out:
                     # HONEST, and NOT silent. A missed night must be distinguishable from a
                     # broken job — the keepalive that was 'alive but not healing' for two days
@@ -498,9 +580,27 @@ def _scheduler_callback(task_description):
                                  f"{_BL_MAX_ATTEMPTS}) — retrying at {_next.strftime('%H:%M')}, "
                                  f"staying quiet until the window closes")
                         return
+                    # WINDOW CLOSED. Before apologising, fall back to the freshest CACHED
+                    # payload. MEASURED 2026-07-30: three scheduled runs delivered and
+                    # `grep -c BUILD_LOG_OK` was 0 — not one 21:00 run has EVER collected,
+                    # because his laptop is asleep at 21:00 and the log shows it coming back
+                    # online only AFTER the 23:00 window closed. The honesty was working
+                    # perfectly and the feature was still useless: a nightly apology is not a
+                    # build log. So collection no longer has to happen at one exact minute.
+                    # Age is STATED, never assumed — the stale-file lesson from stepproof's
+                    # `file_newer_than`: yesterday's report passes "exists" and fails "fresh".
+                    _cached = _load_cached_digest()
+                    if _cached:
+                        _payload, _age_min, _when = _cached
+                        _hdr = (f"(Collected {_when} — {_age_min // 60}h{_age_min % 60:02d}m "
+                                f"before this report. Your laptop was offline all evening, so "
+                                f"this is the last good collection, not tonight's.)\n\n")
+                        _deliver_payload(_payload, header=_hdr)
+                        return
                     _send("Master, I couldn't build tonight's build log — your laptop didn't "
                           f"answer all evening (it has the git repo and gh, I don't). I tried "
-                          f"{_BL_MAX_ATTEMPTS} times over two hours.\nDetail: {out[:250]}")
+                          f"{_BL_MAX_ATTEMPTS} times over two hours, and I have no recent "
+                          f"cached collection to fall back on either.\nDetail: {out[:250]}")
                     return
 
                 raw = _laptop("read_file",
@@ -519,28 +619,17 @@ def _scheduler_callback(task_description):
                     _send("Master, tonight's build log came back empty — worth a look.")
                     return
 
-                # LLM VOICES ONE COMMIT, CODE DELIVERS. draft_post uses
-                # system_prompt_override so tools are blocked, lints deterministically, and
-                # attaches the linter's problems rather than silently shipping a bad draft.
-                draft_block = ""
-                stories = payload.get("story_commits") or []
-                if stories:
-                    try:
-                        from scripts.content_engine import draft_post
-                        text, ok, problems = draft_post(stories[0], config,
-                                                        digest_context=digest)
-                        label = "DRAFT (lint clean)" if ok else "DRAFT (needs your edit)"
-                        draft_block = f"\n\n— {label} —\n{text}"
-                        if problems:
-                            log_info(f"[BUILDLOG] lint problems: {problems}")
-                    except Exception as e:
-                        log_info(f"[BUILDLOG] drafting failed ({e}) — sending digest only.")
-                        draft_block = ("\n\n(No draft tonight — the writer failed. The numbers "
-                                       "above are still real.)")
+                # A GOOD COLLECTION IS RARE (his laptop is only awake for some of the day), so
+                # never throw one away — cache it for the nights the laptop is asleep.
+                _save_cached_digest(payload)
 
-                # Data over silence, same contract as the briefing: if voicing dies, the
-                # deterministic digest still goes out.
-                _send(digest + draft_block)
+                # COLLECT-ONLY runs exist purely to fill that cache while the laptop IS awake.
+                # They must never deliver, or he gets a build log at noon.
+                if _bl_collect_only:
+                    log_info("[BUILDLOG] collect-only run: cached, not delivering.")
+                    return
+
+                _deliver_payload(payload)
             except Exception as e:
                 log_info(f"[BUILDLOG] delivery thread error: {e}")
         threading.Thread(target=_deliver_build_log, daemon=True).start()

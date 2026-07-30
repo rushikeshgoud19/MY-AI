@@ -145,6 +145,15 @@ SHIFT_REPORT_DESC = "MIZUNE_SHIFT_REPORT"   # Z2: deliver proof-of-work (07:40)
 # 21:00 sits after the 20:00 evening digest and before the 22:00 night shift, so the three
 # evening jobs never contend for a provider at the same minute.
 BUILDLOG_TASK_DESC = "MIZUNE_BUILD_LOG"
+# Daytime cache fills. MEASURED 2026-07-30: across three nights of real 21:00 runs,
+# `grep -c BUILD_LOG_OK` on the VM was **0** — not one scheduled build log ever collected,
+# because the laptop that holds git and gh is asleep at 21:00 and only reconnects after the
+# 23:00 retry window closes. The honesty layer worked perfectly and the feature was still
+# useless: he got a nightly apology instead of a build log.
+# These runs collect while the laptop is plausibly awake and NEVER deliver (the processor
+# branch returns early on `_CACHE`), so 21:00 always has something real to fall back on.
+# Times are spread across the day so one long offline stretch cannot starve all of them.
+BUILDLOG_CACHE_DESC = "MIZUNE_BUILD_LOG_CACHE"
 
 
 def _tomorrows_calendar() -> str:
@@ -187,6 +196,12 @@ def ensure_briefing_scheduled(config, cron_manager) -> None:
         if config.get("build_log_enabled", True):
             jobs.append(
                 (BUILDLOG_TASK_DESC, config.get("build_log_cron", "0 21 * * *")))  # 9:00 PM IST
+            # 13:00 / 17:00 / 20:00 IST — collect-and-cache only, silent by construction.
+            # 20:00 is deliberately one hour before the report: the freshest possible cache
+            # while the laptop is still likely awake.
+            jobs.append(
+                (BUILDLOG_CACHE_DESC,
+                 config.get("build_log_cache_cron", "0 13,17,20 * * *")))
         # Phase Z2 night shift: only registered if a shift is enabled, so a box that
         # never uses it stays clean. Start 22:00, proof-of-work report 07:40 (before the
         # 07:45 bug report + 08:00 briefing — the night's work leads the morning).
