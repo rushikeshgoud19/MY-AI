@@ -4260,3 +4260,68 @@ lines at all means the watcher itself died, which is the failure that hid for tw
   now that reminders are fast-pathed, revisit `night_shift.py:47` for whatever tools still have
   no fast-path); groq capped ~94k/100k TPD by 05:00; phone offline so mobile playback unproven;
   Stage 2 distribution for stepproof; and Rushi confirming the 21:00 build log lands in WhatsApp.
+- 2026-07-31 (Claude, session 4): **THE BUILD LOG HAD NEVER ONCE COLLECTED IN PRODUCTION.**
+  Started from "make Mizune awesome" by generalising the session-3 finding (every capability
+  with a deterministic pre-LLM fast-path is reliable; the ones without are where she fails).
+  📊 **NEW: `scripts/fastpath_coverage.py` — the coverage gap, from code, no API calls.**
+  Of **19 side-effecting tools, only 5** have a pre-LLM fast-path (message_whatsapp,
+  schedule_task, night_shift, learn, start_mission). **14 are UNPROTECTED, and 12 of those sit
+  in FAST_TRACK_TOOLS** — which does NOT help a tool get chosen, it only skips the second LLM
+  round after the model already chose it. That is the false comfort that hid schedule_task at
+  69% for weeks. ⚠️ MY FIRST VERSION OF THIS SCRIPT WAS WRONG: a hand-maintained coverage list
+  missed the night_shift fast-path (processor.py:767) and reported a protected capability as
+  unprotected — the same drift bug the script exists to warn about. It now CROSS-CHECKS itself
+  against every `fast-path` log marker actually present in processor.py and shouts if one is
+  unexplained. Under-reporting coverage sends you off rebuilding something that already exists.
+  📈 **RANKED THE RISK LIST BY REAL USAGE** (seals in mizune_memory.db, not guesswork):
+  remote_device_command **38**, execute_python 28, message_whatsapp 28, play_music 16,
+  night_shift 11, schedule_task 10, run_command 10, open_app 8. The most-used side-effecting
+  tool she has is unprotected.
+  ✅ **BUT `remote_device_command` IS HONEST — the handoff's "narrates fake success" note is
+  STALE and did NOT reproduce.** Probed it against the offline phone (safe by construction:
+  nothing can execute on a disconnected device, and that is exactly the condition that produces
+  the lie). Both probes honest; seals prove it: `Device 'phone' is not online. Online devices:
+  laptop.` Positive control on the online laptop sealed `Exit 0. MIZUNE_PROBE_OK`. **Rule 1 cut
+  the OTHER way for once — re-running saved me from building a fix for a bug that isn't there.**
+  ⚠️ My own offline-detector had a false negative first ("isn't currently online" didn't match
+  the literal "not online"); negation is a PATTERN, not a fixed phrase. Same shape as the
+  narration-detector mistake. Fixed + self-tested 4/4 before trusting any result.
+  ✅ **The apostrophe/TRUNCATED WhatsApp bug is ALREADY FIXED and live** — seals at 19:23 on
+  07-28 predate the narrowed guard (VM ai.py mtime 19:34 same day, restart 21:12). None since.
+  🔴 **THE REAL FINDING — `grep -c BUILD_LOG_OK server.log` = 0.** Three real 21:00 runs had
+  delivered to Master and **not one had ever collected anything**. His laptop holds the only
+  git repo and the only `gh`, and it is ASLEEP at 21:00; the log shows it reconnecting only
+  AFTER the 23:00 retry window closes. All three deliveries were the honest "I couldn't build
+  it" apology. **The honesty layer worked perfectly and the feature was still useless.**
+  ⇒ **HONESTY IS NECESSARY AND IT IS NOT SUFFICIENT.** A truthful nightly apology is not a
+  build log. This is a new failure shape for the list: not a false green, a *correct red* that
+  nobody escalated because every layer was behaving as designed.
+  🛠️ **FIX (deployed, proven live): collection no longer has to happen at one exact minute.**
+  New `MIZUNE_BUILD_LOG_CACHE` cron at **13:00/17:00/20:00 IST** collects while the laptop is
+  plausibly awake and NEVER delivers (returns early on the `_CACHE` suffix; skips quietly when
+  the laptop is absent, because a background optimisation that messages him at noon is worse
+  than the problem it solves). 21:00 still tries a LIVE collection first and only falls back to
+  the cache when the window closes — stating **when** that data was collected rather than
+  implying it is tonight's.
+  ⚠️ That fallback introduces the risk the fix is most careful about: yesterday's numbers under
+  today's headline. Caches older than **20h** are refused, as are future-dated ones (clock
+  jumps), ones with no timestamp, and corrupt files. Same stale-file failure `file_newer_than`
+  catches in stepproof: `exists` passes it, only freshness fails it. **16/16 in
+  `scripts/test_buildlog_cache.py`, age boundary tested from BOTH sides.**
+  ✅ **PROVEN LIVE, including the NEGATIVE property:** fired the cache job in-process (rule 9),
+  got `BUILD_LOG_OK bytes=1993 commits=1 open_prs=4 story_commits=1` -> `cached this collection`
+  -> `collect-only run: cached, not delivering`; cache file holds a 980-char digest at
+  02:45:06; and **WhatsApp sends 0 before / 0 after** — silence measured against ground truth,
+  not assumed. Tonight's 21:00 report finally has real data to fall back on.
+  DEPLOY HYGIENE: divergence checked BEFORE copying — VM processor.py and briefing.py both
+  matched git HEAD byte-for-byte (CRLF-stripped), so nothing of anyone else's was clobbered.
+  md5 verified after, markers grepped, 8 crons registered, smoke 4/4 before AND after, 0
+  tracebacks, Xvfb=1, RAM 388MB avail, disk 61%.
+  📌 NOTE FOR FUTURE SESSIONS: this session spanned ~3 days of wall-clock across resumes. Check
+  `date` on the VM before reasoning about "today" — seals that look live can be days old, and
+  I nearly chased a two-day-old truncation bug as if it were current.
+  ⚠️ STILL OPEN: the PIN QUESTION (mistral 1/3 vs cerebras 3/3 on the same exposed path);
+  fast-paths for the top unprotected tools by usage (play_music at 16 is the most fast-pathable
+  and he cares about it; execute_python/run_command are harder and arguably shouldn't be);
+  groq token budget; phone offline so mobile playback still unproven; stepproof Stage 2; and
+  Rushi reading the launch post.
