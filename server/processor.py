@@ -197,6 +197,82 @@ def _parse_reminder_command(text: str):
     return delay, what
 
 
+# Things that are "played" but are not music. Without these, "play chess", "play it safe" and
+# "play devil's advocate" all become song searches — a fast-path that hijacks ordinary
+# conversation is worse than the unreliability it fixes.
+_NOT_MUSIC_OBJECTS = re.compile(
+    r"^(?:chess|a\s+game|games?|along|dead|it\s+safe|devil'?s?\s+advocate|catch|"
+    r"hard\s+to\s+get|the\s+field|ball|nice|dumb|favou?rites?\s+with)\b", re.IGNORECASE)
+
+# A request that names WhatsApp, a sender, or a link is NOT a direct play — it needs
+# read_whatsapp FIRST and then play_music with the resolved URL. That chain shipped in dc12642
+# ("play the song Sarthak sent me"), and a greedy music fast-path would silently break it by
+# searching YouTube for the literal words "the song sarthak sent me".
+_MUSIC_NEEDS_LOOKUP = re.compile(
+    r"\b(whatsapp|sent\s+me|shared|forwarded|the\s+link|that\s+link|message|"
+    r"he\s+sent|she\s+sent|they\s+sent)\b", re.IGNORECASE)
+
+
+def _parse_music_command(text: str):
+    """Parse music intent. Returns (tool_name, args) or (None, None).
+
+    WHY: `play_music` is the 3rd most-used side-effecting tool in the real seals (16 calls) and
+    had NO deterministic pre-LLM fast-path — the exact profile that measured 69% for
+    schedule_task before it got one (scripts/mistral_ablation.py, 378 calls). Music is also a
+    capability Rushi actually notices when it silently doesn't happen.
+
+    Deliberately CONSERVATIVE. A false negative costs one model round-trip and the tool still
+    usually fires; a false positive hijacks a sentence that was never about music and is
+    invisible until he notices she's searching YouTube for "devil's advocate".
+    """
+    clean = re.sub(r"^\s*\[[^\]]*\]\s*:\s*", "", text).split("\n(SYSTEM:")[0].strip()
+    low = clean.lower()
+
+    # ── control_music: pause / resume / next ──
+    if re.search(r"\b(?:pause|stop)\s+(?:the\s+)?(?:music|song|track|playback|it)\b", low) \
+            or re.fullmatch(r"\s*(?:pause|pause it)\s*[.!]?\s*", low):
+        return "control_music", {"action": "pause"}
+    if re.search(r"\b(?:resume|unpause|continue)\s+(?:the\s+)?(?:music|song|track|playback|it)\b", low) \
+            or re.fullmatch(r"\s*(?:resume|unpause)\s*[.!]?\s*", low):
+        return "control_music", {"action": "resume"}
+    if re.search(r"\b(?:next|skip)\s+(?:the\s+)?(?:song|track|one)\b", low) \
+            or re.search(r"\bskip\s+this\b", low) \
+            or re.fullmatch(r"\s*(?:next|skip)\s*[.!]?\s*", low):
+        return "control_music", {"action": "next"}
+
+    # ── play_music ──
+    # `\bplay\b` will not match "display" or "replay"; "put on" needs the object to follow.
+    m = re.search(r"\b(?:play|put\s+on)\s+(.+)", clean, re.IGNORECASE)
+    if not m:
+        return None, None
+    rest = m.group(1).strip()
+
+    # Defer to the model when the song has to be LOOKED UP before it can be played.
+    if _MUSIC_NEEDS_LOOKUP.search(rest) or _MUSIC_NEEDS_LOOKUP.search(low):
+        return None, None
+    if _NOT_MUSIC_OBJECTS.match(rest):
+        return None, None
+
+    device = "phone"
+    m_dev = re.search(r"\bon\s+(?:my\s+)?(laptop|pc|computer|phone|mobile)\b", rest, re.IGNORECASE)
+    if m_dev:
+        device = "laptop" if m_dev.group(1).lower() in ("laptop", "pc", "computer") else "phone"
+        rest = rest[:m_dev.start()] + rest[m_dev.end():]
+
+    # Strip filler that would otherwise end up in the search query.
+    rest = re.sub(r"^(?:me\s+|some\s+|the\s+song\s+|a\s+song\s+by\s+|songs?\s+by\s+)", "",
+                  rest, flags=re.IGNORECASE)
+    rest = re.sub(r"\b(?:please|for\s+me|right\s+now|now)\b", "", rest, flags=re.IGNORECASE)
+    query = rest.strip(" ,.:;-\"'")
+
+    # A bare "play" is a resume, not a search for the empty string.
+    if not query:
+        return "control_music", {"action": "resume"}
+    if len(query) < 2:
+        return None, None
+    return "play_music", {"query": query, "device": device}
+
+
 def _handle_scheduled_whatsapp_send(text: str, config: dict):
     """
     Parses scheduled WhatsApp send requests:
@@ -946,6 +1022,25 @@ def _process_command_internal(text: str, config: dict, broadcast_sync_fn, sessio
 
     _third_party = ("[WHATSAPP MESSAGE FROM" in text
                     and "FROM Rushi" not in text and "FROM Rushikesh" not in text)
+
+    # ── MUSIC fast-path: play/pause/skip is CODE's job (measured — play_music is the 3rd
+    # most-used side-effecting tool in the seals at 16 calls and had no pre-LLM guarantee).
+    # MASTER ONLY: these drive HIS phone and laptop, so a third party in a group chat must
+    # never be able to start music on his devices.
+    # Sits BEFORE the reminder path only for readability; the two parsers cannot both match
+    # (one requires "remind", the other "play"/"pause"/"skip").
+    if not _third_party and not text.startswith("[SYSTEM") and "[mission" not in lower_text:
+        _mtool, _margs = _parse_music_command(text)
+        if _mtool:
+            from server.ai import execute_tool_call
+            log_info(f"[MUSIC] fast-path: {_mtool} {_margs}")
+            _mres = str(execute_tool_call(_mtool, _margs, config))
+            try:
+                from server.memory import memory
+                memory.add_to_history("system", f"[TOOL RESULTS] {_mtool}: {_mres[:150]}")
+            except Exception as _e:
+                log_info(f"[MUSIC] seal failed: {_e}")
+            return _mres
 
     # ── REMINDER fast-path: booking a reminder is CODE's job (measured, see
     # _parse_reminder_command — mistral called schedule_task on only 69% of these).

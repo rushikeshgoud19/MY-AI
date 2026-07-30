@@ -58,6 +58,10 @@ PRE_LLM_FASTPATHS = {
     "[SHIFT] fast-path": "night_shift",
     "[MISSION] fast-path trigger": "start_mission",
     "[KNOWLEDGE] fast-path learn": "learn",
+    # Added 2026-07-31. The cross-check below caught this one as unexplained the moment the
+    # fast-path landed and this table had not been updated — which is the whole point of it.
+    "_parse_music_command": "play_music",
+    "[MUSIC] fast-path": "control_music",
     "_format_mesh_reply": "mesh",
     "MIZUNE_BUILD_LOG": "build_log",
 }

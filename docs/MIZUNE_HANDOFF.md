@@ -4381,3 +4381,45 @@ lines at all means the watcher itself died, which is the failure that hid for tw
   is not in my context — this session spans ~3 days of resumes and was summarised, so I do not
   know which agent it belonged to. Treat any nsec sitting in a transcript as BURNED: generate a
   fresh keypair, never reuse.
+- 2026-07-31 (Claude, session 4c): **MUSIC FAST-PATH SHIPPED — 7 of 19 side-effecting tools
+  are now guaranteed, up from 2 when I started measuring.**
+  `play_music` was the 3rd most-used side-effecting tool in the real seals (16 calls) with no
+  pre-LLM guarantee — the exact profile that measured schedule_task at 69%. Now
+  `_parse_music_command` handles play / put on / pause / stop / resume / next / skip, with
+  device routing ("on my laptop"), filler stripping, and a bare "play" treated as resume.
+  Master-only, because these drive HIS phone and laptop.
+  **54/54 in `scripts/test_music_fastpath.py`, both input shapes. 26 of the 54 are DECOYS**, and
+  they are the reason the parser is deliberately conservative:
+  ⭐ **THE ONE THAT MATTERS: "play the song Sarthak sent me" MUST NOT be hijacked.** That
+  request needs `read_whatsapp` FIRST and then `play_music` with the resolved URL (shipped
+  dc12642). A greedy fast-path would have searched YouTube for the literal words "the song
+  sarthak sent me" and quietly broken the feature — nobody would notice until he asked for a
+  song a friend sent. `_MUSIC_NEEDS_LOOKUP` defers anything naming whatsapp / sent me / shared
+  / a link / a message straight back to the model.
+  Also rejected: "play chess", "play it safe", "play devil's advocate", and the substring traps
+  "display the results" / "replay the last mission" / "the audio player is broken" (`play`
+  does not match inside another word).
+  ✅ **PROVEN LIVE ON THE VM, both halves.** Wrapped "play blinding lights" ->
+  `[MUSIC] fast-path: play_music {'query': 'blinding lights', 'device': 'phone'}` -> sealed
+  `[TOOL RESULTS] play_music: I couldn't reach your phone, Master - it's offline right now`
+  (honest, phone genuinely offline; the fast-path returns the tool result directly so the model
+  was never consulted). The DECOY "play the song Sarthak sent me" went to the model, which
+  called `read_whatsapp` FOUR times refining sender/contains — chain intact, not hijacked.
+  md5 matched local, no divergence beforehand, smoke 4/4 both sides, 0 tracebacks, Xvfb=1.
+  🛡️ **`scripts/fastpath_coverage.py` CAUGHT MY OWN OMISSION.** The moment the music fast-path
+  landed and I had not updated the coverage table, its self-check printed
+  `ABORT-WORTHY: processor.py has fast-paths this table does not explain: ['MUSIC']`. That is
+  the guard I added after the table wrongly reported night_shift as unprotected, and it fired
+  correctly on its first real opportunity. Coverage is now 9 markers / 7 guaranteed tools /
+  **12 still unprotected**.
+  📌 **KEY ROTATION: RUSHI DECLINED (2026-07-31).** I raised the leak, gave the evidence, and he
+  said he is not rotating. That is his call and it is recorded here so nobody re-litigates it:
+  the keys leaked by the pre-2026-07-29 `GET /config` stay in service. Realistic exposure is
+  free-tier quota abuse. `[WS-AUDIT]` logging is now the detection mechanism — if providers
+  start capping unusually early, check it for external connections. **Do NOT nag him about
+  this again.**
+  ⚠️ Note the March Google key in the public initial commit (`639841f:server.py`) is a separate
+  item and also not being rotated.
+  ⛔ STILL OPEN and unanswered: how to close the unauthenticated `/ws` (the actual RCE — needs
+  his decision because auth breaks the Android app until he rebuilds the APK), and the `nsec`
+  he mentioned, which is not in my context.
