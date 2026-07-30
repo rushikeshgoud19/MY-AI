@@ -4325,3 +4325,59 @@ lines at all means the watcher itself died, which is the failure that hid for tw
   and he cares about it; execute_python/run_command are harder and arguably shouldn't be);
   groq token budget; phone offline so mobile playback still unproven; stepproof Stage 2; and
   Rushi reading the launch post.
+- 2026-07-31 (Claude, session 4b): **SECURITY AUDIT — THE RCE HOLE WAS CLOSED AT THE FRONT
+  DOOR AND LEFT OPEN AT THE SIDE.**
+  Rushi asked me to rotate the provider keys leaked by the unauthenticated `GET /config`.
+  Verified the state of everything before acting, and the picture is not what either of us
+  assumed.
+  ✅ **`GET /config` IS FIXED AND THE FIX IS GENUINELY ON THE VM.** `_redact_secrets` is live
+  in backend_main.py. Proved it by comparing SERVED values against ON-DISK values field by
+  field: **leaked=0, masked=8**. (No secret value was ever printed — only lengths, booleans and
+  sha256 prefixes.)
+  ⚠️ **I RAISED A FALSE ALARM FIRST and had to correct it.** My detector classified the masked
+  values as REAL because it only recognised `*`-style redaction and choked on the letters in
+  `***REDACTED***`. The uniform lengths were the tell I initially misread: `"***REDACTED***"`
+  is 14 chars (the scalars) and `"***REDACTED*** (1 configured)"` is 29 (the lists). Four
+  different providers cannot have four identical key lengths. **Third detector bug of the
+  session — check the mask before shouting.**
+  ✅ Rotation is still REQUIRED regardless: closing the hole does not un-leak what was served
+  publicly for weeks. That is Rushi's job (provider consoles = credentials = not mine).
+  ✅ **git history is CLEAN except one finding.** config.json was never committed and is
+  gitignored. Scanned all 182 commits across a PUBLIC repo for key shapes: exactly one hit —
+  a real Google key (`AIzaSy…`, 39 chars) in the INITIAL COMMIT, 2026-03-16. **It is NOT the
+  current gemini key** (fingerprints differ), so it was replaced at some point. ⚠️ But
+  REPLACED IS NOT REVOKED — a superseded Google key keeps working until it is deleted in the
+  console. It is `639841f:server.py` if he wants to identify it.
+  🔴🔴 **THE REAL FINDING — `/ws` HAS NO AUTHENTICATION.** `POST /chat` was locked to 401 on
+  2026-07-29. The WEBSOCKET does the identical thing — `{"type":"chat"}` straight into
+  `process_command` with the full tool set (`run_command`, `execute_python`,
+  `remote_device_command` → his WINDOWS LAPTOP, `message_whatsapp`) — and it was left wide
+  open to the public internet. **This is unauthenticated RCE on his laptop, live.**
+  It is the same shape as the server.py-vs-backend_main.py trap one layer up: the fix went on
+  the route someone thought of, and the equivalent path nobody thought of stayed open.
+  ⇒ **EVERY PROBE I RAN THIS WHOLE SESSION went through that socket with no credential, from
+  an external network.** That is the proof, not a theory.
+  Other routes verified from the public internet: 401 on POST /chat, POST /config,
+  GET /memory/export, GET /api/self_review, POST /api/traceroot_sql, POST /notify,
+  POST /api/model, POST /memory/obsidian/sync. 🟠 **POST /api/voice/reset returns 200
+  UNAUTHENTICATED** — anyone can wipe his voice-biometric enrolment. 🟡 Info disclosure on
+  GET /api/devices (his whole fleet + capabilities), /api/models, /memory/obsidian/status.
+  🛠️ **DEPLOYED (non-breaking only): `[WS-AUDIT]` connection logging on /ws** — peer IP,
+  local-vs-external flag, user-agent, origin. **Auth was deliberately NOT added**, because NO
+  client sends a key (checked android + client + dashboard source: zero hits) so enforcing it
+  would cut off the Android app until Rushi rebuilds the APK himself — his call, not mine.
+  What the logging buys: "has anyone else ever connected?" was previously UNANSWERABLE, since
+  no logging existed at all. Now silence means nothing happened rather than nobody watching.
+  PROVEN: it caught my own smoke test as `connect from 152.59.205.75 local=False
+  ua='Python/3.12 websockets/15.0.1'` — an unauthenticated external connection with a generic
+  Python UA, which is exactly the attack.
+  Patched IN PLACE on the VM per rule 3 (`.bak_wsaudit` saved); backend_main.py is NOT in the
+  repo, so if the VM is rebuilt this must be re-applied — same caveat as the Xvfb cleanup.
+  Smoke 4/4 after, 0 tracebacks.
+  ⛔ **AWAITING RUSHI:** (1) rotate the 7 provider keys + google_client_secret, and REVOKE the
+  March Google key rather than just replacing it; (2) decide how to close /ws — hard token
+  auth (breaks the app until he rebuilds; WhatsApp/crons/night-shift are UNAFFECTED because
+  they never touch /ws), an Azure NSG restriction, or log-and-wait; (3) the `nsec` he mentioned
+  is not in my context — this session spans ~3 days of resumes and was summarised, so I do not
+  know which agent it belonged to. Treat any nsec sitting in a transcript as BURNED: generate a
+  fresh keypair, never reuse.
