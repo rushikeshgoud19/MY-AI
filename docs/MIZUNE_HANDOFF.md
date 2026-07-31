@@ -4423,3 +4423,42 @@ lines at all means the watcher itself died, which is the failure that hid for tw
   ⛔ STILL OPEN and unanswered: how to close the unauthenticated `/ws` (the actual RCE — needs
   his decision because auth breaks the Android app until he rebuilds the APK), and the `nsec`
   he mentioned, which is not in my context.
+- 2026-08-01 (Claude, session 4d): **THE DIGEST WAS READING TELEMETRY OFF THE WRONG MACHINE.**
+  ✅ FIRST: the build log LANDED in WhatsApp with real data (4 commits, 6 files, +784 lines, 4
+  open PRs with live CI counts, lint-clean draft). The cache fix works — this was the first
+  genuinely successful scheduled run after three that never collected.
+  🔴 **BUT IT CARRIED A FALSE ZERO: "0 mission(s) completed, 0 tool seal(s) logged" on a busy
+  day.** Root cause: `build_log.py` runs on the LAPTOP (that is where git and gh live) and read
+  the LAPTOP's `.data/` — but **Mizune runs on the VM**, so her seals are at
+  `/home/azureuser/.data/`. Proved it with the same query on both hosts:
+  **laptop = 0 in window / 127 all-time (last written Jul 29, missions.db empty since Jul 20);
+  brain host = 11 in window / 182 all-time.**
+  ⇒ A zero meaning "I looked in the wrong machine" is indistinguishable from a zero meaning
+  "quiet day", and the wrong one looks completely fine. Same family as every other false zero
+  here, one machine over.
+  FIX: each host reports only what it can actually see. `collect_day(remote=True)` (used by
+  `write_transport`, i.e. the VM's collector) DECLINES to report telemetry and says so in the
+  digest; the VM appends `_vm_telemetry()` read from its OWN dbs. Independent sources, and a
+  dead query is STATED rather than silently returning 0.
+  ⚠️ CAUGHT BEFORE DEPLOY: `_vm_telemetry` used `datetime.timedelta`, and `datetime` is NOT a
+  module-level name in processor.py — every use is function-local. It would have raised
+  NameError inside a daemon thread: no reply, no seal, no traceback. `py_compile` passes it
+  happily. Same silent shape as the mid-import cron bug. Imported locally with a comment.
+  ✅ DEPLOYED + FIRED LIVE: `BUILD_LOG_OK bytes=1275 commits=2 open_prs=4` -> cached ->
+  delivered. md5 matched, no divergence, smoke 4/4 both sides, 0 tracebacks.
+  📱 **PHONE IS ONLINE for the first time in days** (`online:["laptop","phone"]`) — the music
+  fast-path and mobile playback are finally testable for real. Not done at 02:51 IST.
+  💸 **CLAUDE USAGE INVESTIGATED (he hit a 5-hour limit on a day he had not used Claude).**
+  Nothing ran without him — verified across all 35 transcripts: **no hour anywhere has
+  assistant activity with zero user turns**, no Windows scheduled task launches claude, no
+  ruflo daemon, and the 13 `claude.exe` processes are just the desktop app's Electron tree.
+  THE REAL CAUSE IS CONVERSATION SIZE: **95-98% of every token spent is `cache_read`** — the
+  session re-reading its own history each call. THIS session ran Jul 28 -> Aug 1, 602 API
+  calls, **avg 257k cache_read PER CALL**. His 5 messages on Aug 1 cost 6.9M tokens. Historic
+  sessions hit 700M+ tokens each, ~97% cache_read.
+  ⇒ **ADVICE FOR EVERY FUTURE SESSION: keep them to about a day.** MIZUNE_HANDOFF.md exists so
+  a fresh session is cheap; continuing a 4-day-old one is the expensive path. Scripts:
+  `scratchpad/claude_usage.py` and `claude_tokens.py` reconstruct this from the JSONL if it
+  needs re-checking.
+  📌 RUSHI'S CALL: **do not start app work yet** ("we will look at the apps later"), so closing
+  `/ws` stays parked (it needs an APK rebuild). Key rotation remains declined.

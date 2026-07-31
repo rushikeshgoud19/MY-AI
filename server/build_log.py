@@ -212,11 +212,20 @@ def get_mizune_telemetry(days: int = 1) -> dict:
     return telemetry
 
 
-def collect_day(days: int = 1, repo: str = None) -> dict:
-    """Collect all build log data deterministically."""
+def collect_day(days: int = 1, repo: str = None, remote: bool = False) -> dict:
+    """Collect all build log data deterministically.
+
+    `remote=True` means this is running as the VM's collector on Rushi's laptop. Git and
+    GitHub are genuinely here; Mizune's telemetry is NOT — she runs on the VM. Reporting the
+    laptop's stale copies produced a confident "0 missions, 0 seals" on a busy day.
+    """
     git_digest = build_work_digest(days=days, repo=repo)
     github_act = get_github_activity(days=days)
-    mizune_tel = get_mizune_telemetry(days=days)
+    if remote:
+        mizune_tel = {"completed_missions": 0, "verified_missions": 0, "tool_seals_count": 0,
+                      "skipped_remote": True}
+    else:
+        mizune_tel = get_mizune_telemetry(days=days)
 
     # Ranking Highlights
     highlights = []
@@ -274,7 +283,21 @@ def render_digest(day: dict) -> str:
             lines.append(f"  - {p.get('repo')}#{p.get('number')} {p.get('title','')[:60]}{ci_txt}")
 
     mizune = day.get("mizune", {})
-    lines.append(f"Mizune Telemetry: {mizune.get('completed_missions', 0)} mission(s) completed, {mizune.get('tool_seals_count', 0)} tool seal(s) logged")
+    # TELEMETRY IS NOT KNOWABLE FROM THIS HOST when the collector runs remotely.
+    # MEASURED 2026-08-01 from a real delivered digest: it reported "0 mission(s) completed,
+    # 0 tool seal(s) logged" on a day with plenty of both. The collector runs on the LAPTOP
+    # (that is where git and gh live) and read the LAPTOP's .data/ — but Mizune runs on the
+    # VM, so her seals are at /home/azureuser/.data/. The laptop copy was last written days
+    # earlier and missions.db had been empty since July.
+    # A zero that means "I looked in the wrong machine" is indistinguishable from a zero that
+    # means "quiet day", and the wrong one of those looks completely fine. So the remote
+    # collector now DECLINES to report a number it cannot know, and the VM appends the real
+    # figures from its own databases (see processor.py::_vm_telemetry).
+    if mizune.get("skipped_remote"):
+        lines.append("Mizune Telemetry: (supplied by the brain host below — not visible from "
+                     "this machine)")
+    else:
+        lines.append(f"Mizune Telemetry: {mizune.get('completed_missions', 0)} mission(s) completed, {mizune.get('tool_seals_count', 0)} tool seal(s) logged")
 
     # A dead collector is stated, not swallowed. Otherwise a broken query and a genuinely
     # quiet day produce the identical digest, and the wrong one of those looks fine.
@@ -309,7 +332,9 @@ def write_transport(days: int = 1, path: str = TRANSPORT_PATH) -> dict:
     Deliberately compact: `read_file` caps at max_chars, and a payload that silently gets
     truncated mid-JSON would fail to parse on the VM and look like "the laptop was offline".
     """
-    day = collect_day(days=days)
+    # remote=True: this path exists ONLY for the VM's collector, so telemetry is deliberately
+    # not reported from here — see collect_day.
+    day = collect_day(days=days, remote=True)
     git = day.get("git", {})
 
     # CODE picks the story candidates, never the model — one commit per draft. An earlier

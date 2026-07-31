@@ -544,6 +544,57 @@ def _scheduler_callback(task_description):
                 log_info(f"[BUILDLOG] cache read failed: {e}")
                 return None
 
+        def _vm_telemetry(days: int = 1) -> str:
+            """Mizune's OWN numbers, read on the machine she actually runs on.
+
+            MEASURED 2026-08-01 from a delivered digest: it said "0 mission(s) completed,
+            0 tool seal(s) logged" on a day full of both. The collector runs on the LAPTOP
+            because that is where git and gh live, and it read the LAPTOP's .data/ — but the
+            brain is HERE, so the seals are here. The laptop's copy was days stale and its
+            missions.db had been empty since July.
+            A zero meaning "wrong machine" is indistinguishable from a zero meaning "quiet
+            day". Each host now reports only what it can actually see.
+            Every source is independent: one dead query must not zero the others, and a
+            failure is STATED rather than silently returning 0 (that is the same swallowed
+            except that produced the original false zero).
+            """
+            # Imported HERE on purpose: `datetime` is NOT a module-level name in this file
+            # (every use is function-local), and this runs in a daemon thread where a
+            # NameError dies with no reply, no seal and no traceback — the same silent shape
+            # as the mid-import cron bug that lost scheduled tasks. py_compile cannot catch it.
+            import datetime as _dtm
+            import sqlite3
+            from server.config import mizune_now as _n
+            since = (_n() - _dtm.timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+            bits, problems = [], []
+
+            try:
+                c = sqlite3.connect(os.path.join(".data", "missions.db"))
+                done = list(c.execute(
+                    "SELECT COUNT(*) FROM missions WHERE status='done' AND updated_at >= ?",
+                    (since,)))[0][0]
+                total = list(c.execute(
+                    "SELECT COUNT(*) FROM missions WHERE updated_at >= ?", (since,)))[0][0]
+                bits.append(f"{done}/{total} mission(s) completed")
+                c.close()
+            except Exception as e:
+                problems.append(f"missions.db: {str(e)[:80]}")
+
+            try:
+                c = sqlite3.connect(os.path.join(".data", "mizune_memory.db"))
+                seals = list(c.execute(
+                    "SELECT COUNT(*) FROM history WHERE content LIKE '%[TOOL RESULTS]%' "
+                    "AND timestamp >= ?", (since,)))[0][0]
+                bits.append(f"{seals} tool seal(s) logged")
+                c.close()
+            except Exception as e:
+                problems.append(f"mizune_memory.db: {str(e)[:80]}")
+
+            out = "Mizune Telemetry (from the brain host): " + (", ".join(bits) or "no sources readable")
+            if problems:
+                out += "\n  ! telemetry collector problems: " + "; ".join(problems)
+            return out
+
         def _deliver_build_log():
             from server.commands import whatsapp_automation
 
@@ -584,9 +635,17 @@ def _scheduler_callback(task_description):
                         log_info(f"[BUILDLOG] drafting failed ({e}) — sending digest only.")
                         draft_block = ("\n\n(No draft tonight — the writer failed. The numbers "
                                        "above are still real.)")
+                # The laptop cannot see Mizune's telemetry (she runs HERE), so it declines to
+                # report it and this host supplies the real figures.
+                try:
+                    _tel = "\n" + _vm_telemetry(days=1)
+                except Exception as e:
+                    log_info(f"[BUILDLOG] vm telemetry failed: {e}")
+                    _tel = "\n(Mizune telemetry unavailable this run.)"
+
                 # Data over silence, same contract as the briefing: if voicing dies, the
                 # deterministic digest still goes out.
-                _send(header + digest + draft_block)
+                _send(header + digest + _tel + draft_block)
 
             try:
                 from server.device_registry import device_registry
