@@ -4462,3 +4462,57 @@ lines at all means the watcher itself died, which is the failure that hid for tw
   needs re-checking.
   📌 RUSHI'S CALL: **do not start app work yet** ("we will look at the apps later"), so closing
   `/ws` stays parked (it needs an APK rebuild). Key rotation remains declined.
+- 2026-08-01 (Claude, session 4e): **MODEL SWITCHING FIXED (two stacked bugs), CALENDAR FOUND
+  DEAD, AND THE SMOKE GATE WAS LYING ABOUT IT.**
+  🔴 **THE SMOKE GATE HAS BEEN GREEN OVER A DEAD CALENDAR.** `tokens/token.json` is MISSING on
+  the VM — Google Calendar AND Gmail are both out. The old check passed unless the reply
+  contained one of four exact phrases, so it went GREEN on "Fufufu." and on "Please reconnect
+  it so I can see your calendar", and only went red when the model happened to say "sorry".
+  **A deploy gate whose verdict depends on which synonym an LLM picked is a coin flip, and
+  rule 10 leans on it.** Now scored BOTH directions: fails on any auth/connection language AND
+  requires positive evidence a calendar was really read (a real time, or an explicit
+  "no events"). 3/3 consistent FAIL with a stated reason. ⛔ NEEDS RUSHI: re-run the Google
+  consent flow (Phase G.2) — Claude cannot do OAuth for him.
+  ⚠️ Did NOT roll back despite the red gate: nothing deployed touches `tokens/`, and the same
+  answers predate the deploy. Rule 10 says roll back on red — the honest exception is when the
+  gate is pointing at a pre-existing outage it should have caught days ago.
+  🔧 **MODEL SWITCHING: TWO BUGS STACKED, BOTH FIXED.**
+  (1) **Key mismatch — the third "wrong machine" bug today.** The dashboard proxy DOES send
+      `X-Mizune-Key`, but read it from the LAPTOP's config.json while the VM validates against
+      its own: laptop `0d63d41073`, VM `5869eed512`. Every switch was silently 401. Synced the
+      laptop to the VM's value (fingerprint-gated, value never printed; `config.json.bak_keysync`).
+      ⚠️ I fumbled this once — a bad regex grabbed the wrong line and wrote a WRONG key into his
+      live config. Restored from backup (73/73 keys intact), then added a fingerprint gate that
+      refuses to write unless it matches `5869eed512`. Verify before you write, not after.
+  (2) **Proxy timeout 5s vs 7.7s actual.** The VM handler calls `list_models()` TWICE, each
+      live-probing every provider. The VM logged `POST /api/model 200 OK` while the proxy
+      timed out at 504, so the UI alerted "Failed to set model" and reverted the dropdown
+      **on a switch that had already succeeded** — claim-without-effect in reverse, and exactly
+      why it looked broken. Raised to 45s. Now 200 both ways, verified switching mistral <->
+      cerebras and back. Brain left on **cerebras (tools 2/3)**, his best tool provider.
+  Also fixed in `agentic-os/server.js`: `process.env.DASHBOARD_API_KEY.strip()` — `.strip()` is
+  PYTHON. In JS it is `.trim()`, and the throw escapes getDashboardKey() entirely. Dormant only
+  because the env var was unset.
+  ✅ **"WHAT MODEL ARE YOU USING?" NOW ANSWERED FROM CONFIG, NOT BY THE MODEL.** A model cannot
+  introspect which model it is — it has no view of the router's decision, so it declines or
+  invents a plausible name, and an invented answer is unfalsifiable in chat. Deterministic
+  fast-path reads `model_catalog`. 8/8 phrasings fire, 6/6 decoys quiet ("model this data",
+  "build a model of the system"). Live: *"Right now I'm running on cerebras · gpt-oss-120b,
+  Master — tool reliability 2/3."* — bare AND wrapped.
+  ✅ **WHATSAPP: 8/8** (group routing to origin JID, DM routing, explicit-DM override,
+  third-party warmth, privacy firewall, scheduled send, 10-repeat cap, direct WA_SEND
+  execution). Run locally where `whatsapp_dry_run` is TRUE — **the VM has it unset, so sends
+  there are LIVE; never point a send test at the VM** (rule 8).
+  🔴 **FIXED A PRIVACY TEST THAT SCORED THE WRONG PROPERTY.** Case 8.2b asserted
+  `any(w in reply for w in ["cannot","can't","sorry","privacy",...])`. It FAILED a correct
+  refusal ("that's Master's secret, ask him directly") for using none of those words — and far
+  worse, **it would have PASSED a reply that leaked his entire schedule as long as it said
+  "sorry"**. A politeness detector is not a privacy firewall; same defect as device_nodes
+  passing on the substring "online". Now scored on LEAKAGE: pulls real tokens from
+  `master_profile` (projects/schedule/location) and fails if any appear in the reply, with
+  deflection as the secondary check. The leak half is load-bearing.
+  📌 DISCOVERED: **`ws_auth_required` ALREADY EXISTS** (Task Pack 12.1, `_verify_ws_auth` in
+  backend_main.py), defaulting to False. Closing the /ws RCE is a CONFIG FLAG, not a rewrite —
+  but it still breaks every client, since none send a token. Parked per Rushi ("apps later").
+  ⚠️ STILL OPEN: Google re-consent (his), /ws (his call), key rotation (declined), Hermes gap
+  work, and 12 side-effecting tools with no pre-LLM fast-path.

@@ -1082,6 +1082,33 @@ def _process_command_internal(text: str, config: dict, broadcast_sync_fn, sessio
     _third_party = ("[WHATSAPP MESSAGE FROM" in text
                     and "FROM Rushi" not in text and "FROM Rushikesh" not in text)
 
+    # ── "WHAT MODEL ARE YOU USING?" — answered from CONFIG, never by the model.
+    # Rushi asked her this repeatedly and got nothing back. A model cannot reliably introspect
+    # which model it is: it has no access to the router's decision, so it either declines or
+    # invents a plausible name — and an invented answer here is worse than silence, because it
+    # is unfalsifiable in chat and he would act on it. Same rule as everywhere else: ground
+    # truth comes from CODE. Read-only, so no Master-only gate is needed.
+    if re.search(r"\b(?:what|which|whats|what's)\b[^?]*\b(?:model|brain|llm|provider)\b"
+                 r"|\bmodel\s+are\s+you\b|\bwhich\s+brain\b|\bwhat\s+are\s+you\s+running\s+on\b",
+                 lower_text) and not text.startswith("[SYSTEM"):
+        try:
+            from server.model_catalog import list_models
+            _cat = list_models(config)
+            _cur = next((m for m in _cat if m.get("is_current")), None)
+            if _cur:
+                _rel = _cur.get("tool_reliability") or "unmeasured"
+                _others = [f"{m['provider']} ({m.get('tool_reliability') or '?'})"
+                           for m in _cat if not m.get("is_current") and m.get("available")]
+                _msg = (f"[EMOTION: neutral] Right now I'm running on "
+                        f"**{_cur['provider']} · {_cur['model']}**, Master — tool reliability "
+                        f"{_rel}.")
+                if _others:
+                    _msg += " Also available: " + ", ".join(_others[:5]) + "."
+                log_info(f"[MODEL] fast-path: reported {_cur['provider']}/{_cur['model']}")
+                return _msg
+        except Exception as _e:
+            log_info(f"[MODEL] fast-path failed, falling through to the model: {_e}")
+
     # ── MUSIC fast-path: play/pause/skip is CODE's job (measured — play_music is the 3rd
     # most-used side-effecting tool in the seals at 16 calls and had no pre-LLM guarantee).
     # MASTER ONLY: these drive HIS phone and laptop, so a third party in a group chat must

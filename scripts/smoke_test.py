@@ -84,10 +84,35 @@ async def main():
 
     # 4. calendar tool (Google connection)
     try:
+        # SCORED BOTH DIRECTIONS. The old check passed unless the reply contained one of four
+        # exact phrases, so it went GREEN on a completely dead calendar: on 2026-08-01 the VM's
+        # tokens/token.json was MISSING and this still passed on "Fufufu." and on "Please
+        # reconnect it so I can see your calendar" — neither of which contains those phrases.
+        # It only failed when the model happened to pick the word "sorry". A deploy gate whose
+        # verdict depends on which synonym an LLM chose is a coin flip, and rule 10 leans on it.
+        # So: fail on ANY auth/connection language, AND require positive evidence that a
+        # calendar was actually read. Absence of a complaint is not evidence of success.
         speaks, _ = await ws_ask("what's on my google calendar today")
         joined = " ".join(speaks).lower()
-        bad = any(w in joined for w in ("isn't connected", "not connected", "session expired", "sorry"))
-        check("calendar answers", bool(speaks) and not bad, (speaks[-1][:80] if speaks else "no reply"))
+        bad_words = ("isn't connected", "not connected", "session expired", "sorry",
+                     "reconnect", "re-connect", "connect your", "authorize", "authorise",
+                     "sign in", "log in", "no access", "can't see your calendar",
+                     "cannot see your calendar", "unable to access", "not authenticated",
+                     "expired")
+        bad = any(w in joined for w in bad_words)
+        # Positive evidence: a real time, a real date, or an explicit empty-calendar answer
+        # that only a successful API read produces.
+        import re as _re
+        good = bool(_re.search(r"\d{1,2}:\d{2}\s*(?:am|pm)?", joined)) or any(
+            w in joined for w in ("no events", "nothing scheduled", "nothing on your calendar",
+                                  "your calendar is clear", "no meetings", "calendar is empty",
+                                  "free today", "no appointments"))
+        detail = (speaks[-1][:80] if speaks else "no reply")
+        if bad:
+            detail = "AUTH/CONNECTION problem in reply -> " + detail
+        elif not good:
+            detail = "no positive calendar evidence (no time, no 'no events') -> " + detail
+        check("calendar answers", bool(speaks) and not bad and good, detail)
     except Exception as e:
         check("calendar answers", False, str(e))
 
