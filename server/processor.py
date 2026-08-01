@@ -1082,6 +1082,23 @@ def _process_command_internal(text: str, config: dict, broadcast_sync_fn, sessio
     _third_party = ("[WHATSAPP MESSAGE FROM" in text
                     and "FROM Rushi" not in text and "FROM Rushikesh" not in text)
 
+    # ── SLASH COMMANDS (/usage, /insights, /model, /status, /help).
+    # Wired HERE on purpose: process_command is the single door for the WebSocket/desktop path
+    # AND for inbound WhatsApp, so one implementation serves both and cannot drift between
+    # them. handle_slash strips the WhatsApp wrapper itself and returns None for anything it
+    # does not recognise, so ordinary chat is never swallowed.
+    # MASTER ONLY — these expose his providers, his message counts and his schedule, and
+    # /model would let a stranger in a group chat repoint his brain.
+    if not _third_party and not text.startswith("[SYSTEM"):
+        try:
+            from server.slash_commands import handle_slash
+            _slash = handle_slash(text, config)
+            if _slash:
+                log_info(f"[SLASH] handled: {text[:60]!r}")
+                return _slash
+        except Exception as _e:
+            log_info(f"[SLASH] dispatch failed, falling through: {_e}")
+
     # ── "WHAT MODEL ARE YOU USING?" — answered from CONFIG, never by the model.
     # Rushi asked her this repeatedly and got nothing back. A model cannot reliably introspect
     # which model it is: it has no access to the router's decision, so it either declines or

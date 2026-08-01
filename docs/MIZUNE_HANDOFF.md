@@ -4516,3 +4516,48 @@ lines at all means the watcher itself died, which is the failure that hid for tw
   but it still breaks every client, since none send a token. Parked per Rushi ("apps later").
   ⚠️ STILL OPEN: Google re-consent (his), /ws (his call), key rotation (declined), Hermes gap
   work, and 12 side-effecting tools with no pre-LLM fast-path.
+- 2026-08-01 (Claude, session 4f): **SLASH COMMANDS SHIPPED — /usage /insights /model /status
+  /help — WORKING ON WHATSAPP AND THE DASHBOARD, plus a live vitals strip.**
+  ⭐ **WHY THEY WORK ON WHATSAPP FOR FREE:** wired into `process_command`, which is the SINGLE
+  door for both the WebSocket/desktop path and inbound WhatsApp. One implementation, no second
+  copy to drift. `handle_slash` strips the WhatsApp wrapper itself and returns None for
+  anything it does not own, so adding a command can never swallow ordinary chat.
+  New `server/slash_commands.py` (kept out of processor.py, which is already huge). Every
+  number is read from ground truth — model_catalog, the history/missions/schedules DBs, and a
+  BOUNDED tail of server.log (898MB box: never read the whole log). The model is not consulted:
+  it cannot see the router's decision or the databases, so asked directly it declines or
+  invents, and an invented usage figure is unfalsifiable in chat.
+  `/model <provider>` WRITES then READS BACK and reports the read-back, and refuses to switch
+  to an unavailable provider rather than making her mute.
+  **35/35 in `scripts/test_slash_commands.py`, every case bare AND wrapped. 16 of them are
+  pass-through decoys** ("play blinding lights", "/nonexistentcommand", "the file is at
+  /usr/local/bin") that must return None.
+  🐛 **TWO BUGS IN MY OWN FIRST OUTPUT, both found by reading it instead of trusting it:**
+  (1) `/insights` printed "Messages: 0 from you" and "Busiest hour: 21:00 (7 messages)" IN THE
+      SAME REPORT. The busiest-hour query counted every history row including system seals and
+      called them messages. Two numbers that contradict each other destroy trust in both. Now
+      computed over the same rows the counts describe, and labelled "tool seals" when that is
+      what it counted.
+  (2) The zero itself was real but misleading: **fast-pathed turns return BEFORE the history
+      write**, so /usage, /model, reminders, music and WhatsApp sends never appear as messages.
+      The report now says so, instead of letting "0" imply she did nothing.
+  (3) `/usage` flagged "incomplete" every run because openrouter has no key — but openrouter was
+      REMOVED deliberately (402s). Only KEYED providers that are down count as problems now; a
+      warning that always fires is a warning he learns to ignore.
+  🖥️ **DASHBOARD: live vitals strip** (brain · providers live/keyed · devices · crons · 24h tool
+  calls + failures), refreshing every 30s, with real trouble surfaced in an alert chip. Backed
+  by a NEW authenticated `GET /api/vitals` on the VM (401 unauth, verified) that reuses the
+  same code the WhatsApp commands read — two implementations of "how is she doing" would drift
+  and the unwatched one would be the liar. Proxied server-side in agentic-os/server.js so the
+  dashboard key never reaches the browser. Verified rendered in-page: brain cerebras · tools
+  2/3, providers 5/5 live, devices laptop, crons 8, 24h 6 tool calls, 0 console errors.
+  ⚠️ **agentic-os is NOT a git repo** — those edits (index.html, app.js, style.css, server.js)
+  live only on disk. If that machine is rebuilt they are gone. Same caveat as the VM ops scripts.
+  ⚠️ **PYTHON VERSION TRAP, cost one failed deploy:** this laptop runs **3.12**, the VM runs
+  **3.10.12 (system) / 3.11.15 (venv311)**. I used implicit string concatenation INSIDE an
+  f-string expression (PEP 701, 3.12-only). It compiled locally and failed on the VM. The
+  deploy's syntax gate caught it and aborted before copying, so nothing broke — the gate earned
+  its keep. **Deploys now compile with BOTH VM interpreters before the move. Keep f-string
+  expressions simple.**
+  ⚠️ Smoke is 3/4: the calendar check correctly FAILS on the missing Google token (still needs
+  Rushi's re-consent — Claude cannot do OAuth). Everything else green, 0 tracebacks.
