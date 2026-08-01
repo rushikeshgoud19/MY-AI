@@ -186,9 +186,43 @@ def run_tests():
 
     clean_test_schedules()
 
+    # -----------------------------------------------------------------------
+    # TEST GROUP 8.4: talk IN the group, don't DM a member  (REGRESSION 2026-08-01)
+    # -----------------------------------------------------------------------
+    print("--- TASK 8.4: A conversational request inside a group must not become a DM ---")
+    # THE REAL BUG: in the group "Ma Amma mugguru pillalu" Rushi typed "Mizune introduce
+    # yourself to my brother" and got "Done! Message sent to 919949092801" — she DM'd his
+    # brother instead of introducing herself to the group they were both sitting in.
+    # It slipped through because group routing lived ONLY in the send fast-path, and
+    # "introduce yourself" carries no send verb, so the MODEL called message_whatsapp against
+    # a dispatcher that had no idea a group existed.
+    res10 = process_command("[WHATSAPP MESSAGE FROM Rushi]: Mizune introduce yourself to my brother",
+                            CONFIG, lambda x: None, grp_session)
+    r10 = res10 or ""
+    sent_to_group = "120363045432@g.us" in r10
+    # A DM is only a failure if she actually sent to an individual. Just talking is the ideal.
+    sent_to_individual = ("DRY RUN" in r10 or "message sent to" in r10.lower()) and not sent_to_group
+    ok10 = not sent_to_individual
+    print(f"{'ok  ' if ok10 else 'BAD '} Case 8.4a: 'introduce yourself to my brother' in a group is NOT a private DM")
+    print(f"      Result: {r10[:200]!r}")
+    if not ok10:
+        failures += 1
+
+    # The escape hatch must survive: an explicit private request still overrides the group.
+    res11 = process_command("[WHATSAPP MESSAGE FROM Rushi]: Mizune dm Harshita privately saying hello",
+                            CONFIG, lambda x: None, grp_session)
+    r11 = res11 or ""
+    ok11 = "120363045432@g.us" not in r11
+    print(f"{'ok  ' if ok11 else 'BAD '} Case 8.4b: an explicit 'dm ... privately' still overrides group routing")
+    print(f"      Result: {r11[:200]!r}\n")
+    if not ok11:
+        failures += 1
+
+    clean_test_schedules()
+
     print("=" * 90)
     if failures == 0:
-        print("ALL TESTS PASSED (8/8 ok).")
+        print("ALL TESTS PASSED (10/10 ok).")
         sys.exit(0)
     else:
         print(f"TEST SUITE FAILED ({failures} test(s) failed).")

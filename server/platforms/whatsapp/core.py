@@ -868,3 +868,49 @@ def send_whatsapp_message(text: str, to: str = None) -> bool:
             except RuntimeError:
                 return False
     return False
+
+
+# ── GROUP-AWARE ROUTING (one rule, used by every send path) ──────────────────────────────
+def group_route_target(contact: str, request_text: str = ""):
+    """If this turn arrived in a GROUP and Master didn't ask for a DM, answer IN the group.
+
+    MEASURED 2026-08-01 from a real chat: in the group "Ma Amma mugguru pillalu" Rushi typed
+    "Mizune introduce yourself to my brother" and she replied "Done! Message sent to
+    919949092801" — she DM'd his brother privately instead of introducing herself in the
+    group where everyone, including the brother, was already sitting.
+
+    WHY IT HAPPENED: group routing existed ONLY inside `_parse_whatsapp_send_command`, the
+    deterministic send fast-path. "Introduce yourself to my brother" contains no send verb, so
+    the fast-path never fired and the MODEL called message_whatsapp directly — and the tool
+    dispatcher had no idea a group existed. Two send paths, one of them group-aware: exactly
+    the "fixed in one place out of two" shape that keeps biting this project.
+    So the rule lives HERE, in one function, and every send path calls it.
+
+    Returns (target, group_jid_or_None). An explicit JID or an explicit DM request is returned
+    untouched — Master asking for a private message must always win.
+    """
+    from server.config import log_info as _li
+    try:
+        if "@" in str(contact or ""):
+            return contact, None            # already an explicit JID: honour it
+        from server.processor import current_session_id
+        sess = current_session_id.get()
+    except Exception as e:
+        _li(f"[WHATSAPP] group routing skipped: {e}")
+        return contact, None
+
+    if not sess or "whatsapp:group:" not in str(sess):
+        return contact, None
+
+    # An explicit private request always wins over the group default.
+    if any(w in (request_text or "").lower() for w in
+           ("dm", "privately", "in private", "directly", "private message", "separately",
+            "personally", "individually")):
+        return contact, None
+
+    jid = str(sess).split("whatsapp:group:", 1)[1].strip()
+    if "@g.us" not in jid:
+        return contact, None
+    _li(f"[WHATSAPP] group routing: '{contact}' -> origin group {jid} "
+        f"(reply where you were asked)")
+    return jid, jid

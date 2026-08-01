@@ -26,6 +26,10 @@ from server.vision import _acquire_vision_lock, _release_vision_lock, _analyze_s
 
 from contextvars import ContextVar
 current_session_id = ContextVar("current_session_id", default=None)
+# What Master actually typed this turn. execute_tool_call only receives (tool_name, args,
+# config), so without this the tool layer cannot tell "message him" from "dm him privately"
+# and group routing would override an explicit private request.
+current_user_text = ContextVar("current_user_text", default="")
 
 logger = logging.getLogger("mizune.processor")
 
@@ -935,6 +939,7 @@ from server.tracing import observe
 @observe(name="Mizune.ProcessCommand", type="span", capture_input=False)
 def _process_command_internal(text: str, config: dict, broadcast_sync_fn, session_id: str = 'main') -> str:
     current_session_id.set(session_id)
+    current_user_text.set(text if isinstance(text, str) else "")
     # Initialize session and load emotion state
     platform = "whatsapp" if "whatsapp:" in session_id else "desktop"
     global_session_store.start_or_resume_session(session_id, platform=platform)

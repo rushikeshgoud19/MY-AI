@@ -1125,9 +1125,25 @@ def _execute_tool_call_impl(tool_name: str, args: dict, config: dict, background
                     len(_words) == 1 and _last_word in _AMBIGUOUS_FINAL):
                 return ("Error: your 'message' argument arrived TRUNCATED (it ends mid-sentence: "
                         f"'{_stripped[-25:]}'). Rewrite the full message WITHOUT apostrophes and call again.")
+            # GROUP-AWARE: when Master asked inside a group, answering means talking IN that
+            # group, not DMing a member. Without this the model DM'd his brother after being
+            # asked to "introduce yourself to my brother" in a group they were both sitting in
+            # (2026-08-01). The rule lives in ONE helper shared with the send fast-path.
+            _wcontact = args.get("contact", "")
+            try:
+                from .platforms.whatsapp.core import group_route_target
+                from .processor import current_user_text
+                # `execute_tool_call` has no view of the user's sentence — its signature is
+                # (tool_name, args, config). Referencing a `text` local here would have been a
+                # NameError in the MAIN SEND PATH. The request text comes from a ContextVar
+                # set by process_command, so "dm him privately" can still override the group
+                # default.
+                _wcontact, _grp = group_route_target(_wcontact, current_user_text.get() or "")
+            except Exception as _ge:
+                log_info(f"[ACTION] group routing unavailable: {_ge}")
             # Use the real return value so a missing contact / disconnected bridge
             # short-circuits with an honest message instead of a false "Messaged X".
-            return str(whatsapp_automation(args.get("contact", ""), _wmsg))
+            return str(whatsapp_automation(_wcontact, _wmsg))
 
         if tool_name == "execute_python":
             code = args.get("code", "")
@@ -1696,6 +1712,26 @@ def _get_ai_response_body(text: str, history: list, config: dict, system_prompt_
             "EMAILS: when Master asks to see/show/check his emails, use google_workspace with "
             "action 'list_emails' and show him the list — don't just say you'll check.\n"
         )
+        # WHERE THIS CONVERSATION IS HAPPENING. Without it she has no idea a group exists, so
+        # asked to "introduce yourself to my brother" in a group she DM'd him instead of just
+        # talking (measured 2026-08-01). Deterministic routing now prevents the wrong send;
+        # this stops her wanting to send at all, which is the better outcome — she should
+        # simply speak, because everyone is already listening.
+        try:
+            from .processor import current_session_id as _csid
+            _sess_now = _csid.get()
+            if _sess_now and "whatsapp:group:" in str(_sess_now):
+                context_layer += (
+                    "\n[YOU ARE IN A GROUP CHAT RIGHT NOW]\n"
+                    "Your reply is posted straight into this group, so EVERYONE here reads it, "
+                    "including whoever Master is talking about. To 'introduce yourself to' or "
+                    "'say hi to' someone who is in this group, just SAY IT in your reply — do "
+                    "NOT call message_whatsapp, that would send them a separate private message "
+                    "and nobody here would see it. Only use message_whatsapp if Master names "
+                    "someone who is NOT in this chat, or explicitly asks you to DM them.\n")
+        except Exception:
+            pass
+
         try:
             from .skills import skill_manager
             skills_desc = skill_manager.get_skill_descriptions()

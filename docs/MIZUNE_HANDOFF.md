@@ -4561,3 +4561,55 @@ lines at all means the watcher itself died, which is the failure that hid for tw
   expressions simple.**
   ⚠️ Smoke is 3/4: the calendar check correctly FAILS on the missing Google token (still needs
   Rushi's re-consent — Claude cannot do OAuth). Everything else green, 0 tracebacks.
+- 2026-08-01 (Claude, session 4g): **"TALK IN THE CHAT" BUG FIXED, WS AUTH WAS DEAD CODE,
+  FULL CODEBASE SWEEP.**
+  🔴 **HIS BUG, REPRODUCED AND FIXED:** in the group "Ma Amma mugguru pillalu" he typed
+  *"Mizune introduce yourself to my brother"* and got *"Done! Message sent to 919949092801"* —
+  she DM'd his brother privately instead of introducing herself to the group they were BOTH
+  sitting in. He wanted her to talk in the chat.
+  ROOT CAUSE: **group-aware routing existed ONLY inside `_parse_whatsapp_send_command`**, the
+  send fast-path. "Introduce yourself" carries no send verb, so the fast-path never fired and
+  the MODEL called `message_whatsapp` directly — against a dispatcher with **no group awareness
+  at all**. Two send paths, one group-aware: the "fixed in one place out of two" shape again.
+  Compounding it, **the system prompt never told her a group existed**, so DMing looked like
+  the only way to reach him.
+  FIX, both halves: (1) `group_route_target()` in `platforms/whatsapp/core.py` — ONE rule, used
+  by the tool dispatcher AND available to the fast-path; an explicit JID or an explicit
+  "dm/privately/personally" always wins. (2) A `[YOU ARE IN A GROUP CHAT RIGHT NOW]` block in
+  the context layer telling her the reply already reaches everyone, so she should just SPEAK.
+  ⚠️ Needed a new `current_user_text` ContextVar: `execute_tool_call(tool_name, args, config)`
+  has no view of the user's sentence, so my first version referenced a `text` local that does
+  not exist there — **a NameError in the MAIN SEND PATH**, caught before deploy.
+  ✅ PROVEN: `scripts/test_social_mizune.py` now **10/10** with two new regression cases. 8.4a
+  is his exact sentence and she now answers IN the group: *"Fufufu, Master, it would be my
+  honor! What is your brother's name so I can greet him properly?"* — no send at all. 8.4b
+  proves "dm ... privately" still overrides.
+  🔴 **`_verify_ws_auth` WAS DEAD CODE.** Written in Task Pack 12.1, and `grep` found exactly
+  ONE occurrence: its own definition. It was never called. So the codebase read as though
+  WebSocket auth existed and was merely disabled by a flag, while /ws stayed open to the
+  internet. **Dead code that looks like a security control is worse than none — it stops
+  anyone looking again.** Now genuinely wired at backend_main.py:450.
+  PROVEN by flipping the flag live: **no key -> REJECTED, correct key -> CONNECTED, wrong key
+  -> REJECTED**, then reverted to `ws_auth_required=False` and re-verified an unauthenticated
+  client connects. Left OFF DELIBERATELY: every client (Android app, phone device agent,
+  dashboard) sends no token, and flipping it blind cuts off his phone — he said apps come
+  later. **It is now a one-line flag flip that actually does something.**
+  ⚠️ My patch script's idempotency guard checked `"_verify_ws_auth(websocket"`, which matches
+  the DEFINITION line — it reported "already wired" and did nothing. A patch that no-ops while
+  claiming success is the exact failure this project keeps finding. Guard on a CALL SITE.
+  🧹 **CODEBASE SWEEP: 99 python files compiled, ZERO syntax errors.**
+  ⚠️ **RULE 2 EARNED ITS KEEP AGAIN:** a two-file deploy (processor.py + core.py, ~201KB b64)
+  returned COMPLETELY EMPTY output and silently changed nothing — no markers, unchanged md5, no
+  .bak. Only the marker grep caught it. **Ship ONE file per az invocation.** All three files
+  then deployed individually with md5s matching local exactly.
+  📌 FOUND, NOT YET FIXED: **three cortex.db files** — the real one is `/home/azureuser/cortex.db`
+  (2.7MB, 9,811 messages, 559 contacts), plus TWO EMPTY decoys at `.data/cortex.db` (created
+  today, owned by root) and `server/cortex.db`. `_cortex_db_path()` resolves correctly so
+  read_whatsapp is fine, but something opens the wrong path and creates an empty db.
+  📌 **GROUP NAMES CANNOT BE RESOLVED and this is a data gap, not a bug:** `whatsapp_messages`
+  stores `chat_jid`, `chat_type` and `sender_name` but **no group subject anywhere**, which is
+  why *"the group ma amma ki muguru"* came back as "not in your contacts". Sending to a NAMED
+  group needs the bridge to record group subjects first. Replying IN a group works now.
+  ✅ ALL SUITES GREEN: social 10/10, slash 35/35, reminder 44/44, music 54/54, buildlog cache
+  16/16, coverage self-check clean (10 fast-paths declared). Smoke 3/4 — calendar still
+  correctly RED on the missing Google token (his re-consent).

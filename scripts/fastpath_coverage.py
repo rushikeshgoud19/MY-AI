@@ -62,6 +62,10 @@ PRE_LLM_FASTPATHS = {
     # fast-path landed and this table had not been updated — which is the whole point of it.
     "_parse_music_command": "play_music",
     "[MUSIC] fast-path": "control_music",
+    # Read-only introspection ("what model are you using") — no tool, but it IS a pre-LLM
+    # path, so the cross-check below demands it be declared. Caught unlisted twice now.
+    "[MODEL] fast-path": None,
+    "[SLASH] handled": None,
     "_format_mesh_reply": "mesh",
     "MIZUNE_BUILD_LOG": "build_log",
 }
