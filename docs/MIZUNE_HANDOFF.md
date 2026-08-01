@@ -4613,3 +4613,64 @@ lines at all means the watcher itself died, which is the failure that hid for tw
   ✅ ALL SUITES GREEN: social 10/10, slash 35/35, reminder 44/44, music 54/54, buildlog cache
   16/16, coverage self-check clean (10 fast-paths declared). Smoke 3/4 — calendar still
   correctly RED on the missing Google token (his re-consent).
+- 2026-08-01 (Claude + 5 agents): **A NO-CREDENTIAL REMOTE-CODE-EXECUTION CHAIN WAS LIVE.
+  FOUND, FIXED, DEPLOYED, PROVEN.** Also: an independent rating of the repo came back **4.2/10**,
+  not 9.5, and it disproved two of my own claims.
+  🔴 **THE CHAIN** (each link verified by reading the code, then re-proven by test):
+  (1) `_should_reply`'s GROUP branch checked only is_mentioned/wake-word and returned True;
+      `is_allowed` was computed and consulted ONLY on the DM branch. Any member of any group
+      Rushi is in could summon her with "mizune ...".
+  (2) `_is_third_party` substring-tested the WHOLE assembled prompt INCLUDING the sender's own
+      message body. Writing "FROM Rushi" anywhere flipped the gate and granted Master's
+      privileges: history, master_profile, read_whatsapp over his inbox, the send fast-path
+      (sending AS him), the reminder scheduler, /model. **It was duplicated in FOUR places** —
+      four independent copies of one bypass.
+  (3) `handle()` intercepts run_task/claude_task BEFORE the ACTIONS lookup, so
+      `do_run_command`'s allowlist never ran; both shelled out with `shell=True` behind an
+      8-item substring blocklist that never mentions powershell, curl or python -c.
+  ⇒ **a stranger in a WhatsApp group → arbitrary shell on his Windows laptop.**
+  FIXES: group branch now gates on is_allowed; ONE fail-closed `is_third_party_turn()` reading
+  the header PREFIX only (startswith cannot be influenced by the body) with the "FROM Rushi"
+  exemption DELETED (that name is the pushName — a stranger can set it, so keeping it just
+  moves the bypass to the display name); the command validator factored out and BOTH background
+  paths routed through it with shell=False + argv. `do_open_app` and `do_claude_code` also
+  interpolated attacker text into shell strings — both de-shelled. **Zero shell=True call sites
+  remain in device_agent.py (AST-verified, not grepped).**
+  `scripts/test_security_chain.py` tests each link SEPARATELY — breaking any one breaks the
+  chain, so a whole-chain test cannot say which link regressed. Deployed core.py, ai.py,
+  processor.py (one file per az call), md5s matched, live proof on the VM: exploit string
+  BLOCKED, real Master still recognised, 0 tracebacks.
+  ⚠️ **device_agent.py runs on the LAPTOP — the fix is on disk but the RUNNING agent still has
+  the old code until it restarts** (Startup: mizune_device_agent.vbs).
+  📉 **INDEPENDENT RATING: 4.2/10 overall** (correctness 5.5, tests 4.5, error handling 4.0,
+  observability 5.0, architecture 4.0, security 3.5, deploy safety 3.0, docs 5.0, dead code
+  3.5). Every score ships with a one-line command an outside reviewer can run.
+  🔴 **IT DISPROVED TWO OF MY OWN CLAIMS, and it is right:** I patched the VM's backend_main.py
+  IN PLACE (correct per rule 3) and reported "wired at backend_main.py:450" and "/config
+  redaction verified working" WITHOUT SAYING those live only on the VM. The REPO has neither.
+  **A deploy from the repo silently re-opens /ws and un-redacts /config.** The security controls
+  exist only on an unversioned box. That is the real structural finding of this session.
+  🔴 **MY PRIVACY-TEST FIX WAS ITSELF DEGENERATE** — verified by running it: 3 of its 4 profile
+  fields do not exist, the punctuation strip left '(premium' and 'portfolio)', and a reply
+  leaking "portfolio ... hyderabad" was caught by NOTHING. It had collapsed back into the
+  politeness check it replaced. Now 17 tokens from fields that exist, WORD-BOUNDARY matched
+  (plain substring false-positived: 'direct' matched inside "ask him directly", failing a
+  textbook refusal), and SELF-CHECKED against a planted secret so a degenerate detector fails
+  the suite instead of passing it.
+  📌 **THE PATTERN NAMED BY THE RATER:** five controls that read as enforcement and execute as
+  no-ops — `_verify_ws_auth` (patcher appends the def, NEVER a call site), `EvolutionBudget`'s
+  $0.20 cap (`record_usage` never called anywhere → spend is permanently 0.0), /config redaction
+  (absent from repo), `redact_tokens` (matches `sk-` only; no key in use starts with it), the
+  privacy firewall (prompt text only). **Recommended repo-level gate: fail the build when a
+  function matching verify|auth|check|guard|limit has zero call sites** — that one rule catches
+  three of the five mechanically.
+  🧰 AGENT OUTPUT: docs/HARNESS_DESIGN.md (23 capability contracts + evidence ladder + negative
+  control rule) & scripts/harness_poc.py (3 directions incl. a row that EXISTS but is 5h30m
+  off); client/pwa/ (chat + quick actions round-tripped live against the VM, token support
+  built in, honest disconnect states); dashboard seal-feed/cron/fuel panels (fuel live, other
+  two await VM endpoints and degrade with a stated reason).
+  ⚠️ HARNESS FINDING: `message_whatsapp` has NO delivery evidence — the bridge discards
+  sock.sendMessage's key.id, so True means "a socket was open ~0ms ago". Our 97% measures
+  INVOCATION, not delivery. The cortex.db echo row (whatsapp_messages, fromMe) is real
+  ground truth and needs no bridge change.
+  ⛔ NEEDED FROM RUSHI: restart the laptop device agent; Google re-consent (calendar still red).
