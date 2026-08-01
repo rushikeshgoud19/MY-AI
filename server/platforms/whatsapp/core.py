@@ -719,6 +719,17 @@ class MizuneWhatsAppCore:
         if msg.chat_type == 'group':
             if not (msg.is_mentioned or has_wake_word):
                 return False
+            # SECURITY (2026-08-01): the allowed-user check used to apply ONLY on the DM
+            # branch — `is_allowed` was computed above and then never consulted here. So ANY
+            # member of ANY group Master is in, a total stranger with no credentials, could
+            # drive her by starting a message with "mizune ...". Chained with the third-party
+            # bypass and the device agent's run_task, that was a path from a group message to
+            # arbitrary shell on his laptop.
+            # Same gate as DMs now: being in a group he is in is not authorisation.
+            if not is_allowed:
+                log_info(f"[SECURITY] ignoring group summons from unauthorised sender "
+                         f"{msg.sender_name!r} in {msg.chat_jid}")
+                return False
         else:
             # She lives on Master's PERSONAL number: friends texting him are talking
             # to HIM, not to her. Auto-replying (and running brain/recall) on every
@@ -914,3 +925,31 @@ def group_route_target(contact: str, request_text: str = ""):
     _li(f"[WHATSAPP] group routing: '{contact}' -> origin group {jid} "
         f"(reply where you were asked)")
     return jid, jid
+
+
+def is_third_party_turn(text: str) -> bool:
+    """True when this turn came from someone who is NOT Master. FAIL-CLOSED, HEADER-ONLY.
+
+    THE BUG THIS REPLACES (found 2026-08-01, live and remotely exploitable):
+        _is_third_party = ("[WHATSAPP MESSAGE FROM" in text
+                           and "FROM Rushi" not in text and "FROM Rushikesh" not in text)
+    That substring-tested the WHOLE assembled prompt — header AND the sender's own message
+    body. The body is entirely attacker-controlled, so writing the words "FROM Rushi" anywhere
+    in a message flipped the gate to False and handed the sender Master's privileges: full chat
+    history, master_profile, unfiltered memory recall, read_whatsapp over his inbox, the
+    WhatsApp send fast-path (sending AS him), the reminder scheduler, and /model. Chained with
+    the group branch that skipped the allowed-user check, and the device agent's unguarded
+    run_task, it ran from "stranger in a group chat" to "arbitrary shell on his laptop".
+
+    WHY HEADER-ONLY: the Master turn is emitted as "[MESSAGE FROM MASTER RUSHI (via WhatsApp)]"
+    and that branch is gated on `msg.is_self` — sent from Mizune's own linked number, a
+    structural fact no stranger can forge. So the trustworthy signal is the header PREFIX, and
+    `startswith` cannot be influenced by anything the sender writes.
+
+    WHY THE "FROM Rushi" EXEMPTION IS GONE: it existed so Master texting from a second number
+    still counted as himself. But that name is the WhatsApp pushName, which any stranger can
+    set to "Rushi" — keeping the exemption would just move the bypass from the body to the
+    display name. Him losing privileges on a second number is an inconvenience he will notice
+    and can fix; a stranger gaining them is a compromised laptop he would not notice at all.
+    """
+    return (text or "").lstrip().startswith("[WHATSAPP MESSAGE FROM")

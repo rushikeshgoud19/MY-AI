@@ -1606,8 +1606,9 @@ def _get_ai_response_body(text: str, history: list, config: dict, system_prompt_
     history = TokenJuice.compress_history(history)
     
     # STRICT PRIVACY FIREWALL: If a third party messages, they get NO access to Master's chat history.
-    _is_third_party = ("[WHATSAPP MESSAGE FROM" in text
-                       and "FROM Rushi" not in text and "FROM Rushikesh" not in text)
+    # FAIL-CLOSED, header-only. See is_third_party_turn for the bypass this replaces.
+    from .platforms.whatsapp.core import is_third_party_turn as _itp
+    _is_third_party = _itp(text)
     if _is_third_party:
         history = []
     # Same signal, carried to the tool layer: read_whatsapp must refuse a stranger, and
@@ -1816,7 +1817,8 @@ def _get_ai_response_body(text: str, history: list, config: dict, system_prompt_
                 context_str += f"[EMOTIONAL PRIMING]\n{priming_str}\n"
             if mem_context:
                 import re
-                is_third_party = "[WHATSAPP MESSAGE FROM" in text and "FROM Rushi" not in text and "FROM Rushikesh" not in text
+                from .platforms.whatsapp.core import is_third_party_turn as _itp2
+                is_third_party = _itp2(text)
                 
                 if is_third_party:
                     sender_match = re.search(r"\[WHATSAPP MESSAGE FROM ([^\]]+)\]", text, re.IGNORECASE)

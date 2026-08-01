@@ -50,7 +50,8 @@ def _parse_whatsapp_send_command(wa_text: str):
     Parse recipient and message body from WhatsApp send intents.
     Returns (who, body) or (None, None).
     """
-    if "[WHATSAPP MESSAGE FROM" in wa_text and "FROM Rushi" not in wa_text and "FROM Rushikesh" not in wa_text:
+    from server.platforms.whatsapp.core import is_third_party_turn as _itp
+    if _itp(wa_text):
         return None, None
 
     clean = wa_text.strip()
@@ -1084,8 +1085,8 @@ def _process_command_internal(text: str, config: dict, broadcast_sync_fn, sessio
     _wa_text = re.sub(r"^\s*\[[^\]]*\]\s*:\s*", "", text)
     _wa_text = _wa_text.split("\n(SYSTEM:")[0].strip()
 
-    _third_party = ("[WHATSAPP MESSAGE FROM" in text
-                    and "FROM Rushi" not in text and "FROM Rushikesh" not in text)
+    from server.platforms.whatsapp.core import is_third_party_turn as _itp_tp
+    _third_party = _itp_tp(text)
 
     # ── SLASH COMMANDS (/usage, /insights, /model, /status, /help).
     # Wired HERE on purpose: process_command is the single door for the WebSocket/desktop path
