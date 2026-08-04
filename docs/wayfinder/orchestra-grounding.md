@@ -110,6 +110,14 @@ correctness — see the triage ticket.
 
 ## Out of scope
 
+- [Give the tribunal Rushi's own project facts](tickets/t5-project-facts-source.md) —
+  closed unresolved, ruled beyond this destination. Its two justifications both
+  evaporated: probe 3's premise turned out to be TRUE (the APK really does run a
+  foreground service), and probe 5 now passes by admitting ignorance rather than
+  by knowing Rushi's constraints. Feeding the panel his project facts would make
+  it better INFORMED, not less DISHONEST — a different destination. Carried into
+  the follow-on accuracy effort, `orchestra-accuracy.md`.
+
 - Replacing the judge model or re-running the 18-debate soak. The judge's scoring
   was measured good on 2026-08-02 and this map's diagnosis confirms it caught the
   defect. Judge selection is a separate effort.
