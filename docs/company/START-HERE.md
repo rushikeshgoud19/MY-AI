@@ -87,6 +87,9 @@ landing page, a logo and a brand are not progress. Money in the account is.
 
 ## Paste this into a new session
 
+The full version is `docs/company/MEGAPROMPT.md` - use that one. The short form
+below is a fallback if you want something minimal.
+
 ```
 Read docs/company/groundtruth.md and docs/company/START-HERE.md in the my Ai repo,
 then take the first frontier ticket in docs/company/tickets/.
