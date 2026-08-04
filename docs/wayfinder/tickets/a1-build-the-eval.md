@@ -10,7 +10,7 @@ Build an eval of questions with KNOWN answers and a runner that scores a batch.
 
 ## Resolution
 
-`scripts/orchestra_eval.py`. 16 cases, two scores, deterministic grading.
+`scripts/orchestra_eval.py`. 15 cases, two scores, deterministic grading.
 
 **Grading is regex-only, deliberately.** The obvious design is a model grading the
 answer against a reference. This map exists because small models assert things
@@ -35,7 +35,8 @@ directionally right with every figure wrong; one score cannot express that.
 | contested cases (3) | 3/3 | grounded 3/3 | 11.0 calls / ~10k tok each |
 | price-honesty | **0/1** | triage WRONG, ungrounded | 2 calls |
 
-**15/16 correctness.** The one failure is real and is the point of the exercise:
+**15/16 correctness** (15 cases; the count was written as 16 in the first
+version of this ticket and the commit that landed it - it is 15). The one failure is real and is the point of the exercise:
 the eval must contain something the panel gets wrong or it starts at 100% and can
 only fall.
 

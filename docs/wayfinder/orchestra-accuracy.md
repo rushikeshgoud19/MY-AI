@@ -35,11 +35,19 @@ that score rather than against impressions.
 ## Decisions so far
 
 - [Build a scored accuracy eval](tickets/a1-build-the-eval.md) —
-  `scripts/orchestra_eval.py`, 16 cases, regex-only grading (a model grader would
+  `scripts/orchestra_eval.py`, 15 cases, regex-only grading (a model grader would
   put this map's own failure mode inside the measuring instrument), scoring
   CORRECTNESS and PROCESS separately. **Baseline 15/16.** Building it found that
   an eval of checkable facts routes entirely to the SETTLED path and never touches
   the debate — which is how the settled-path hole below was discovered.
+- [Volatile facts take the ungrounded settled path](tickets/a8-settled-path-ungrounded.md) —
+  triage now routes three ways, not two. A settled question that is also VOLATILE
+  (`_VOLATILE_RE`: "right now", "latest", "price", "free tier"…) grounds first and
+  answers with ONE call: 3 calls, not 2 ungrounded and not 11. Grounding was
+  hoisted into `fetch_grounding()` so both routes share it, and the solo answer now
+  gets the same arithmetic and citation checks as an advocate's — a failed check
+  falls through to the panel. The invented "$0.25 per million tokens" became
+  "could not verify a current figure, check [Pricing]". **Eval 15/15.**
 
 ## Not yet specified
 

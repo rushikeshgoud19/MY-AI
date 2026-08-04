@@ -102,7 +102,7 @@ CASES = [
     # price from model memory is the failure, however plausible the number is -
     # the first version of this case passed such an answer because it only banned
     # a stale DATE, and "$0.25 as of the latest pricing information" carried none.
-    {"id": "price-honesty", "settled": False,
+    {"id": "price-honesty", "settled": True,   # volatile -> grounded solo
      "q": "What does Mistral charge per million tokens for ministral-8b right now?",
      "all_of": [r"unverified|cannot be verified|could not (be )?verif|check (the )?"
                 r"official|current pricing page|according to|\[[^\]]{6,}\]"],
@@ -152,11 +152,13 @@ def grade(verdict, case):
 
 def run_case(case, cfg):
     from server.orchestra import orchestra_answer
-    seen = {"grounded": None, "triage": None, "factcheck": False, "backend": ""}
+    seen = {"grounded": None, "attempted": False, "triage": None,
+            "factcheck": False, "backend": ""}
 
     def on_event(ev):
         kind = ev.get("kind")
         if kind == "grounding":
+            seen["attempted"] = True
             seen["grounded"] = bool(ev.get("ok"))
             seen["backend"] = ev.get("backend", "")
         elif kind == "triage":
@@ -201,8 +203,10 @@ def main():
             correct += bool(passed)
             calls += r["calls"]
             tokens += r["tokens"]
-            # Grounding only counts where it was attempted (settled path skips it).
-            if r["triage"] != "SETTLED":
+            # Counted from the event, not inferred from the route: the volatile
+            # settled path grounds too, and inferring excluded it from its own
+            # denominator.
+            if r["attempted"]:
                 groundable += 1
                 grounded_n += bool(r["grounded"])
             if "settled" in case:

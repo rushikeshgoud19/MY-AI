@@ -449,6 +449,27 @@ _SOLO_SYS = (
     "No preamble, no markdown."
 )
 
+# A settled question can still be one the model cannot answer from memory. These
+# are the markers of a fact that MOVES - it still has a single right answer, so it
+# needs no debate, but it does need looking up. Deliberately generous: a false
+# positive costs one HTTP fetch on a path that still uses only two model calls,
+# while a miss costs an invented figure with no check anywhere behind it.
+_VOLATILE_RE = re.compile(
+    r"\b(right now|currently|current|today|todays|latest|newest|nowadays|these days|"
+    r"as of|this (?:year|month|quarter)|up to date|up-to-date|"
+    r"price|prices|pricing|cost per|rate limit|quota|free tier|"
+    r"latest version|current version|release)\b", re.IGNORECASE)
+
+_SOLO_GROUNDED_SYS = (
+    "Answer the question directly in plain prose, under 80 words, USING THE "
+    "REFERENCE MATERIAL provided above the question.\n"
+    "The answer moves over time, so state only what the reference material "
+    "supports and name the source in square brackets as it appears there. If the "
+    "reference material does not answer it, say plainly that you could not verify "
+    "a current figure and say where to check - NEVER supply one from memory.\n"
+    "No preamble, no markdown."
+)
+
 _ASSIGN_SYS = (
     "You assign debate stances. Given a question and four fixed stances, reply as STRICT "
     "JSON mapping advocate id to a REPLACEMENT stance ONLY where the fixed one would waste "
@@ -519,6 +540,29 @@ def orchestra_answer(question: str, config: dict,
         stats["tokens"] += r.get("tokens", 0)
         return r
 
+    # Hoisted out of the debate path so the SETTLED path can ground too. Returns
+    # (prefix_for_a_prompt, raw_text_for_the_citation_check); both empty when
+    # grounding is off or nothing was found, and the caller simply argues unaided.
+    def fetch_grounding():
+        if not grounding:
+            return "", ""
+        gq = run("ministral-8b-latest", _QUERY_SYS, question, temp=0.0, mx=24)
+        g = gather_grounding(question, gq["text"] if gq["ok"] else "",
+                             api_key=config.get("firecrawl_api_key", ""))
+        emit("grounding", ok=bool(g.get("ok")), query=g.get("query", ""),
+             sources=g.get("sources", []), chars=len(g.get("text", "")),
+             backend=g.get("backend", "none"), credits=g.get("credits", 0),
+             reason=g.get("reason", ""))
+        if not g.get("ok"):
+            return "", ""
+        # Name the backend that actually answered. Claiming "Wikipedia" for what
+        # marginalia or firecrawl fetched misstates how authoritative the block is,
+        # and both the advocates and the judge weigh it accordingly.
+        prefix = ("REFERENCE MATERIAL (fetched from %s just now; use it where "
+                  "relevant, ignore it where not):\n%s\n\n"
+                  % (g.get("backend", "the web"), g["text"]))
+        return prefix, g["text"]
+
     # ---- triage: never convene four advocates over a settled fact ------------
     # The soak billed 6 calls and ~2,250 tokens to answer "Is 17 a prime number?",
     # the same cost as a hard ethics question. A debate is only worth paying for
@@ -539,13 +583,38 @@ def orchestra_answer(question: str, config: dict,
         if _ADVISORY_RE.search(question):
             verdict_word = "CONTESTED"
         if verdict_word.startswith("SETTLED"):
-            emit("triage", verdict="SETTLED", note="single answer; no debate needed")
-            solo = run(judge_model, _SOLO_SYS, question, temp=0.2, mx=300)
+            # UNDISPUTED IS NOT THE SAME AS KNOWABLE FROM MEMORY. 17 is prime
+            # forever; what something costs today has exactly one right answer that
+            # the model does not have. Measured 2026-08-05: "what does Mistral
+            # charge per million tokens right now" triaged SETTLED and returned
+            # "$0.25 ... as of the latest pricing information" - an invented figure
+            # on the one path that skips grounding and every fact check. So a
+            # settled question that is also VOLATILE still gets searched; it just
+            # does not need four advocates arguing about it.
+            volatile = bool(_VOLATILE_RE.search(question))
+            gp, gt = fetch_grounding() if volatile else ("", "")
+            emit("triage", verdict="SETTLED",
+                 note=("volatile fact; grounded single answer" if volatile
+                       else "single answer; no debate needed"),
+                 volatile=volatile)
+            solo = run(judge_model, _SOLO_SYS if not volatile else _SOLO_GROUNDED_SYS,
+                       gp + question, temp=0.2, mx=300)
+            # The solo answer gets the same deterministic checks as an advocate's.
+            # There is no judge on this path to hand a defect to, so a failed check
+            # is treated exactly like a failed call: fall through and convene the
+            # panel, which does have somewhere to put it.
+            bad = ""
             if solo["ok"]:
+                bad = (_check_arithmetic(solo["text"])
+                       or _check_citations(solo["text"], gt))
+                if bad:
+                    emit("factcheck", arithmetic=[], citations=[], solo=True,
+                         detail={"solo": bad[:260]})
+            if solo["ok"] and not bad:
                 emit("verdict", case="SETTLED", agreement="HIGH", answer=solo["text"])
                 return _finish(question, solo["text"], "HIGH", 0, stats,
                                "SETTLED", judge_model, started, transcript)
-            # If the direct answer failed, fall through and let the panel handle it.
+            # If the direct answer failed or failed a check, fall through to the panel.
         else:
             emit("triage", verdict="CONTESTED", note="convening the panel")
 
@@ -575,26 +644,9 @@ def orchestra_answer(question: str, config: dict,
     # so grounding costs one call rather than one per advocate. Everyone sees the
     # SAME facts: private research per advocate would multiply cost and let them
     # argue from different private evidence, which is worse than arguing from none.
-    ground_prefix = ""
-    # Kept separately from the prefix: the citation check needs the raw material to
-    # test a claimed source against, without the wrapper prose around it.
-    ground_text = ""
-    if grounding:
-        gq = run("ministral-8b-latest", _QUERY_SYS, question, temp=0.0, mx=24)
-        g = gather_grounding(question, gq["text"] if gq["ok"] else "",
-                             api_key=config.get("firecrawl_api_key", ""))
-        if g.get("ok"):
-            ground_text = g["text"]
-            # Name the backend that actually answered. Claiming "Wikipedia" for what
-            # marginalia or firecrawl fetched misstates how authoritative the block is,
-            # and the advocates weigh it accordingly.
-            ground_prefix = ("REFERENCE MATERIAL (fetched from %s just now; use it "
-                             "where relevant, ignore it where not):\n%s\n\n"
-                             % (g.get("backend", "the web"), g["text"]))
-        emit("grounding", ok=bool(g.get("ok")), query=g.get("query", ""),
-             sources=g.get("sources", []), chars=len(g.get("text", "")),
-             backend=g.get("backend", "none"), credits=g.get("credits", 0),
-             reason=g.get("reason", ""))
+    # ground_text is kept alongside the prefix: the citation check needs the raw
+    # material to test a claimed source against, without the wrapper prose.
+    ground_prefix, ground_text = fetch_grounding()
 
     # ---- R0: parallel, isolated ---------------------------------------------
     emit("round", round=0, phase="fan-out",

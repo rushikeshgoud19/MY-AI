@@ -1,57 +1,81 @@
 # Volatile facts take the ungrounded settled path
 
-`wayfinder:task` · OPEN · graduated from A1 · **frontier**
+`wayfinder:task` · **CLOSED** · graduated from A1
 
 ## Question
 
-Triage splits every question two ways. Everything the previous map built -
-grounding, CALC arithmetic checks, citation checks, defects reaching synthesis,
-the judge seeing its sources - lives on the CONTESTED side. The SETTLED side is:
+Everything the grounding map built lives on the CONTESTED side. The SETTLED side is
+`triage -> one solo call -> return`, with grounding fetched *after* the triage
+block, so a settled question never reaches it. Correct for "Is 17 a prime number?",
+wrong for anything whose answer MOVES:
 
-    triage -> SETTLED -> one solo call -> return
+```
+Q: What does Mistral charge per million tokens for ministral-8b right now?
+TRIAGE=SETTLED, no grounding event
+A: "Mistral charges $0.25 per million tokens for Mistral-8B as of the
+    latest pricing information."
+```
 
-No search, no checks, no judge review. Grounding is fetched AFTER the triage
-block, so a settled question never reaches it.
+## Resolution
 
-That is correct for "Is 17 a prime number?" and wrong for anything whose answer
-MOVES. Measured 2026-08-05:
+**Undisputed is not the same as knowable from memory.** A current price has exactly
+one right answer that competent people do not dispute — and the model does not have
+it. So the split is no longer settled-vs-contested but three ways:
 
-    Q: What does Mistral charge per million tokens for ministral-8b right now?
-    TRIAGE=SETTLED, no grounding event
-    A: "Mistral charges $0.25 per million tokens for Mistral-8B as of the
-        latest pricing information."
+| route | when | cost |
+|---|---|---|
+| SETTLED | stable fact | 2 calls |
+| SETTLED + volatile | one right answer, but it moves | **3 calls** |
+| CONTESTED | genuine judgement | ~11 calls |
 
-A bare invented figure, delivered with a confidence marker, on the path that skips
-every safeguard. This is the failure the entire grounding map was built to remove.
+Implemented:
 
-## The distinction to draw
+1. `_VOLATILE_RE` — recency and moving-quantity markers ("right now", "currently",
+   "latest", "as of", "price", "free tier", "rate limit", "current version").
+   Deliberately generous: a false positive costs one HTTP fetch on a path that
+   still makes two model calls, a miss costs an invented figure with nothing behind
+   it. Follows the `_ADVISORY_RE` precedent — it changes the route, never suppresses
+   a debate.
+2. The grounding block was hoisted out of the debate path into `fetch_grounding()`
+   so both routes use one implementation. A volatile settled question grounds, then
+   answers with ONE call instead of convening four advocates.
+3. `_SOLO_GROUNDED_SYS` — answer from the reference material, name the source in
+   brackets, and if it is not there say you could not verify a current figure and
+   where to check. Never supply one from memory.
+4. **The solo answer now gets the same deterministic checks as an advocate's.**
+   There is no judge on this path to hand a defect to, so a failed arithmetic or
+   citation check is treated exactly like a failed call: fall through and convene
+   the panel, which does have somewhere to put it.
 
-`_TRIAGE_SYS` currently means "does this have one right answer competent people do
-not dispute". That is true of a current price - and the model still does not KNOW
-it. Undisputed is not the same as knowable-from-memory.
+## Verification
 
-- 17 is prime, a kibibyte is 1024 bytes, HTTPS is 443 -> stable, answer from
-  memory, 2 calls, correct as-is.
-- What X costs today, the current version of Y, this quarter's limit -> single
-  right answer, but VOLATILE. Needs grounding even though it needs no debate.
+`_VOLATILE_RE` unit-tested 10/10 — the pricing, "latest version" and "current free
+tier" questions detected; prime, kibibyte, ports, git SHA and the SQLite
+transaction question correctly left alone.
 
-## Options
+Live, the same question that produced the fabrication:
 
-- A third route: SETTLED-BUT-VOLATILE, which grounds and then answers with one
-  call instead of convening four advocates. Cheapest correct fix if triage can
-  make the call; it is one extra word in the classifier's vocabulary.
-- Ground the settled path unconditionally. Simpler, and it spends an HTTP fetch on
-  "is 17 prime" forever.
-- Route volatile facts to the full debate. Correct but expensive - 11 calls to
-  look up one number, which is the cost problem the previous map just fixed.
-- Apply the deterministic checks to the solo answer too, independent of routing.
-  Cheap, and catches the fabrication even if the routing decision stays wrong.
+```
+GROUNDING ok=true backend=marginalia+ddg
+TRIAGE=SETTLED volatile=true (volatile fact; grounded single answer)
+A: "Could not verify a current figure. Check the [Pricing] section for the
+    latest rates."
+calls=3 tokens=969
+```
 
-Recency words are a strong signal and cheap to detect in code: "right now",
-"currently", "today", "latest", "as of". The one-directional override precedent
-(_ADVISORY_RE promotes, never suppresses) fits here exactly.
+It declined rather than reading a price off the valuation article that grounding
+returned — the source-fit behaviour from the previous map carrying through to a
+path that had none of it an hour ago.
 
-## Verified by
+**Eval: 15/15, up from 15/16.** `price-honesty` now passes, grounded, on 3 calls.
 
-The `price-honesty` case in the eval, currently the only failing case: it must
-either attribute the figure or admit it cannot verify one.
+## Three corrections to my own records
+
+- The eval has **15 cases, not 16** — that number was wrong in the A1 ticket and in
+  its commit message. Corrected in both.
+- `price-honesty` was marked `settled: False`, so the run reported "triage routed
+  6/7". That expectation predated this route: SETTLED-and-grounded IS the correct
+  and cheapest outcome. Corrected to `settled: True`, giving 7/7.
+- The eval counted grounding by inferring from the triage verdict
+  (`if triage != "SETTLED"`), which excluded the volatile path from its own
+  denominator. It now counts from the emitted event.
