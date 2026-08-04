@@ -51,6 +51,13 @@ figures with no source behind them.
 | after T2 | grounding repaired | real-ish prices off a valuation article, ~8x error, inverted again |
 | after T3 | defects reach synthesis | plausible prices from the 9/10 answer, conclusion CORRECT, arithmetic still ~2.8x off |
 
-Still FAIL, but failing later and for a narrower reason each time. What remains is
-the multiplication, not the sourcing — see
-[Check the arithmetic the panel performs on grounded numbers](tickets/t6-check-arithmetic.md).
+| after T6 | arithmetic checked | **PASS** — CALC lines all correct, two advocates refused to invent prices, verdict €5.00 vs €16.00 with the token-parity caveat named |
+
+Probe 2 took four runs to go from "invented everything" to "showed its working and
+said what it did not know". Each fix narrowed the failure rather than papering over
+it: grounding never ran (T2), the judge's own findings were discarded before
+synthesis (T3), and nothing checked the multiplication (T6).
+
+Residual risk on probe 2 is now the PRICES themselves — €0.25/€0.75 and €4/€12
+came off a grounded page dated 2024-06-25 that may be stale. That is the
+source-quality gap in Not-yet-specified, not an arithmetic problem.

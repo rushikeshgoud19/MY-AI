@@ -52,6 +52,13 @@ verdict, and answer quality on the contested questions does not drop.
   named, and `_JUDGE_FINAL_SYS` forbids restating a claim it flagged. Verified:
   the flagged claims are gone and the verdict flipped to the defensible
   conclusion. Arithmetic still wrong — graduated to its own ticket.
+- [Check the arithmetic the panel performs on grounded numbers](tickets/t6-check-arithmetic.md) —
+  enforce, don't ban. Advocates must append `CALC: <expr> = <figure>` for any
+  worked-out number; code evaluates it with the AST calculator already in
+  `orchestra_tools`, merges mismatches into `defects`, and caps the score at 5.0
+  so self-contradicting arithmetic can never ADOPT. Probe 2 now produces
+  self-consistent arithmetic and two advocates refuse to invent prices at all.
+  The checker itself is proven by unit test, not yet observed firing live.
 
 ## Not yet specified
 

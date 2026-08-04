@@ -49,7 +49,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from .config import log_info
 from .tracing import observe, update_current_span
-from .orchestra_tools import gather_grounding
+from .orchestra_tools import calc, gather_grounding
 
 MISTRAL_URL = "https://api.mistral.ai/v1/chat/completions"
 
@@ -243,8 +243,55 @@ _ADVOCATE_SYS = (
     "straightforward answer is simply correct, say so.\n"
     "FORMAT: plain prose, 120 words maximum. NO markdown headings, NO bold, NO bullet "
     "lists - they burn your budget and get you cut off mid-sentence. End with one complete "
-    "sentence stating your recommendation."
+    "sentence stating your recommendation.\n"
+    "SHOW YOUR ARITHMETIC. If you state a figure you worked out (a total, a cost, a ratio, "
+    "a saving), add a line at the very end for each one:\n"
+    "  CALC: <expression> = <the figure you stated>\n"
+    "using ONLY digits and + - * / ( ) - no units, no words, no commas inside numbers. "
+    "Maximum two CALC lines, and they do NOT count toward your 120 words. A figure you "
+    "cannot express as a CALC line is a figure you have not actually computed: say it is "
+    "unknown instead of stating it.\n"
+    "If you computed nothing, write NO CALC line at all - never a placeholder."
 )
+
+# Deterministic arithmetic check. The panel kept sourcing real numbers and then
+# multiplying them wrong: three runs of the Mistral pricing probe produced three
+# different wrong products, each extrapolated onward with total confidence
+# (2026-08-05). Asking a model to check a model's sum adds a call and another
+# opinion; `calc` already walks an AST and refuses anything that is not arithmetic,
+# so the check is free and cannot be argued with. Same principle as the ADOPT
+# threshold: CODE OWNS THE DECISION wherever the answer is decidable.
+# The expression is captured loosely on purpose. A tight [0-9+-*/(). ] class would
+# silently ignore a malformed CALC line, which is the one case most likely to be
+# hiding a number nobody computed - and it would leave `calc`'s rejection path dead.
+# Anything non-arithmetic reaching calc is refused by its AST walk (ast.Call and
+# friends raise), so a junk or hostile expression is reported, not evaluated.
+_CALC_RE = re.compile(r"^\s*CALC:\s*(.{1,200}?)\s*=\s*([-+]?[0-9][0-9,]*\.?[0-9]*)\s*$",
+                      re.MULTILINE | re.IGNORECASE)
+# Advocates round for readability ("about 0.6"), which is honest; 5% absorbs that
+# while still catching the 2.8x and 25x errors actually observed.
+_CALC_TOLERANCE = 0.05
+
+
+def _check_arithmetic(text: str) -> str:
+    """Return a defect string when a stated figure does not match its own expression."""
+    bad = []
+    for expr, claimed in _CALC_RE.findall(text or ""):
+        got = calc(expr)
+        if isinstance(got, str):                      # calc reports failure as "error: ..."
+            bad.append("'%s' is not evaluable arithmetic" % expr.strip())
+            continue
+        try:
+            want = float(claimed.replace(",", ""))
+        except ValueError:
+            continue
+        scale = max(abs(got), abs(want), 1e-9)
+        if abs(got - want) / scale > _CALC_TOLERANCE:
+            bad.append("states %s but %s = %s" % (claimed, expr.strip(), round(got, 6)))
+    if not bad:
+        return ""
+    return ("ARITHMETIC IS WRONG (checked, not judged): " + "; ".join(bad[:2]) +
+            ". Every figure derived from it is wrong too.")
 
 # The judge SCORES and names defects; the ADOPT/REJECT decision is then made in CODE.
 # Soak 2026-08-02: with the judge deciding, ADOPT fired 18/18 - including on ten
@@ -518,6 +565,26 @@ def orchestra_answer(question: str, config: dict,
                 pass
     defects = {k: str(v) for k, v in (review.get("defects") or {}).items()
                if k in answers and str(v).strip()}
+
+    # Arithmetic is checked, not judged. A wrong product is not a matter of opinion,
+    # so it does not go to the judge for scoring - it is verified here and forced
+    # into the record. The defect rides the channel opened when synthesis started
+    # receiving the judge's findings, so a checked-wrong figure now reaches R2 AND
+    # the final answer instead of being silently re-asserted.
+    arith_bad = []
+    for i, txt in answers.items():
+        d = _check_arithmetic(txt)
+        if not d:
+            continue
+        arith_bad.append(i)
+        defects[i] = (defects[i] + " " + d) if defects.get(i) else d
+        # Cap the score below ADOPT_MIN_SCORE. An answer whose own arithmetic
+        # contradicts itself must never short-circuit the debate as CASE 1 ADOPT.
+        if i in scores:
+            scores[i] = min(scores[i], 5.0)
+    if arith_bad:
+        emit("arithmetic", failed=arith_bad,
+             detail={i: defects[i][-220:] for i in arith_bad})
 
     # If the judge produced no usable scores at all we cannot make an honest
     # decision, so we escalate rather than silently adopting. Escalating costs
