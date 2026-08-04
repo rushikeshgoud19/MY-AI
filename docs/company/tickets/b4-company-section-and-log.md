@@ -1,6 +1,11 @@
 # Build the Company section, the daily log, and the memory
 
-`wayfinder:task` · OPEN · blocked by: B1
+`wayfinder:task` · OPEN · **frontier — not blocked**
+
+<!-- Originally blocked on the payment ticket. That was wrong: a console section, a
+     log and a memory note do not depend on which payment rail works, and holding
+     them back buys nothing. Takeable in parallel with B1. -->
+
 
 ## Question
 
