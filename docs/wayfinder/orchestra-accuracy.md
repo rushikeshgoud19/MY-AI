@@ -34,7 +34,12 @@ that score rather than against impressions.
 
 ## Decisions so far
 
-<!-- nothing yet; charting resolves nothing -->
+- [Build a scored accuracy eval](tickets/a1-build-the-eval.md) —
+  `scripts/orchestra_eval.py`, 16 cases, regex-only grading (a model grader would
+  put this map's own failure mode inside the measuring instrument), scoring
+  CORRECTNESS and PROCESS separately. **Baseline 15/16.** Building it found that
+  an eval of checkable facts routes entirely to the SETTLED path and never touches
+  the debate — which is how the settled-path hole below was discovered.
 
 ## Not yet specified
 

@@ -1,41 +1,68 @@
 # Build a scored accuracy eval
 
-`wayfinder:task` · OPEN · **frontier — blocks A2, A3, A4, A5, A6, A7**
+`wayfinder:task` · **CLOSED** · blocks A2, A3, A4, A5, A6, A7 (now unblocked)
 
 ## Question
 
 Every accuracy claim in the previous effort was made by reading a verdict and
-forming an opinion. That was enough to find bugs and not enough to prove an
-improvement, and twice a remembered number turned out to be stale. Before any
-further change to grounding, there has to be a score.
+forming an opinion — enough to find bugs, never enough to prove an improvement.
+Build an eval of questions with KNOWN answers and a runner that scores a batch.
 
-Build an eval of questions whose answers are KNOWN and checkable, plus a runner
-that scores a batch and reports a single number.
+## Resolution
 
-To decide while building it:
+`scripts/orchestra_eval.py`. 16 cases, two scores, deterministic grading.
 
-- **What is gradeable?** A price or a limit has a right answer that can be
-  string- or range-matched. "Should I use SQLite or Postgres" does not. The eval
-  should probably hold only questions with a checkable answer, and the advice-
-  shaped ones stay in `probes.md` as a qualitative suite. Confirm that split
-  rather than assuming it.
-- **How is a verdict graded automatically?** Options: exact/range match on an
-  extracted number; a required-substring list; a cheap model grading against a
-  reference answer. The third is the usual choice and the least trustworthy —
-  a grader that is itself a small model is the thing this whole map exists to
-  distrust. Prefer deterministic where the answer is a number.
-- **Does it grade the ANSWER or the PROCESS?** Both matter: a right answer reached
-  from an inapplicable source is luck, and the previous effort showed the panel
-  getting the direction right while every figure was wrong. Consider scoring
-  grounded-ness and arithmetic separately from correctness, since those events are
-  already emitted (`grounding`, `factcheck`).
-- **How many questions, and where from?** Enough that one lucky run does not move
-  the score. Some should be questions the panel currently gets WRONG, or the eval
-  starts at 100% and can only go down.
-- **Cost.** A full debate is ~11 calls. A 30-question eval is ~330 calls per run.
-  Decide whether the eval runs the whole pipeline or only the parts under test.
+**Grading is regex-only, deliberately.** The obvious design is a model grading the
+answer against a reference. This map exists because small models assert things
+confidently and wrongly, so grading with one puts the failure mode inside the
+measuring instrument. Every case declares `all_of` / `none_of` patterns; the
+grader is `re.search`. That restricts the eval to questions with a checkable
+answer, which is the correct restriction — advice-shaped questions stay
+qualitative in `probes.md`.
 
-## Done when
+**Two scores, because they fail independently.** CORRECTNESS grades the verdict
+text. PROCESS reads the emitted events — did grounding fire, did triage route
+cheaply, did the fact-checkers trip. The previous effort produced a run that was
+directionally right with every figure wrong; one score cannot express that.
 
-A command runs the eval and prints a score, the score is recorded here as the
-baseline, and re-running it produces the same number on unchanged code.
+`--only <id>` runs a subset, `--repeat N` measures variance.
+
+## Baseline (2026-08-05)
+
+| slice | correctness | process | cost |
+|---|---|---|---|
+| settled cases (11) | 11/11 | triage routed all correctly | 2.0 calls / ~450 tok each |
+| contested cases (3) | 3/3 | grounded 3/3 | 11.0 calls / ~10k tok each |
+| price-honesty | **0/1** | triage WRONG, ungrounded | 2 calls |
+
+**15/16 correctness.** The one failure is real and is the point of the exercise:
+the eval must contain something the panel gets wrong or it starts at 100% and can
+only fall.
+
+## What building it found — the important part
+
+The first version of this eval scored **12/12 with every single case on the SETTLED
+path** and `grounded 0/0 attempted`. Checkable facts are, by definition, the ones
+triage routes to the 2-call solo path — so an eval made of checkable facts never
+touches the debate at all. That design flaw is what surfaced the finding:
+
+> **The SETTLED path is completely ungrounded, and every fix from the previous map
+> lives in the CONTESTED path only.** Asked "What does Mistral charge per million
+> tokens for ministral-8b right now?", triage says SETTLED and the answer is
+> `"Mistral charges $0.25 per million tokens for Mistral-8B as of the latest
+> pricing information"` — a bare figure from model memory, no grounding event
+> emitted, no CALC line, no citation check, no judge. The exact failure the whole
+> grounding effort eliminated, alive and well on the other path.
+
+Graduated to
+[Volatile facts take the ungrounded settled path](a8-settled-path-ungrounded.md).
+
+Three contested cases were then added — a checkable fact wrapped in a question that
+genuinely depends on the asker's situation — so the eval exercises both paths.
+
+## Note on the "done when" criterion
+
+The ticket asked that re-running produce the same number on unchanged code. That is
+not achievable: advocates run at temp 0.35–0.4 and the search backends change under
+us. `--repeat` exists to measure the spread instead. Treat a one-case move as noise
+and a three-case move as signal until the variance is actually characterised.
