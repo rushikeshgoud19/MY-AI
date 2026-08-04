@@ -99,9 +99,14 @@ ADOPT_MIN_SCORE = 9.0     # "I would ship this unchanged" - raised from 8.0 on
 ADOPT_SPREAD = 2.0        # score range across the panel that still counts as agreement
 REFINE_TOP_N = 2          # how many advocates get a second draft in R2
 # Phrasings that are ALWAYS a matter of judgement, whatever the classifier says.
+# "how do/should/can" is restricted to FIRST PERSON. Measured 2026-08-05: the older
+# pattern included "you", so "How do you spell 'necessary'?" was promoted to a
+# four-way debate - while _TRIAGE_SYS lists spelling as a SETTLED example, so the
+# override was contradicting the prompt it backstops. Advice is asked about one's
+# OWN situation; "how do you spell X" is a question about the world.
 _ADVISORY_RE = re.compile(
     r"\b(should|good enough|better than|best way|best approach|worth it|worth doing|"
-    r"how (?:do|should|can) (?:i|we|you)|which (?:is|one)|recommend|advice|"
+    r"how (?:do|should|can) (?:i|we)\b|which (?:is|one)|recommend|advice|"
     r"pros and cons|trade[- ]?offs?|vs\.?|versus)\b", re.IGNORECASE)
 R2_PEER_CHARS = 420       # how much of each peer answer is replayed into R2 context
 
@@ -420,10 +425,18 @@ _TRIAGE_SYS = (
     "CONTESTED - anything involving judgement, trade-offs, design choices, ethics, "
     "prediction, advice, or 'how should I / what is the best way' - thoughtful people "
     "could reasonably disagree.\n"
+    "Naming two options does not make a question contested. A comparison with a "
+    "MEASURABLE answer - which is faster, smaller, cheaper by a fixed rule - is SETTLED, "
+    "however it is phrased. A comparison that depends on the asker's own situation is "
+    "CONTESTED.\n"
     "Examples:\n"
     "  'Is 17 a prime number?' -> SETTLED\n"
     "  'How many days in a leap year?' -> SETTLED\n"
     "  'What is the capital of Australia?' -> SETTLED\n"
+    "  'Is it faster to insert 10,000 rows in one transaction or one at a time?'\n"
+    "    -> SETTLED (measurable; one right answer)\n"
+    "  'Should I use SQLite or Postgres for my app?'\n"
+    "    -> CONTESTED (depends on the asker's situation)\n"
     "  'How do I make landing pages as good as Apple's?' -> CONTESTED\n"
     "  'Should logs be JSON or plain text?' -> CONTESTED\n"
     "  'Is SQLite good enough for my app?' -> CONTESTED\n"

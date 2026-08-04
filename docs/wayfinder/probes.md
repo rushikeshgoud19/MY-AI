@@ -43,7 +43,7 @@ All grounded via `marginalia+ddg`, 11 calls each.
 
 | # | scores | fact-check fired | outcome |
 |---|--------|------------------|---------|
-| 1 | light 3, senku 8, ayanokoji 6, vanitas 4 | arithmetic: vanitas | answer CORRECT (one fsync vs 10,000) but **triage said CONTESTED** — 11 calls for a settled fact |
+| 1 | light 3, senku 8, ayanokoji 6, vanitas 4 | arithmetic: vanitas | answer CORRECT but **triage said CONTESTED** — 11 calls for a settled fact. **Fixed: now SETTLED, 2 calls / 501 tokens** |
 | 2 | light 4, senku 9, ayanokoji 3, vanitas 2 | — | PASS, self-consistent arithmetic, caveat named |
 | 5 | light 9, senku 4, ayanokoji 3, vanitas 6 | citation: senku | **PASS** — "no provider offers a genuinely free 24/7 public HTTPS backend without credit card verification"; the Oracle recommendation is gone |
 | 6 | light 9, senku 3, ayanokoji 4, vanitas 7 | — | PASS — "do not add a watchdog yet… it masks the root cause" |

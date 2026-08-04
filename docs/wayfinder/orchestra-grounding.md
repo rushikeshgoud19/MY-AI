@@ -76,6 +76,14 @@ verdict, and answer quality on the contested questions does not drop.
   that will not fire, check whether its reader can see what the instruction is
   about.**
 
+- [Triage reads a settled comparison as a design choice](tickets/t8-triage-comparisons.md) —
+  measured on a purpose-built triage bench (15 questions, classified twice) rather
+  than on the one probe: baseline 13/15, after 15/15, no flip-flops and no
+  regression on the contested side. Found a second bug on the way — `_ADVISORY_RE`
+  promoted "How do you spell 'necessary'?" because its `how do/should/can` branch
+  included "you", contradicting the SETTLED spelling example in the prompt it
+  backstops. Probe 1 now costs 2 calls / 501 tokens instead of 11 / ~6,000.
+
 ## Status
 
 Full probe re-run 2026-08-05: **6 of 7 re-run probes pass**, against 3 of 9 at
