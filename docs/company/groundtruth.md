@@ -51,6 +51,10 @@ what is blocked on Rushi.
 
 ## Not yet specified
 
+- Whether Clustly settles both the payment question and the outreach question at
+  once. It pays in USDC on Solana with escrow and a 4% fee, which needs no credit
+  card - but India taxes virtual digital assets at a flat 30% plus 1% TDS, and the
+  marketplace's actual buyer volume is unverified. Ticketed, not assumed.
 - Pricing shape - one-off build fee, monthly retainer, or per-run. Depends entirely
   on what the market research finds people actually paying, and on whether the
   offer is a service or a product.
