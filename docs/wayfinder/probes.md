@@ -43,8 +43,14 @@ Reasoning is sound; **quantities are invented**. Every failure is a fabricated
 number or citation, not a broken argument. 2, 6, 7 and 8 all produced confident
 figures with no source behind them.
 
-## Probe 2 after T2
+## Probe 2 across three runs
 
-Grounding now fires (`marginalia+ddg`, 3 sources). The answer is still wrong: it
-grounded on a valuation article and computed a per-token comparison off by ~8x.
-Still FAIL — see T4 and the map's Not-yet-specified.
+| run | state | result |
+|---|---|---|
+| baseline | grounding never fired | invented prices, arithmetic 25x wrong, conclusion inverted |
+| after T2 | grounding repaired | real-ish prices off a valuation article, ~8x error, inverted again |
+| after T3 | defects reach synthesis | plausible prices from the 9/10 answer, conclusion CORRECT, arithmetic still ~2.8x off |
+
+Still FAIL, but failing later and for a narrower reason each time. What remains is
+the multiplication, not the sourcing — see
+[Check the arithmetic the panel performs on grounded numbers](tickets/t6-check-arithmetic.md).

@@ -268,7 +268,15 @@ _JUDGE_REVIEW_SYS = (
 _JUDGE_FINAL_SYS = (
     "You are Alucard, delivering the final answer after a round of revisions.\n"
     "Synthesise the revised advocate answers into ONE answer, adding your own improvements "
-    "where they are warranted. Reply as STRICT JSON, nothing else:\n"
+    "where they are warranted.\n"
+    "Each answer arrives with the SCORE YOU GAVE IT and the DEFECT YOU NAMED. They are "
+    "your own findings from minutes ago - honour them:\n"
+    "- Never carry a claim into the final answer if you marked it defective. Catching an "
+    "error and then repeating it is worse than never catching it.\n"
+    "- If you flagged a number, price, or date as unsourced or outdated, do NOT restate it "
+    "as fact. Drop it, or say plainly that the figure could not be verified.\n"
+    "- Weight a low-scored answer accordingly; 'not revised' means it never improved.\n"
+    "Reply as STRICT JSON, nothing else:\n"
     '{"agreement":"HIGH|LOW","answer":"<final answer, under 250 words>"}'
 )
 
@@ -590,8 +598,32 @@ def orchestra_answer(question: str, config: dict,
     # Synthesise from the revisions PLUS the un-revised originals, so an argument
     # that scored low still reaches the judge - it just did not get a second draft.
     final_pool = {**answers, **revised} if revised else answers
+
+    # Measured 2026-08-05: the judge scored a fabricated price 3-5/10 and named
+    # "uses outdated/unsourced pricing" as the defect - then synthesised those same
+    # invented figures into the final answer. The reason was here: synthesis received
+    # ONLY the question and the answers, so the judge re-read the fabrication with no
+    # memory of having caught it, and an un-revised 3/10 original arrived looking
+    # exactly like a 9/10 one. Its own findings now travel with each answer.
+    def scored_block(d: Dict[str, str]) -> str:
+        by_id = {p["id"]: p for p in panel}
+        out = []
+        for i, t in d.items():
+            sc = scores.get(i)
+            head = f'[{by_id[i]["name"]} · {by_id[i]["stance"]} · id={i}'
+            head += f' · YOUR SCORE {sc:g}/10' if sc is not None else ' · unscored'
+            if not revised.get(i) and i in answers and sc is not None:
+                head += ' · not revised'
+            head += ']'
+            d_txt = str(defects.get(i) or "").strip()
+            if d_txt:
+                head += f'\nDEFECT YOU NAMED: {d_txt}'
+            out.append(f"{head}\n{t}")
+        return "\n\n".join(out)
+
     r = run(judge_model, _JUDGE_FINAL_SYS,
-            f"QUESTION: {question}\n\nREVISED ANSWERS:\n{block(final_pool)}", temp=0.25, mx=1100)
+            f"QUESTION: {question}\n\nREVISED ANSWERS:\n{scored_block(final_pool)}",
+            temp=0.25, mx=1100)
     final = _json_from(r["text"]) or {}
     answer = final.get("answer") or r["text"] or "The panel could not reach an answer."
     agreement = str(final.get("agreement", agreement)).upper()

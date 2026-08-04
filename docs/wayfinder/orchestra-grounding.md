@@ -45,14 +45,16 @@ verdict, and answer quality on the contested questions does not drop.
   pure-ethics probe still skips the search. The `REFERENCE MATERIAL` header now
   names the real backend instead of always claiming Wikipedia. **The pricing
   answer is still wrong** — grounding was necessary, not sufficient.
+- [Stop synthesis re-asserting defects the judge already named](tickets/t3-stop-verdict-laundering.md) —
+  the defects were never *in scope* at synthesis: the final call received only the
+  question and the answers, and un-revised low scorers were merged in unmarked.
+  Each answer now carries the judge's own score, "not revised", and the defect it
+  named, and `_JUDGE_FINAL_SYS` forbids restating a claim it flagged. Verified:
+  the flagged claims are gone and the verdict flipped to the defensible
+  conclusion. Arithmetic still wrong — graduated to its own ticket.
 
 ## Not yet specified
 
-- Arithmetic done ON grounded numbers is itself unchecked. The repaired run
-  fetched real prices and then computed a per-token comparison that was wrong by
-  ~8x and inverted the recommendation — twice in a row, on the same probe, with
-  different numbers each time. A rule about *sourcing* numbers does not touch
-  this; something has to catch the multiplication.
 - Source QUALITY has no gate. The pricing run grounded on a company-valuation
   article and a generic directory page, and the advocates treated both as
   authoritative. Ranking or filtering hits before they enter the reference block
