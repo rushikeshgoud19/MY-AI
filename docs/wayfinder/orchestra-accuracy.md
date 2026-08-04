@@ -48,6 +48,14 @@ that score rather than against impressions.
   gets the same arithmetic and citation checks as an advocate's — a failed check
   falls through to the panel. The invented "$0.25 per million tokens" became
   "could not verify a current figure, check [Pricing]". **Eval 15/15.**
+- [Grounding reads search snippets, never the page](tickets/a2-read-pages-not-snippets.md) —
+  `fetch_page` + `_best_window` open the hits and take the window densest in the
+  question's terms; bounded read, bounded time, any failure keeps the snippet. All
+  three hits are fetched and the budget filled BEST-FIRST, because search rank
+  ranked a valuation article above the page titled "Pricing". Eval 15/15, no
+  regressions. It did NOT fix the price probe: the block now holds three real
+  pricing tables and none of them is Mistral's, so refusing is correct. **The
+  limit moved from reading to retrieval.**
 
 ## Not yet specified
 

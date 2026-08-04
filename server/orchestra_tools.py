@@ -223,6 +223,78 @@ def _strip_tags(s: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", s or "")).strip()
 
 
+# --------------------------------------------------------------- page fetching
+# Until now the reference block was built entirely from search-result DESCRIPTIONS
+# - at most 900 characters of blurb across three hits - while every backend
+# returned a url that nothing ever opened. Measured: the Mistral pricing question
+# grounded on a valuation article's summary line while an actual pricing page sat
+# one fetch away. Snippets say a page is ABOUT pricing; only the page has the table.
+#
+# Everything here obeys the module rule that losing search must degrade the answer
+# and never break the debate: bounded read, bounded time, and any failure returns
+# empty so the caller falls back to the snippet it already had.
+_PAGE_BYTES = 400_000          # a document larger than this is not a doc page
+_PAGE_TIMEOUT = 6              # per page; two fetches is the whole added latency
+_DROP_BLOCKS = re.compile(r"<(script|style|noscript|svg)\b[^>]*>.*?</\1>",
+                          re.IGNORECASE | re.DOTALL)
+
+
+def fetch_page(url: str, terms: List[str], width: int = 700) -> str:
+    """Readable text from one page, focused on `terms`. Empty string on any problem."""
+    if not url or not url.lower().startswith(("http://", "https://")):
+        return ""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": _UA})
+        with urllib.request.urlopen(req, timeout=_PAGE_TIMEOUT) as r:
+            ctype = (r.headers.get("Content-Type") or "").lower()
+            # A PDF or an image decodes to noise that looks like text to a model.
+            if "html" not in ctype and "text/plain" not in ctype:
+                return ""
+            raw = r.read(_PAGE_BYTES).decode("utf-8", "replace")
+    except Exception:
+        return ""
+    text = _strip_tags(_DROP_BLOCKS.sub(" ", raw))
+    return _best_window(text, terms, width) if text else ""
+
+
+def _best_window(text: str, terms: List[str], width: int) -> str:
+    """The `width` characters of `text` densest in `terms`.
+
+    Naive truncation takes a page's navigation and cookie banner. The fact that was
+    wanted is usually in a table halfway down, so the window is chosen by where the
+    query's own words actually land.
+    """
+    if len(text) <= width:
+        return text
+    lowered = text.lower()
+    hits = []
+    for t in terms:
+        t = (t or "").lower()
+        if len(t) < 3:
+            continue
+        start = 0
+        while True:
+            i = lowered.find(t, start)
+            if i < 0 or len(hits) > 400:
+                break
+            hits.append(i)
+            start = i + len(t)
+    if not hits:
+        return text[:width]
+    # Slide a window over the hit positions and keep the densest. Numbers count
+    # for something too: a question answered by a figure is answered by the part
+    # of the page that HAS figures.
+    best_i, best_score = 0, -1
+    for h in hits:
+        s = max(0, h - width // 3)
+        chunk = text[s:s + width]
+        score = sum(1 for x in hits if s <= x < s + width)
+        score += min(6, len(re.findall(r"\d", chunk)) // 8)
+        if score > best_score:
+            best_i, best_score = s, score
+    return text[best_i:best_i + width]
+
+
 def marginalia_search(query: str, n: int = 5) -> List[Dict[str, str]]:
     # It is a small public service and occasionally just takes too long. One retry,
     # because losing the PRIMARY backend to a single slow response drops the whole
@@ -291,8 +363,12 @@ def _relevant(query: str, title: str) -> bool:
     return any(len(w) >= 7 for w in shared) or len(shared) >= 2
 
 
+# Raised from 900 when page fetching landed: a fetched window carries real content
+# where a snippet carried a sentence fragment, and 900 chars across three sources
+# left barely 300 each. This block is read by five advocates and twice by the judge,
+# so every extra character is paid for seven times - hence 1500, not 5000.
 def gather_grounding(question: str, query: str = "", api_key: str = "",
-                     max_chars: int = 900) -> Dict[str, Any]:
+                     max_chars: int = 1500) -> Dict[str, Any]:
     """Fetch reference material. Costs ZERO LLM calls on its own.
 
     `query` should be a focused search phrase chosen by the caller (the orchestra
@@ -358,15 +434,46 @@ def gather_grounding(question: str, query: str = "", api_key: str = "",
                 "credits": firecrawl_credits(),
                 "reason": "no relevant source found - proceeding ungrounded"}
 
-    parts, sources, total = [], [], 0
+    # Open the hits rather than quoting their search blurb. A failed fetch silently
+    # keeps the snippet, so this can improve the block and never empty it.
+    #
+    # ALL THREE are fetched, and the budget is then filled BEST-FIRST rather than in
+    # search order. Measured 2026-08-05: for "what does Mistral charge per million
+    # tokens", marginalia ranked a company-valuation article first and a vendor
+    # directory second, while the hit actually titled "Pricing" came third. Fetching
+    # the top two got two pages that could not answer the question and skipped the
+    # one that could. Search rank answers "what is about this topic"; it does not
+    # answer "what contains this fact".
+    terms = _key_terms(question, limit=6) or query.split()
+
+    def _density(txt: str) -> int:
+        low = (txt or "").lower()
+        hits_ = sum(low.count(t.lower()) for t in terms if len(t) > 2)
+        # A question answered by a figure is answered by the part that has figures.
+        return hits_ + min(6, len(re.findall(r"\d", txt or "")) // 10)
+
+    cand = []
+    fetched = 0
     for h in hits[:3]:
-        chunk = f"[{h['title']}] {h['extract']}"
+        body = fetch_page(h["url"], terms) if h.get("url") else ""
+        if body:
+            fetched += 1
+        text = body or h["extract"]
+        cand.append((_density(text), h["title"], text))
+    cand.sort(key=lambda c: -c[0])
+
+    parts, sources, total = [], [], 0
+    for _score, title, text in cand:
+        chunk = f"[{title}] {text}"
         if total + len(chunk) > max_chars:
             chunk = chunk[:max(0, max_chars - total)]
-        if not chunk:
+        if not chunk.strip():
             break
         parts.append(chunk)
-        sources.append(h["title"])
+        sources.append(title)
         total += len(chunk)
+    if fetched:
+        backend += "+page"
     return {"ok": True, "query": query, "sources": sources, "backend": backend,
-            "credits": firecrawl_credits(), "text": "\n\n".join(parts), "reason": ""}
+            "credits": firecrawl_credits(), "text": "\n\n".join(parts),
+            "fetched": fetched, "reason": ""}
