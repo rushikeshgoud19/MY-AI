@@ -1,41 +1,59 @@
 # Judge the fit between a claim and the source it cites
 
-`wayfinder:grilling` · OPEN · graduated from fog by T4 · frontier
+`wayfinder:grilling` · **CLOSED** · graduated from fog by T4
 
 ## Question
 
-Fabricated citations are now caught deterministically, and real sources are
-correctly attributed. What is NOT caught is a real, correctly-cited source that
-cannot support the claim resting on it.
+Fabricated citations are caught deterministically and real sources are correctly
+attributed. What was NOT caught is a real, correctly-cited source that cannot
+support the claim resting on it — probe 2 reading API prices off a valuation
+article, probe 7 arguing hosted-API cost from 7900XTX consumer-GPU forum notes and
+scoring 8/10 for it. The T4 prompt rule was already there and did not fire.
 
-Two observed cases, both post-fix:
+## Resolution
 
-- Probe 2 grounded on a Mistral **funding/valuation article** and a generic "AI
-  Service Providers" directory, and the panel read current per-token API prices
-  off them.
-- Probe 7 grounded on **7900XTX consumer-GPU local-inference forum notes** and
-  Vanitas used them to argue about an API-based orchestra, concluding "cut costs
-  by 80%". Correctly cited, entirely inapplicable. **The judge scored it 8.**
+The ticket said to check one thing first, and it was the whole answer:
+**the judge could not see the reference material.** Both judge calls were
 
-The prompt rule added in T4 ("judge the source, not just the number — a price from
-a funding story is the defect even when the figure looks reasonable") did not fire
-on that. So the question is not whether to add the instruction; it is there and it
-failed.
+```python
+run(judge_model, _JUDGE_REVIEW_SYS,  f"QUESTION: … ADVOCATE ANSWERS: …")
+run(judge_model, _JUDGE_FINAL_SYS,   f"QUESTION: … REVISED ANSWERS: …")
+```
 
-Options to weigh:
-- Sharpen the judge's rule with the worked examples above, rather than the
-  abstract statement. The triage prompt only became stable once it had few-shot
-  examples — same model family, same lesson.
-- Score attribution as its own axis instead of folding it into one 0-10, so a
-  well-argued answer on a bad source cannot score 8 on the strength of its prose.
-- Put the source titles in front of the JUDGE explicitly. It currently sees the
-  advocates' answers but is never shown the reference block, so it has no way to
-  tell whether `[7900xtx LLM inference notes]` is a pricing page or a forum thread.
-  **Check this first — if true, the judge was asked to assess fit while blind to
-  the sources, and the other two options are premature.**
-- Filter at fetch time: reject hits whose extract carries none of the fact-shape
-  the query asked for. Cheapest to state, easiest to get wrong, and it would have
-  discarded the good pricing hit in probe 2 as readily as the bad one.
+Question and answers only. `ground_prefix` went to the advocates and never to the
+judge. So T4's "judge the source, not just the number" asked a reader to assess
+sources it had never been shown — the instruction was not weak, it was
+unanswerable. The other three options in this ticket were premature, as suspected.
 
-Constraint: must not add a model call per advocate, and must not fire on the
-settled path.
+Implemented:
+
+1. `ground_prefix` is now passed to BOTH judge calls — review and synthesis. Cost
+   is ~250 tokens on two calls; grounding is capped at 900 chars.
+2. `_JUDGE_REVIEW_SYS` upgraded from an abstract rule to worked examples, the same
+   move that stabilised `_TRIAGE_SYS`: a price off a funding story, throughput for
+   a hosted API argued from a consumer-GPU thread, a figure with no source at all.
+   Plus the ordering that matters — **an admitted unknown should score HIGHER than
+   a confident unattributed number** — and "the prose is not the evidence".
+
+## Verification
+
+Re-ran probe 7 against the identical grounding set (same three sources, including
+the 7900XTX thread):
+
+| advocate | before | after | judge's defect after |
+|---|---|---|---|
+| senku | 9 | **4** | consumer-GPU local inference latency does not translate to hosted API throughput |
+| vanitas | 8 | **3** | misapplies 7900XTX forum data to API context |
+| light | 7 | 7 | cites the forum thread to argue API efficiency — different systems |
+| ayanokoji | 6 | **9** | (none — cited nothing, argued structurally) |
+
+The ranking inverted for exactly the right reason: the answer that made no
+source claim at all is now the winner, and all three source-misfit answers were
+independently named. The verdict now closes with "hardware-specific latency
+(e.g. 7900 XTX) or unverified API pricing cannot be used to generalize
+performance or cost" — it names the trap instead of falling into it.
+
+Standing lesson for this map, now twice earned: before strengthening an
+instruction that is not firing, check whether its reader has the information the
+instruction requires. T4's rule and T3's defects both failed for the same reason —
+the judge was asked about something outside its context window.

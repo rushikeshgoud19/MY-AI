@@ -352,11 +352,18 @@ _JUDGE_REVIEW_SYS = (
     "answer unchanged. An answer that is merely reasonable is a 5-6.\n"
     "Name the single most important DEFECT in each answer - a real, specific one. If an "
     "answer genuinely has no defect, use an empty string.\n"
-    "JUDGE THE SOURCE, NOT JUST THE NUMBER. A figure is only as good as what it is "
-    "attributed to. If an answer takes a current price, limit or benchmark from a source "
-    "that plainly cannot carry that fact - a funding or valuation story, a directory "
-    "listing, a dated blog - that is the defect, even when the number looks reasonable. "
-    "An unattributed figure is worse than an admitted unknown.\n"
+    "JUDGE THE SOURCE, NOT JUST THE NUMBER. The REFERENCE MATERIAL the advocates were "
+    "given is shown above, with each source's title in square brackets. Check what a cited "
+    "source actually IS before you accept a figure taken from it. Ask: could a document "
+    "like that carry a fact like this?\n"
+    "  A current API price read off a company FUNDING or VALUATION story -> defect, "
+    "however plausible the number looks.\n"
+    "  Throughput for a hosted API argued from a CONSUMER GPU forum thread about running "
+    "models locally -> defect, different system entirely.\n"
+    "  A figure with no source named at all -> defect. An admitted unknown is better "
+    "than a confident unattributed number, and should score HIGHER than one.\n"
+    "A well-written answer resting on the wrong source is not an 8. The prose is not the "
+    "evidence.\n"
     "Reply as STRICT JSON, nothing else:\n"
     '{"scores":{"<id>":<0-10>,...},"defects":{"<id>":"<specific defect>",...},'
     '"best":"<id of highest scoring>","improved":"<the best answer rewritten with your own '
@@ -606,8 +613,14 @@ def orchestra_answer(question: str, config: dict,
 
     # ---- R1: judge scores; CODE decides ------------------------------------
     emit("round", round=1, phase="critique", judge=judge_model)
+    # The judge sees the reference material too. It was previously given the question
+    # and the answers only, so the "judge the source, not just the number" rule asked
+    # it to assess something it could not see - and it duly scored 8/10 an answer
+    # arguing about an API-based orchestra from a consumer-GPU forum thread
+    # (2026-08-05). A rule about sources is worthless to a reader without the sources.
     r = run(judge_model, _JUDGE_REVIEW_SYS,
-            f"QUESTION: {question}\n\nADVOCATE ANSWERS:\n{block(answers)}", temp=0.2, mx=1000)
+            f"QUESTION: {question}\n\n{ground_prefix}ADVOCATE ANSWERS:\n{block(answers)}",
+            temp=0.2, mx=1000)
     review = _json_from(r["text"]) or {}
 
     raw_scores = review.get("scores") or {}
@@ -750,7 +763,8 @@ def orchestra_answer(question: str, config: dict,
         return "\n\n".join(out)
 
     r = run(judge_model, _JUDGE_FINAL_SYS,
-            f"QUESTION: {question}\n\nREVISED ANSWERS:\n{scored_block(final_pool)}",
+            f"QUESTION: {question}\n\n{ground_prefix}REVISED ANSWERS:\n"
+            f"{scored_block(final_pool)}",
             temp=0.25, mx=1100)
     final = _json_from(r["text"]) or {}
     answer = final.get("answer") or r["text"] or "The panel could not reach an answer."

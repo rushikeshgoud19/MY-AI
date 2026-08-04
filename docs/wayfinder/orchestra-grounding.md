@@ -67,6 +67,14 @@ verdict, and answer quality on the contested questions does not drop.
   judge as a rule, because "can this source carry this fact" has no clean
   decidable test. Probe 7's invented citation and statistics are gone. The
   judge-side half did NOT work — graduated to its own ticket.
+- [Judge the fit between a claim and the source it cites](tickets/t7-source-fit.md) —
+  the judge could not SEE the reference material; both judge calls got question +
+  answers only. `ground_prefix` now goes to review and synthesis, and the rule
+  became worked examples rather than an abstraction. Probe 7's source-misfit
+  answers fell 9→4 and 8→3, the answer citing nothing rose 6→9, and the verdict
+  now names the trap. **Twice-earned lesson: before strengthening an instruction
+  that will not fire, check whether its reader can see what the instruction is
+  about.**
 
 ## Not yet specified
 
