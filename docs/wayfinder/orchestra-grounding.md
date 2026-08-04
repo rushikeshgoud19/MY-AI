@@ -76,6 +76,14 @@ verdict, and answer quality on the contested questions does not drop.
   that will not fire, check whether its reader can see what the instruction is
   about.**
 
+## Status
+
+Full probe re-run 2026-08-05: **6 of 7 re-run probes pass**, against 3 of 9 at
+baseline. The deterministic checks now fire in live debates (probes 1, 5, 8, 9 each
+had an advocate flagged and capped), which retires the "unit-tested only" caveat on
+the arithmetic and citation work. Remaining known gap is triage cost, not
+correctness — see the triage ticket.
+
 ## Not yet specified
 
 - Whether the panel should be told what it does NOT know about Rushi's setup.

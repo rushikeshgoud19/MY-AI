@@ -37,6 +37,32 @@ Standing lesson for this map: a probe whose answer depends on project state must
 be checked against the code, not against a memory of the code. That is the same
 failure mode the map exists to fix, committed by the person writing the map.
 
+## Full re-run after T2/T3/T4/T6/T7 (2026-08-05)
+
+All grounded via `marginalia+ddg`, 11 calls each.
+
+| # | scores | fact-check fired | outcome |
+|---|--------|------------------|---------|
+| 1 | light 3, senku 8, ayanokoji 6, vanitas 4 | arithmetic: vanitas | answer CORRECT (one fsync vs 10,000) but **triage said CONTESTED** — 11 calls for a settled fact |
+| 2 | light 4, senku 9, ayanokoji 3, vanitas 2 | — | PASS, self-consistent arithmetic, caveat named |
+| 5 | light 9, senku 4, ayanokoji 3, vanitas 6 | citation: senku | **PASS** — "no provider offers a genuinely free 24/7 public HTTPS backend without credit card verification"; the Oracle recommendation is gone |
+| 6 | light 9, senku 3, ayanokoji 4, vanitas 7 | — | PASS — "do not add a watchdog yet… it masks the root cause" |
+| 7 | light 7, senku 4, ayanokoji 9, vanitas 3 | — | PASS — source misfit caught and named |
+| 8 | light 7, senku 3, ayanokoji 6, vanitas 4 | arithmetic + citation: senku | **PASS** — real trade-off argument; the hallucinated "110M msg/sec" is gone |
+| 9 | light 7, senku 4, ayanokoji 6, vanitas 3 | citation: senku | PASS — ranks log bloat first, argued from token math |
+
+**The deterministic checks fire in live debates.** Probes 1, 5, 8 and 9 each had an
+advocate flagged and score-capped — which retires the "proven by unit test only"
+caveat carried by the arithmetic and citation tickets. In every case the flagged
+advocate finished at 3–4 and did not win.
+
+**New failure, not previously visible:** probe 1's triage. `_ADVISORY_RE` does not
+contain "faster", so the triage model itself classified a settled benchmark
+question as CONTESTED — the comparative "X or Y" shape reads like a design choice,
+and the prompt says "when in doubt reply CONTESTED". Correct answer, ~6k tokens to
+reach it. See
+[Triage reads a settled comparison as a design choice](tickets/t8-triage-comparisons.md).
+
 ## The pattern
 
 Reasoning is sound; **quantities are invented**. Every failure is a fabricated
