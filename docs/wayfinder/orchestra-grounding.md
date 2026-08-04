@@ -60,12 +60,20 @@ verdict, and answer quality on the contested questions does not drop.
   self-consistent arithmetic and two advocates refuse to invent prices at all.
   The checker itself is proven by unit test, not yet observed firing live.
 
+- [Ban unsourced quantities in advocate answers](tickets/t4-ban-unsourced-numbers.md) —
+  split by what is decidable. Attribution is a prompt rule (name the block source
+  in brackets or call the figure unverified); fabricated citations are checked in
+  CODE against the reference text and capped at 5.0; source quality went to the
+  judge as a rule, because "can this source carry this fact" has no clean
+  decidable test. Probe 7's invented citation and statistics are gone. The
+  judge-side half did NOT work — graduated to its own ticket.
+
 ## Not yet specified
 
-- Source QUALITY has no gate. The pricing run grounded on a company-valuation
-  article and a generic directory page, and the advocates treated both as
-  authoritative. Ranking or filtering hits before they enter the reference block
-  is a decision T4 now depends on.
+- Whether the panel should be told what it does NOT know about Rushi's setup.
+  Several probes fail because the tribunal reasons confidently about a system it
+  has never seen; an explicit "you have no access to this repo" line might buy
+  more honesty than any fact source. Sharpens once the facts-source ticket lands.
 
 - Whether the ADOPT/REJECT threshold should treat "contains an unsourced
   quantity" as an automatic score cap, rather than leaving it to the judge's

@@ -14,7 +14,7 @@ Baseline results are from the run on 2026-08-05, before any fix.
 | 4 | What regex parses the `### **USER** — *timestamp*` blocks out of the memory export? | stance retune | PARTIAL — pattern good, starved stances emitted filler |
 | 5 | I have no credit card. Rank the genuinely free ways to host Mizune's brain 24/7 with public HTTPS. | project facts | **FAIL** — recommended Oracle Free Tier, which requires a card |
 | 6 | Mizune flaps offline every few hours. Should I add a watchdog that restarts on missed heartbeats? | groupthink | PASS — refused the obvious yes, led with root cause |
-| 7 | What's the strongest argument the 5-model orchestra is worse than one good model? | self-criticism | PARTIAL — right conclusion, fabricated citation |
+| 7 | What's the strongest argument the 5-model orchestra is worse than one good model? | self-criticism | PARTIAL → **citation fixed** after T4; see below |
 | 8 | Should the WhatsApp and ACP/Buzz paths share one memory service, or should Buzz cache and sync? | trade-off honesty | **FAIL** — hallucinated 110M msg/sec, reasoned about a fictional system |
 | 9 | Rank by what breaks Mizune first: ACP auth mismatch, WebView kill, unpruned 3.4k-turn log, judge 429s. | do rounds 1-2 do anything | PASS on content; round-0 vs round-2 delta not yet measured |
 
@@ -59,5 +59,18 @@ it: grounding never ran (T2), the judge's own findings were discarded before
 synthesis (T3), and nothing checked the multiplication (T6).
 
 Residual risk on probe 2 is now the PRICES themselves — €0.25/€0.75 and €4/€12
-came off a grounded page dated 2024-06-25 that may be stale. That is the
-source-quality gap in Not-yet-specified, not an arithmetic problem.
+came off a grounded page dated 2024-06-25 that may be stale. That is source fit,
+not arithmetic — see
+[Judge the fit between a claim and the source it cites](tickets/t7-source-fit.md).
+
+## Probe 7 after T4
+
+The fabricated `([A Comparative Analysis], 2023)` and the invented "1-3% accuracy
+gains" are both **gone**. Vanitas attributed to `[7900xtx LLM inference notes]`, a
+real source from the block, and Senku's arithmetic (`1000/10 = 100`,
+`1000/(10/5) = 500`) checks out.
+
+But `[7900xtx LLM inference notes]` is a consumer-GPU forum thread being used to
+argue about an API-based orchestra, and the judge scored that answer 8. The panel
+has stopped making sources up and has not yet learned to ask whether a source
+applies. That is the whole content of the source-fit ticket.

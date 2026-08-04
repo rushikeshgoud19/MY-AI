@@ -251,7 +251,15 @@ _ADVOCATE_SYS = (
     "Maximum two CALC lines, and they do NOT count toward your 120 words. A figure you "
     "cannot express as a CALC line is a figure you have not actually computed: say it is "
     "unknown instead of stating it.\n"
-    "If you computed nothing, write NO CALC line at all - never a placeholder."
+    # "write NO CALC line at all" was read as an instruction to write the words
+    # "NO CALC" - observed 2026-08-05. Say what to do, not what not to do.
+    "If you computed nothing, simply end after your recommendation and omit the CALC "
+    "line - do not write a placeholder, and do not write the words 'no calc'.\n"
+    "ATTRIBUTE FIGURES YOU DID NOT COMPUTE. A price, benchmark, percentage, date or "
+    "study must come from the REFERENCE MATERIAL above, and you name its source in "
+    "square brackets exactly as it appears there, e.g. [Pricing]. If the reference "
+    "material does not contain it, say the figure is unverified - NEVER invent a "
+    "source, paper, study or year, and never cite from memory."
 )
 
 # Deterministic arithmetic check. The panel kept sourcing real numbers and then
@@ -271,6 +279,44 @@ _CALC_RE = re.compile(r"^\s*CALC:\s*(.{1,200}?)\s*=\s*([-+]?[0-9][0-9,]*\.?[0-9]
 # Advocates round for readability ("about 0.6"), which is honest; 5% absorbs that
 # while still catching the 2.8x and 25x errors actually observed.
 _CALC_TOLERANCE = 0.05
+
+
+# Fabricated citations are as decidable as fabricated sums: either the cited thing
+# is in the reference material or it is not. Probe 7 produced "([A Comparative
+# Analysis], 2023)" out of nothing, and a made-up study is more persuasive than an
+# unsourced number precisely because it wears the costume of evidence.
+_CITE_RE = re.compile(
+    r"\[([^\[\]]{8,80})\]\s*,?\s*(?:19|20)\d{2}"      # [A Comparative Analysis], 2023
+    r"|\(([^()]{8,80}?),\s*(?:19|20)\d{2}\)"          # (Smith et al., 2019)
+    r"|\[([^\[\]]{8,80})\]"                           # [Exact Source Title]
+)
+
+
+def _norm(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
+
+
+def _check_citations(text: str, ground_text: str) -> str:
+    """Return a defect when an answer cites something absent from the reference material."""
+    haystack = _norm(ground_text)
+    bogus = []
+    for m in _CITE_RE.finditer(text or ""):
+        cited = (m.group(1) or m.group(2) or m.group(3) or "").strip()
+        # Title-like only: a phrase with a space. Bare "[unknown]" or "[1]" is not a
+        # citation and flagging it would train the panel to stop bracketing anything.
+        if " " not in cited or not re.search(r"[A-Za-z]", cited):
+            continue
+        needle = _norm(cited)
+        if not needle:
+            continue
+        if not haystack:
+            bogus.append("'%s' (nothing was grounded for this question)" % cited)
+        elif needle not in haystack:
+            bogus.append("'%s'" % cited)
+    if not bogus:
+        return ""
+    return ("FABRICATED CITATION (checked, not judged): cites " + "; ".join(bogus[:2]) +
+            " which does not appear in the reference material.")
 
 
 def _check_arithmetic(text: str) -> str:
@@ -306,6 +352,11 @@ _JUDGE_REVIEW_SYS = (
     "answer unchanged. An answer that is merely reasonable is a 5-6.\n"
     "Name the single most important DEFECT in each answer - a real, specific one. If an "
     "answer genuinely has no defect, use an empty string.\n"
+    "JUDGE THE SOURCE, NOT JUST THE NUMBER. A figure is only as good as what it is "
+    "attributed to. If an answer takes a current price, limit or benchmark from a source "
+    "that plainly cannot carry that fact - a funding or valuation story, a directory "
+    "listing, a dated blog - that is the defect, even when the number looks reasonable. "
+    "An unattributed figure is worse than an admitted unknown.\n"
     "Reply as STRICT JSON, nothing else:\n"
     '{"scores":{"<id>":<0-10>,...},"defects":{"<id>":"<specific defect>",...},'
     '"best":"<id of highest scoring>","improved":"<the best answer rewritten with your own '
@@ -505,11 +556,15 @@ def orchestra_answer(question: str, config: dict,
     # SAME facts: private research per advocate would multiply cost and let them
     # argue from different private evidence, which is worse than arguing from none.
     ground_prefix = ""
+    # Kept separately from the prefix: the citation check needs the raw material to
+    # test a claimed source against, without the wrapper prose around it.
+    ground_text = ""
     if grounding:
         gq = run("ministral-8b-latest", _QUERY_SYS, question, temp=0.0, mx=24)
         g = gather_grounding(question, gq["text"] if gq["ok"] else "",
                              api_key=config.get("firecrawl_api_key", ""))
         if g.get("ok"):
+            ground_text = g["text"]
             # Name the backend that actually answered. Claiming "Wikipedia" for what
             # marginalia or firecrawl fetched misstates how authoritative the block is,
             # and the advocates weigh it accordingly.
@@ -571,20 +626,26 @@ def orchestra_answer(question: str, config: dict,
     # into the record. The defect rides the channel opened when synthesis started
     # receiving the judge's findings, so a checked-wrong figure now reaches R2 AND
     # the final answer instead of being silently re-asserted.
-    arith_bad = []
+    arith_bad, cite_bad = [], []
     for i, txt in answers.items():
-        d = _check_arithmetic(txt)
-        if not d:
+        found = [d for d in (_check_arithmetic(txt),
+                             _check_citations(txt, ground_text)) if d]
+        if not found:
             continue
-        arith_bad.append(i)
-        defects[i] = (defects[i] + " " + d) if defects.get(i) else d
+        if found[0].startswith("ARITHMETIC"):
+            arith_bad.append(i)
+        if any(d.startswith("FABRICATED") for d in found):
+            cite_bad.append(i)
+        merged = " ".join(found)
+        defects[i] = (defects[i] + " " + merged) if defects.get(i) else merged
         # Cap the score below ADOPT_MIN_SCORE. An answer whose own arithmetic
-        # contradicts itself must never short-circuit the debate as CASE 1 ADOPT.
+        # contradicts itself, or which cites a source that does not exist, must
+        # never short-circuit the debate as CASE 1 ADOPT.
         if i in scores:
             scores[i] = min(scores[i], 5.0)
-    if arith_bad:
-        emit("arithmetic", failed=arith_bad,
-             detail={i: defects[i][-220:] for i in arith_bad})
+    if arith_bad or cite_bad:
+        emit("factcheck", arithmetic=arith_bad, citations=cite_bad,
+             detail={i: defects[i][-260:] for i in set(arith_bad) | set(cite_bad)})
 
     # If the judge produced no usable scores at all we cannot make an honest
     # decision, so we escalate rather than silently adopting. Escalating costs
