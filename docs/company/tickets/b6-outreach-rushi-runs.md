@@ -376,8 +376,32 @@ with:
 > Australian Business Register, and the Indian MCA filing record. If I cannot reach
 > a register properly, I say so rather than sending a report full of blanks.
 
+## REOPENED 2026-08-05 — Rushi has dropped Fiverr
+
+About an hour after creating the seller account, Rushi said *"fivver not good lets
+move on"*. His call, and it is taken. **The channel is undecided again.**
+
+**Why it matters that the reason is unknown.** "Not good" could mean the 20%
+commission, the zero-review problem, the government-ID requirement, or simply not
+liking the platform — and each points at a **different** replacement:
+
+| If the objection was… | Then the replacement looks like… |
+|---|---|
+| The 20% commission | A lower-fee marketplace, or direct sales — which reintroduces outreach and needs his approval on every message |
+| Zero reviews vs sellers with 400+ | **No marketplace fixes this.** Every marketplace ranks on reputation. Direct outreach becomes the answer, not a different platform |
+| Government ID / identity exposure | Rules out essentially every regulated marketplace, since all of them KYC sellers before payout |
+| Dislike of the platform | A near-identical competitor is fine |
+
+**Asked, not assumed.** Guessing here would waste a session researching the wrong
+channel, and the listing and profile copy already written are largely portable —
+they are about the offer, not about Fiverr.
+
+**What survives regardless:** the offer (B3), the samples (B5), the jurisdiction
+tests, the pricing logic, and the scope boundaries. What is void: the 20%/₹5,000
+economics, the Fiverr policy question, and the Phase 1 checklist in
+[`plan.md`](../plan.md).
+
 ## Status
 
-Channel decided, listing and profile copy drafted and revised for three
-jurisdictions, **nothing published**. Blocked on Rushi for the policy read,
-publication, and payout setup.
+**Channel: undecided, reopened.** Listing and profile copy drafted and portable.
+**Nothing published anywhere.**

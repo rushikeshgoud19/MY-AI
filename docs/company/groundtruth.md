@@ -81,7 +81,18 @@ what is blocked on Rushi.
   risk retired: MCA itself is 403, but ZaubaCorp and Tofler both parse. **Both are
   mirrors of MCA, so they are not two independent sources** — now the largest known
   weakness in the offer.
-- **2026-08-05 — the motion is a listing, not outreach (B6 resolved).** Channel:
+- **2026-08-05 — B6 REOPENED. Rushi dropped Fiverr** about an hour after opening the
+  account. Channel undecided. **The reason is not known and is being asked**, because
+  each possible objection points at a different replacement — and if the objection is
+  "zero reviews", **no marketplace fixes it** and the answer is direct outreach.
+- **2026-08-05 — third sample, and the best one:
+  [`sample-report-3-uk.md`](demo/sample-report-3-uk.md).** A UK company whose status
+  reads "Active" while carrying an active proposal to strike off, accounts overdue
+  **5y 2m** (never filed in 7 years of existence), and a confirmation statement
+  **4y 2m** overdue. Sourced from Companies House directly — the register, not a
+  mirror — and cross-checked sideways against The Gazette. **This should lead**, and
+  it is the clearest single argument for the whole offer: "Active" is not an answer.
+- ~~**2026-08-05 — the motion is a listing, not outreach (B6 resolved).**~~ Channel:
   Fiverr, at a **flat 20% commission** plus FX — about ₹5,000 in hand on an $80
   order. 20% of a marketplace with buyers beats 4% of one without, which is exactly
   why Clustly lost. Listing copy drafted, **nothing published.**
