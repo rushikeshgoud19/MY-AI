@@ -71,6 +71,16 @@ what is blocked on Rushi.
   *completed-order* price is unknown. Verified: n8n/AI-automation gigs on Fiverr
   start at **$50–$125**. Everything richer than that is course-and-agency content
   marketing and was excluded.
+- **2026-08-05 — the offer is decided (B3): counterparty due-diligence reports**,
+  every claim linked to source, with an explicit "could not verify" section.
+  Approved by Rushi. Correction: his "1" was **not** 1 hour/week — that was my
+  misreading, and one of the two supports under the marketplace argument fell away
+  with it. His time budget is unstated.
+- **2026-08-05 — first demo artefact exists (B5):
+  [`docs/company/demo/sample-report.md`](demo/sample-report.md).** Registry access
+  risk retired: MCA itself is 403, but ZaubaCorp and Tofler both parse. **Both are
+  mirrors of MCA, so they are not two independent sources** — now the largest known
+  weakness in the offer.
 - **2026-08-05 — verification does not sell as a product; it sells as an attribute
   (B2, wide sweep).** Standalone fact-checking clears **$5** on Fiverr, three
   listings, same floor. The identical rigour attached to a deliverable people
