@@ -264,7 +264,120 @@ certifications he does not hold stay absent.
 
 English, plus whatever he actually speaks. Not guessed here.
 
+## Jurisdiction expansion — 2026-08-05
+
+Rushi wants the service to cover companies outside India, not only Indian ones.
+
+**Concern stated once:** widening the offer before the first sale is the failure
+mode the map names. The concrete risk is not abstract — an order for a company in an
+unreachable jurisdiction produces a report that is 100% "could not verify", which is
+honest and worthless, and earns a refund plus a one-star review on an account with
+no reviews to absorb it.
+
+**So the resolution is not "any company anywhere". It is: only jurisdictions
+actually tested, named explicitly in the gig, everything else declined.** Each row
+below was tested by retrieving real data, not by checking that a landing page loads.
+
+| Jurisdiction | Source | Result |
+|---|---|---|
+| **UK** | Companies House `find-and-update.company-information.service.gov.uk` | **Works — primary source.** Retrieved status, company type, incorporation date, registered office, SIC code, last/next accounts, confirmation-statement dates |
+| **Australia** | ABR / ABN Lookup `abr.business.gov.au` | **Works — primary source.** Retrieved entity name, ABN status, entity type, GST registration date, business location, "ABN last updated" and record-extracted stamps |
+| **India** | ZaubaCorp, Tofler | **Works, but mirrors only.** MCA itself returns 403 |
+| OpenCorporates | — | **Blocked.** hCaptcha challenge. Not bypassed |
+| California SoS | — | 403 |
+| Delaware / Singapore ACRA / Germany | — | **Untested.** Landing pages respond, but the data sits behind forms, paywalls or timeouts. **A 200 on a front page is not access to a register** and is not treated as one |
+
+### This partially inverts the earlier reasoning, and that is worth saying
+
+B6 originally chose Indian companies because being in India was Rushi's edge. The
+tests undercut that: **UK and Australia are primary government sources and India is
+not.** The two additions have *better* data than the original — Companies House
+gives filing currency directly, and ABN Lookup gives GST registration status and its
+own freshness stamps.
+
+The honest trade:
+
+- **India** — weaker data (mirrors of MCA), **stronger defensibility** (a narrow
+  niche where a seller in India is credible).
+- **UK / Australia** — **stronger data** (primary, free, current), weaker
+  defensibility (every local seller has the same access).
+
+So the positioning keeps India as the differentiator and adds UK and Australia for
+data quality and buyer pool. This is additive rather than widening because every
+jurisdiction was tested, two of them improve the product, and the gig names them so
+no undeliverable order can arrive.
+
+### Revised listing copy
+
+**Title**
+
+> I will verify an Indian, UK or Australian company from official registers
+
+**Description** — replaces the version above
+
+> Before you pay a supplier, contractor or agency you have never met, you probably
+> want to know they exist.
+>
+> I check a named company against its official register and send you a short report
+> where **every line carries the source it came from** — and a section that says
+> plainly what I could **not** confirm.
+>
+> That last part is the point. Most reports hand you a confident summary. Mine tells
+> you where the record goes quiet, because that is usually what matters.
+>
+> **Jurisdictions I cover**
+> - **United Kingdom** — Companies House (the official register, direct)
+> - **Australia** — ABN Lookup / Australian Business Register (official, direct)
+> - **India** — MCA filing record, via established data mirrors
+>
+> If your company is registered somewhere else, message me before ordering. I would
+> rather tell you I cannot reach that register than sell you a report full of blanks.
+>
+> **What you get**
+> - Registered status — active, struck off, dissolved, dormant, under liquidation
+> - Registration number, incorporation date, entity type, registrar
+> - Registered office address and registered activity code
+> - Filing currency — when accounts and statements were last filed, and when the
+>   next are due
+> - Every figure recomputed, not copied across
+> - **A "could not verify" section listing exactly what the record does not show**
+>
+> **What this is not**
+> Not a credit opinion, not a KYC or compliance determination, not advice on whether
+> to do business with anyone. It reports what the public register says and what it
+> does not. **I check companies, never private individuals.**
+>
+> **Why the "could not verify" section exists**
+> While building this I checked three companies against one of the main Indian
+> company-data providers. Its displayed "company age" was wrong on all three — one
+> showing a negative number of months, the other two showing plausible figures that
+> were simply untrue. Numbers that look right and are not are why I recompute
+> everything instead of repeating it.
+>
+> Send me the company name, plus the registration number if you have it.
+
+**Added FAQ entry**
+
+> **Can you check a company in the US, Singapore, Germany or elsewhere?**
+> Not yet. I only list registers I have actually tested end to end. Message me with
+> the jurisdiction and I will tell you honestly whether I can reach it — I would
+> rather turn down the order than deliver a report that is mostly blanks.
+
+### Profile copy — one line changes
+
+In the **About** section, replace:
+
+> I am based in India, which is why I work on Indian company records specifically
+> rather than on everything.
+
+with:
+
+> I work on registers I have tested end to end — Companies House in the UK, the
+> Australian Business Register, and the Indian MCA filing record. If I cannot reach
+> a register properly, I say so rather than sending a report full of blanks.
+
 ## Status
 
-Channel decided, listing copy and profile copy drafted, **nothing published**.
-Blocked on Rushi for the policy read, publication, and payout setup.
+Channel decided, listing and profile copy drafted and revised for three
+jurisdictions, **nothing published**. Blocked on Rushi for the policy read,
+publication, and payout setup.

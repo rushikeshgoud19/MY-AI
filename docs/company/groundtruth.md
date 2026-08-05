@@ -85,6 +85,16 @@ what is blocked on Rushi.
   Fiverr, at a **flat 20% commission** plus FX — about ₹5,000 in hand on an $80
   order. 20% of a marketplace with buyers beats 4% of one without, which is exactly
   why Clustly lost. Listing copy drafted, **nothing published.**
+- **2026-08-05 — offer covers three tested jurisdictions: UK, Australia, India.**
+  Expanded on Rushi's instruction, but only to registers where **real data was
+  actually retrieved** — UK Companies House and the Australian Business Register are
+  **primary government sources**, richer than India's, which is mirrors only.
+  OpenCorporates is hCaptcha-blocked, California 403, Delaware/Singapore/Germany
+  untested. A 200 on a landing page is not access to a register. Everything else is
+  declined in the gig text so no undeliverable order can arrive.
+- **2026-08-05 — this partly inverts the "India is his edge" reasoning.** India has
+  worse data but better defensibility; UK/AU have better data but no moat. Keeping
+  India as the differentiator and adding UK/AU for data quality and buyer pool.
 - **2026-08-05 — the narrowing that resolves the domestic/international tension:
   the buyer is international, the subject is Indian.** "Verify an Indian company
   from its MCA filing record" — his edge is the Indian registry, the money is
