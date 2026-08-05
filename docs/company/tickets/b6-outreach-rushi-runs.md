@@ -1,6 +1,6 @@
 # The outreach motion Rushi will actually run
 
-`wayfinder:grilling` (HITL) · **RESOLVED 2026-08-05 — no outreach; a listing** · copy ready to paste
+`wayfinder:grilling` (HITL) · **RESOLVED 2026-08-06 — Route C: free report, then direct outreach**
 
 ## Question
 
@@ -401,7 +401,92 @@ tests, the pricing logic, and the scope boundaries. What is void: the 20%/₹5,0
 economics, the Fiverr policy question, and the Phase 1 checklist in
 [`plan.md`](../plan.md).
 
+## Resolution — 2026-08-06: Route C, then B
+
+Claimed and resolved this session. Rushi answered *"go for it okay??"* immediately
+after the three routes were laid out with a recommendation. **Read as approval of
+the recommendation: give one report away first, then direct outreach.** Stated
+openly so he can correct it — the reading is an inference, not a quote.
+
+**Route A (another marketplace) is not taken**, and the reason is worth keeping: he
+never said what was wrong with Fiverr, and if the objection was the zero-review
+problem then every marketplace has it. Picking another platform would have been
+motion disguised as a decision.
+
+### Why C before B
+
+Nobody has reacted to this offer. Not one person outside the repo has seen a sample.
+A channel chosen before the first buyer reaction is a guess, and B2 —
+[what people actually pay for](b2-what-people-pay-for.md) — is still unfinished
+because Fiverr, Upwork and Reddit are all blocked to research. One real reaction
+answers more than another week of searching.
+
+Route C is also the only move that costs nothing and risks nothing: no account, no
+fee, no listing, no commitment to a platform.
+
+### What was built to make it cheap — `scripts/company_check.py`
+
+The obvious objection to "give a report away" is that each one costs a session. It
+no longer does.
+
+```
+python scripts/company_check.py uk 11998471
+python scripts/company_check.py au 33051775556
+python scripts/company_check.py in <CIN> <slug>
+```
+
+Fetches the register, parses it, **recomputes every duration from the dates on the
+record**, flags what stands out, and emits the full report with sources and a
+"could not verify" section. **Tested on all three jurisdictions**, against the same
+companies as the three hand-built samples.
+
+Design decisions worth recording:
+
+- **On fetch failure it prints "no report produced" and exits non-zero** rather than
+  emitting a report of blanks. A report of blanks is worse than no report.
+- **Displayed durations are never copied.** The Indian provider's own "age of
+  company" was wrong on 3 of 3 companies tested, so the script prints the recomputed
+  figure and shows the source's figure beside it labelled as untrusted.
+- **Directors are never retrieved** in any jurisdiction. Named individuals.
+- Two bugs were found and fixed during testing: abbreviated month names
+  (`01 Nov 1999`) failed to parse, which made Australian durations **vanish silently**
+  — the worst failure mode available, since a missing row reads as "not applicable"
+  rather than "the parser broke". The ROC field also over-grabbed.
+
+This is not the tribunal. `orchestra.py` is still unwired pending Rushi's decision on
+API keys. It is a deterministic fetch-and-check, and the report says so.
+
+### The one thing needed from Rushi
+
+**A name.** One real business that deals with overseas suppliers or contractors —
+someone he can approach without it being cold spam. A person he knows, a business
+his family deals with, a founder in a community he is actually part of.
+
+**Not** a scraped list, not a stranger found by search. That constraint is in the map
+and it is also the reason this works: a free report to someone who has no reason to
+be suspicious of him.
+
+### Draft message — for Rushi to send, after he approves it
+
+> Hi [name] — I've built something I want to test on a real case, and I'm not
+> selling anything yet.
+>
+> If you're dealing with a supplier or contractor abroad — UK, Australia or India —
+> send me the company name and I'll check it against its official register and send
+> you back a short report: registered status, filing history, whether anything is
+> overdue, with a link to the source for every line.
+>
+> The part I actually want feedback on is the section listing what I *couldn't*
+> confirm. Most checks give you a confident summary; I'd rather show you where the
+> record goes quiet.
+>
+> Free, no catch, and I'd just like to hear whether it was useful or useless.
+
+**Nothing sent.** Rushi approves the exact text and the recipient, and he sends it.
+Claude does not contact anyone.
+
 ## Status
 
-**Channel: undecided, reopened.** Listing and profile copy drafted and portable.
-**Nothing published anywhere.**
+**Channel: Route C (free report to one named business), then direct outreach.**
+Report generation automated and tested. Message drafted, **not sent**. Blocked on
+Rushi for one recipient name.

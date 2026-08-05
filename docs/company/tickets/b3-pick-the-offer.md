@@ -1,6 +1,6 @@
 # Pick ONE offer: one buyer, one problem, one price
 
-`wayfinder:grilling` (HITL) · **RECOMMENDED 2026-08-05 — awaiting Rushi's yes/no**
+`wayfinder:grilling` (HITL) · **RESOLVED 2026-08-05 — approved by Rushi**
 
 ## Question
 

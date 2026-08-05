@@ -81,7 +81,17 @@ what is blocked on Rushi.
   risk retired: MCA itself is 403, but ZaubaCorp and Tofler both parse. **Both are
   mirrors of MCA, so they are not two independent sources** — now the largest known
   weakness in the offer.
-- **2026-08-05 — B6 REOPENED. Rushi dropped Fiverr** about an hour after opening the
+- **2026-08-06 — [B6](tickets/b6-outreach-rushi-runs.md) resolved: Route C, then B.**
+  Give one report away to one real business before choosing any channel, then direct
+  outreach. Another marketplace was **not** taken — the Fiverr objection was never
+  stated, and if it was the zero-review problem then every marketplace shares it.
+  **Blocked on Rushi for one thing: a recipient name.**
+- **2026-08-06 — report generation is automated: `scripts/company_check.py`.**
+  Tested on UK, AU and IN against the same companies as the hand-built samples. Never
+  copies a displayed duration, never retrieves directors, and **refuses to emit a
+  report of blanks on fetch failure**. Two silent-failure bugs found and fixed while
+  testing. This is *not* the tribunal — `orchestra.py` remains unwired.
+- ~~**2026-08-05 — B6 REOPENED. Rushi dropped Fiverr**~~ about an hour after opening the
   account. Channel undecided. **The reason is not known and is being asked**, because
   each possible objection points at a different replacement — and if the objection is
   "zero reviews", **no marketplace fixes it** and the answer is direct outreach.
