@@ -548,8 +548,84 @@ confirmed before counting on it.
 paywall found) if the card problem proves fatal — but its demand is unverified and
 would need checking before any effort goes in.
 
+## The unblock — 2026-08-06. Freelancer.com needs no card and no bank account.
+
+Rushi pushed back that he had given enough information to proceed. He was right that
+the missing thing was not a fact — so rather than repeat the blocker, the question
+became: **is there a platform that needs neither a card nor a bank account to
+start?** There is.
+
+| Platform | Join | Cost to apply | Card needed to start? | Demand in category |
+|---|---|---|---|---|
+| **Freelancer.com** | **Free** | **6 free bids/month** | **No** — e-wallet, bank transfer or debit accepted, none needed to bid | **Real but thin** — see below |
+| Truelancer | Free | Free tier | No. **INR direct to Indian bank, no transfer charge** | Unverified; likely low-value Indian buyers |
+| Guru | Free | 10 free quotes/month | **$5 identity verification** before applying to most jobs | Unverified |
+| Upwork | Free | **$15 for 100 Connects, or $19.99/mo** | **Yes** | Real, best quality |
+
+**Verified demand on Freelancer.com**, by fetching the due-diligence job board
+directly: **2 live jobs — $1,076 (24 bids) and $154 (15 bids)**. Thin, but these are
+real budgets with real bidding, unlike PeoplePerHour's three mislabelled listings.
+Adjacent categories (internet research, financial research, BGV) are larger.
+
+**Fee structure is unusual and favourable: Freelancer.com shifts cost to the client
+at 3% per awarded project.**
+
+### The decisive point about sequencing
+
+**The bank account is needed when money lands, not to begin.** Rushi can create the
+account, publish the profile and start bidding today. That reverses the assumption in
+the previous section, which treated the card as gating everything.
+
+### The play: bid with the work already done
+
+24 bids on one job is the real problem, not the fee. A zero-review seller loses a
+credentials contest every time.
+
+**So do not enter one.** Most of those 24 proposals say "I have 5 years of
+experience". `scripts/company_check.py` makes it cost about a minute to run a real
+check *before* bidding — so the proposal can contain **an actual finding about the
+actual company**, with sources.
+
+That is only possible because the report generation is automated, and it is the
+strongest use found for it. It converts "trust me" into "here is what I already
+found, free, in the proposal."
+
+### Bid template — draft, for Rushi to adapt and send
+
+Never sent unreviewed. He reads and sends every one.
+
+> Hi — before writing this proposal I ran the check on [COMPANY], so here is
+> something useful whether or not you pick me:
+>
+> **[one real finding — e.g. "It is registered, but its confirmation statement is
+> 14 months overdue and its last accounts were filed to March 2023."]**
+>
+> Source: [direct link to the register page]
+>
+> What I do is exactly this, in a fixed format: registered status, incorporation,
+> registered office, activity code, filing currency — every line linked to the
+> official source it came from, every date recomputed rather than copied, **plus a
+> section listing what I could not confirm.**
+>
+> That last part matters. I cover Companies House (UK), the Australian Business
+> Register, and the Indian MCA filing record. If your company sits in a register I
+> cannot reach properly, I will tell you before you pay rather than send you a report
+> full of blanks.
+>
+> This is desk research on public filings — not a credit opinion, not a KYC
+> determination, and no site visit. If you need someone physically at the address,
+> you want a $500 audit, and I will say so.
+
+### What only Rushi can do — the whole list, ~20 minutes
+
+1. **Create the Freelancer.com account.** Free, no card. His identity, his terms.
+2. **Paste the profile copy** (above, with the three-jurisdiction line).
+3. **Send me a job link** he wants to bid on. Claude runs the check and drafts the
+   bid; he reads it and submits it.
+4. **The bank account** — before the first payment clears, not before the first bid.
+
 ## Status
 
-**Channel: Upwork proposed, blocked on the bank account.** Route C dead. Report
-generation automated and tested. Listing and profile copy written and portable.
-**Nothing published anywhere.**
+**Channel: Freelancer.com to start (no card, no bank account, 6 free bids/month),
+Upwork later once a card exists.** Route C dead. Report generation automated.
+Profile copy, listing copy and bid template written. **Nothing published anywhere.**

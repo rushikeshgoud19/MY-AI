@@ -116,6 +116,19 @@ what is blocked on Rushi.
   action concretely valuable rather than abstractly prudent. Also: ~30% of new Upwork
   applications were rejected in 2025 and ID verification is mandatory, which sits
   badly with the "Shadow" pseudonym.
+- **2026-08-06 — the card wall is NOT binding after all: Freelancer.com needs neither
+  a card nor a bank account to start (B6).** Free to join, **6 free bids/month**, and
+  the platform shifts its fee to the client at 3%. Verified demand by fetching its
+  due-diligence board directly: **2 live jobs, $1,076 (24 bids) and $154 (15 bids)** —
+  thin, but real budgets and real bidding, unlike PeoplePerHour's three mislabelled
+  listings. **The bank account is needed when money lands, not to begin.** Upwork
+  stays the better platform for later, once a card exists.
+- **2026-08-06 — the play is to bid with the work already done.** 24 bids per job is
+  the real obstacle, not the fee, and a zero-review seller loses any credentials
+  contest. `scripts/company_check.py` makes a real check cost about a minute, so the
+  proposal can carry **an actual sourced finding about the buyer's actual company**.
+  That converts "trust me" into "here is what I already found, free." Strongest use
+  found for the automation.
 - **2026-08-06 — [B4](tickets/b4-company-section-and-log.md) resolved.** Daily log
   built and running; memory rewritten (`groundtruth-company` was stale, and
   `india-crypto-payment-fema` split out as a durable fact that would otherwise be
