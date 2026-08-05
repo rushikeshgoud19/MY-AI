@@ -81,6 +81,16 @@ what is blocked on Rushi.
   risk retired: MCA itself is 403, but ZaubaCorp and Tofler both parse. **Both are
   mirrors of MCA, so they are not two independent sources** — now the largest known
   weakness in the offer.
+- **2026-08-05 — second demo artefact (B5):
+  [`sample-report-2.md`](demo/sample-report-2.md)**, a live company. Ends in
+  "proceed, with a question" rather than a score: status Active on both sources, but
+  no AGM recorded since 2023-09-06 against a statutory maximum of 15 months (+3).
+  The pair now demonstrates both directions.
+- **2026-08-05 — the source's arithmetic is systematically wrong.** ZaubaCorp
+  displays an incorrect company age on **three of three** companies tested. Only one
+  is obviously broken; the other two are plausible numbers that are untrue. Found,
+  not constructed, and the strongest argument yet for recomputing rather than
+  quoting.
 - **2026-08-05 — verification does not sell as a product; it sells as an attribute
   (B2, wide sweep).** Standalone fact-checking clears **$5** on Fiverr, three
   listings, same floor. The identical rigour attached to a deliverable people

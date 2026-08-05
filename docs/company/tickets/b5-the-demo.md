@@ -100,5 +100,54 @@ exists to sell.
 
 1. Wire the report to `orchestra.py` so a run produces it (needs keys).
 2. Decide the public-use question above.
-3. Second sample on a company that is **live and clean**, since a report that only
-   looks impressive when the answer is bad proves half the product.
+3. ~~Second sample on a company that is live and clean~~ — **done, below.**
+
+---
+
+## Second sample — 2026-08-05
+
+**Artefact: [`docs/company/demo/sample-report-2.md`](../demo/sample-report-2.md).**
+`PARAMOUNT PROFESSIONAL SERVICES PRIVATE LIMITED`, CIN U72900RJ2016PTC055249.
+**Active** on both ZaubaCorp (as on 2026-07-13) and Tofler (updated 15 May 2026).
+
+It turned out more useful than the clean pass it was meant to be. The company is
+live, and **its filing record stops in 2023** — last AGM 2023-09-06, last balance
+sheet 2023-03-31, a gap of ~35 months. Section 96 of the Companies Act 2013 allows
+a maximum of fifteen months between AGMs, extendable by the Registrar by three
+([CAIRR](https://ca2013.com/annual-general-meeting/),
+[AUBSP](https://www.aubsp.com/section-96-annual-general-meeting/)).
+
+The report states this as **"no AGM has been recorded since 2023-09-06"**, not "the
+company has not held an AGM" — the source shows what was filed and mirrored, and a
+meeting could have been held and not filed. That distinction is the product working.
+
+So the pair now demonstrates both directions: sample 1 ends in *stop*, sample 2 ends
+in *proceed, with a question*. Neither ends in a score.
+
+### The arithmetic finding got much stronger
+
+Sample 1 caught one malformed age ("-1 months"). Checking whether that was a one-off
+found it is **systematic — three of three companies tested display a wrong age**
+against ZaubaCorp's own as-on date:
+
+| Company | Displays | Computed |
+|---|---|---|
+| Sabjiwaala | 15y **-1m** 25d | 14y 11m 22d |
+| Paramount | 10y 1m 2d | 10y 0m 26d |
+| Creative Construction | 4y 6m 20d | 4y 6m 15d |
+
+Only the first is obviously broken. **The other two are plausible-looking numbers
+that are simply untrue**, which is the more dangerous failure and the strongest
+argument available for recomputing rather than quoting. This was found, not
+constructed.
+
+### New caveat surfaced
+
+**Neither source is live.** ZaubaCorp stamps "as on 2026-07-13"; Tofler says
+"Updated: 15 May 2026" — so its "Active" confirmation is nearly three months stale
+at the date of the check. Now written into the report.
+
+### Still not done
+
+Wiring to `orchestra.py` (needs keys, Rushi's call), and the public-use decision.
+Nothing has been published.
