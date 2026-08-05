@@ -201,7 +201,70 @@ Nothing below has been published. It is a draft awaiting his approval.
 
 ---
 
+## Seller profile copy — drafted 2026-08-05
+
+Rushi created the Fiverr seller account himself (handle **`shadow_kuro`**, display
+name "Shadow") and asked for help filling the profile without using his real name.
+
+**Position taken:** a pen name is fine; an invented person is not. Nothing below
+fabricates work history, credentials, a team, a location or years of experience.
+Everything in it is true of him. The hard rule against fake identities and invented
+personas is not negotiable, and here it is also self-interested — the account is the
+asset, and it dies if the persona is discovered once money is moving.
+
+**Told him, because he was planning around it:** Fiverr requires sellers to submit a
+government ID and a real-time selfie
+([Fiverr Help](https://help.fiverr.com/hc/en-us/articles/13127840321937-ID-verification-Data-protection-and-usage),
+[Fiverr](https://www.fiverr.com/support/articles/360010968038-Verifying-your-identity)),
+and EU DSA requirements have tightened this further. So "Shadow" is a **public
+handle, not anonymity** — Fiverr knows exactly who he is, and payout runs on his
+legal name.
+
+**Flagged:** his profession field read "Agentic workflows", which does not match the
+offer. Recommended "Company Research & Verification".
+
+### About
+
+> I check Indian companies against their public filing record, and I tell you what
+> I could not confirm.
+>
+> Most reports hand you a confident summary. Mine shows the source for every line,
+> and ends with a section listing exactly what the record does **not** show —
+> because before you send money to a supplier you have never met, that is usually
+> the part that matters.
+>
+> I build verification tooling: systems that check their own citations against the
+> source material and recompute every figure rather than repeating it. That habit
+> came from testing. While building this service I checked three companies against
+> one of the main Indian company-data providers, and its displayed "company age" was
+> wrong on all three — one showing a negative number of months, and two showing
+> perfectly plausible figures that were simply untrue. Numbers that look right and
+> are not are why I recompute instead of copy.
+>
+> I am based in India, which is why I work on Indian company records specifically
+> rather than on everything.
+>
+> I check companies, never private individuals. My reports are research on public
+> filings — not credit opinions, not KYC certifications, and not advice on whether
+> to do business with anyone.
+
+### Skills and expertise
+
+Company research · Due diligence research · Data verification · Fact checking ·
+Web research · Report writing · Python · Market research
+
+### Work experience, education, certifications
+
+**Recommended: leave all three empty.** They are optional, and an empty field is
+better than a false one — this is the exact point where an invented persona would
+start. Education is his own call to make with true information if he wants it there;
+certifications he does not hold stay absent.
+
+### Languages
+
+English, plus whatever he actually speaks. Not guessed here.
+
 ## Status
 
-Channel decided, copy drafted, **nothing published**. Blocked on Rushi for the
-account, the policy read, and publication.
+Channel decided, listing copy and profile copy drafted, **nothing published**.
+Blocked on Rushi for the policy read, publication, and payout setup.
