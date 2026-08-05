@@ -65,7 +65,18 @@ what is blocked on Rushi.
   Rushi opening a savings account.**
 - **2026-08-05 — the customer is Indian and domestic.** Narrows B2 and B3 from
   "what will businesses pay for" to "what will an Indian SMB pay, in rupees, over
-  UPI."
+  UPI." **Now under challenge — see B2.**
+- **2026-08-05 — B2 is partial, and honestly so.** Fiverr (CAPTCHA, not bypassed),
+  Upwork (Cloudflare) and Reddit (policy) are all unreachable, so the median
+  *completed-order* price is unknown. Verified: n8n/AI-automation gigs on Fiverr
+  start at **$50–$125**. Everything richer than that is course-and-agency content
+  marketing and was excluded.
+- **2026-08-05 — no evidence found of Indian SMBs buying automation services.**
+  Indian searches surfaced only tool pricing (~₹1,700–4,200/mo) and ₹15 lakh
+  enterprise RPA; the ₹5k–₹50k service sale is absent from the record. Absence of
+  evidence, not evidence of absence, but it puts the domestic-first call from B1 at
+  risk. **Trigger: if two or three real Indian businesses cannot confirm the demand,
+  reopen B1 rather than defend it.**
 
 ## Not yet specified
 
