@@ -123,6 +123,14 @@ what is blocked on Rushi.
   thin, but real budgets and real bidding, unlike PeoplePerHour's three mislabelled
   listings. **The bank account is needed when money lands, not to begin.** Upwork
   stays the better platform for later, once a card exists.
+- **2026-08-06 — the Freelancer.com account exists and the card wall was skippable.**
+  Rushi is live at `@rushikeshg64`, balance ₹0.00. The "Add Verified Payment Method"
+  step feeds the credibility badge, not bidding, and was bypassed via
+  `/dashboard`. **First channel is open with no card and no bank account.**
+- **2026-08-06 — GSTIN is not required (B7 gap closed).** The platform's TCS banner
+  reads as compulsory and is not: **Notification 65/2017-Central Tax** exempts
+  suppliers of *services* through an e-commerce operator from compulsory registration
+  below ₹20 lakh. Decline the field; do not register.
 - **2026-08-06 — a live buyer independently priced this offer at $30–250.**
   Freelancer.com carries "Business Ownership Verification Needed" — *"confirm that an
   individual truly operates the business they claim to run"* — at **$30–250 USD**,

@@ -44,6 +44,26 @@ relationship. What is left is short.
 | Declaring foreign income on the ITR | **Open, Rushi's, at filing time** |
 | Student-specific conditions — any scholarship or institutional rule restricting earning | **Unknown. Only he can check this**, and it was not researched because it depends on his specific institution |
 
+### Confirmed 2026-08-06 — GSTIN is NOT required to sell via a marketplace
+
+Freelancer.com's dashboard shows a banner: *"As per Indian government regulations,
+freelancers are required to provide GST details for Tax Collected at Source (TCS)
+purposes."* That reads as a hard requirement and is not one for Rushi.
+
+**Notification No. 65/2017-Central Tax (15 Nov 2017)** exempts suppliers of
+**services** through an e-commerce operator from compulsory registration where
+aggregate all-India turnover does not exceed **₹20 lakh**
+([TaxGuru](https://taxguru.in/goods-and-service-tax/exemption-registration-gst-thresholds-compliance.html),
+[TaxTMI](https://www.taxtmi.com/article/detailed?id=9784)).
+
+Rushi supplies services, through an ECO, far below ₹20 lakh. **He should decline the
+GSTIN field rather than register.** The ECO must collect TCS under s.52 from
+suppliers who *are* registered; the obligation is the platform's, and the threshold
+exemption belongs to the supplier.
+
+**Note the limit of the exemption: it covers services, not goods.** Irrelevant here,
+but it is why the banner exists.
+
 **Ruled out of scope:** drafting terms of service, a privacy policy, or a client
 contract. All three would be motion — the marketplace supplies them, and producing
 them before a first customer is exactly the kind of tidy-looking work the map warns
