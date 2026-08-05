@@ -485,8 +485,71 @@ be suspicious of him.
 **Nothing sent.** Rushi approves the exact text and the recipient, and he sends it.
 Claude does not contact anyone.
 
+## Marketplace survey — 2026-08-06, on Rushi's instruction
+
+Route C died (no warm contact available). Rushi: *"fivver is not good dont arguee
+with me find alternatives good ones and lets go into maketplaces."* Fiverr is off the
+table and not re-argued. Each candidate below was checked for **actual buyer demand
+in this category**, not for its fee page — the Clustly lesson.
+
+**Crypto-settled marketplaces are excluded on legal grounds, not preference.** Any
+platform paying in crypto reproduces the FEMA problem from
+[B8](b8-clustly-as-first-channel.md): no FIRC, exposure up to 3x. Already decided.
+
+| Platform | Demand in THIS category | Fee | Verdict |
+|---|---|---|---|
+| **Upwork** | **Real.** Dedicated due-diligence job board, live "Due Diligence Analyst" posting, verification/research categories, budgets "$75 and upward" | **0–15%, ~10% typical** | **Best fit — but see blocker** |
+| **PeoplePerHour** | **Effectively none.** Its Due Diligence board showed **3 results**, and none were due diligence — a solicitor for an N244 court application ($1.3K) and a data-entry clerk ($487) | ~20% tiered | **Dead.** SEO tag page with nothing behind it |
+| **Contra** | **None arriving.** "No feed of active job posts... passive inbound", reviewers report "too few opportunities" | **0%** | **Dead.** 0% of nothing. The Clustly failure mode exactly |
+| **Guru** | Seller-side skill pages only; no buyer-posted work found | 5–9% | Unverified, weak |
+| Fiverr | Real ($10–120, five gigs seen) | 20% | Excluded by Rushi |
+| Clustly | $1,950 lifetime | 4% | Dead ([B8](b8-clustly-as-first-channel.md)) |
+
+### The blocker on Upwork, and it is the old enemy
+
+**Upwork now requires payment before you can apply to anything.** The free 50
+sign-up Connects are gone — abolished because bot farms harvested them. A new
+freelancer must **buy 100 Connects for $15**, or take Freelancer Plus at
+**$19.99/month**, and **buying requires a billing method on file**
+([Upwork Help](https://support.upwork.com/hc/en-us/articles/211062908-How-to-add-a-billing-method-to-pay-for-Connects-and-membership-plan)).
+Proposals cost 10–24 Connects each at $0.15 per Connect; the Basic plan gives 10 free
+Connects a month, which is roughly **one proposal**.
+
+**Rushi has no credit card.** This is the same wall that killed every cloud free tier
+([[mizune-free-infra]] in memory). Indian cards additionally hit RBI e-mandate
+friction on recurring charges, and Upwork's own community carries a "Can't Buy
+Connects - From India" thread.
+
+Also material: **~30% of new Upwork applications were rejected in 2025**, ID
+verification is mandatory, and mismatched names cause automatic rejection — which
+interacts badly with the "Shadow" pseudonym plan.
+
+### The finding this survey actually produced
+
+**The no-card constraint is now the binding constraint on the whole business, not a
+footnote.** It killed the cloud free tiers, and it has now killed the best
+marketplace alternative. Every remaining fiat marketplace either wants a card up
+front or has no buyers.
+
+Which makes the bank account **concretely valuable rather than abstractly prudent**:
+
+> **bank account → debit card → Upwork → a job board with real demand at ~10% fee**
+
+That is a coherent route that respects the Fiverr rejection entirely. It is also,
+unavoidably, the same one action that has been outstanding since 2026-08-05.
+
+**Unverified:** whether an Indian *debit* card is accepted for Connects, or whether
+Upwork insists on credit. The community thread suggests friction. This should be
+confirmed before counting on it.
+
+### Recommendation
+
+**Upwork, gated on the bank account.** Second choice **Guru** (5–9%, no Connects
+paywall found) if the card problem proves fatal — but its demand is unverified and
+would need checking before any effort goes in.
+
 ## Status
 
-**Channel: Route C (free report to one named business), then direct outreach.**
-Report generation automated and tested. Message drafted, **not sent**. Blocked on
-Rushi for one recipient name.
+**Channel: Upwork proposed, blocked on the bank account.** Route C dead. Report
+generation automated and tested. Listing and profile copy written and portable.
+**Nothing published anywhere.**

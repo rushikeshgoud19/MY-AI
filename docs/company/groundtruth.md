@@ -101,6 +101,21 @@ what is blocked on Rushi.
   triage, not verification. This is the first hard evidence anyone pays for this, and
   it is not $5. **Covering three countries is what makes triage valuable**: a buyer
   sourcing internationally does not want to learn three registries.
+- **2026-08-06 — marketplace survey done on Rushi's instruction; Fiverr excluded and
+  not re-argued (B6).** Checked for demand in *this category*, not fee pages.
+  **PeoplePerHour is dead** — its Due Diligence board had 3 results and none were due
+  diligence. **Contra is dead** — 0% fee but "no feed of active job posts", the
+  Clustly failure mode. **Upwork is the only real alternative**: a genuine
+  due-diligence job board, budgets $75+, ~10% fee, and an apply-to-jobs model that
+  suits a zero-review seller better than waiting to be found.
+- **2026-08-06 — the no-card constraint is now the binding constraint on the whole
+  business.** Upwork abolished free sign-up Connects: a new freelancer must buy 100
+  for **$15** or pay **$19.99/mo**, and buying **requires a billing method**. Rushi
+  has no card — the same wall that killed every cloud free tier. So the route is
+  **bank account -> debit card -> Upwork**, which makes the outstanding bank-account
+  action concretely valuable rather than abstractly prudent. Also: ~30% of new Upwork
+  applications were rejected in 2025 and ID verification is mandatory, which sits
+  badly with the "Shadow" pseudonym.
 - **2026-08-06 — [B4](tickets/b4-company-section-and-log.md) resolved.** Daily log
   built and running; memory rewritten (`groundtruth-company` was stale, and
   `india-crypto-payment-fema` split out as a durable fact that would otherwise be
