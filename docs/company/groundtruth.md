@@ -81,6 +81,17 @@ what is blocked on Rushi.
   risk retired: MCA itself is 403, but ZaubaCorp and Tofler both parse. **Both are
   mirrors of MCA, so they are not two independent sources** — now the largest known
   weakness in the offer.
+- **2026-08-05 — the motion is a listing, not outreach (B6 resolved).** Channel:
+  Fiverr, at a **flat 20% commission** plus FX — about ₹5,000 in hand on an $80
+  order. 20% of a marketplace with buyers beats 4% of one without, which is exactly
+  why Clustly lost. Listing copy drafted, **nothing published.**
+- **2026-08-05 — the narrowing that resolves the domestic/international tension:
+  the buyer is international, the subject is Indian.** "Verify an Indian company
+  from its MCA filing record" — his edge is the Indian registry, the money is
+  foreign. Neither side of B1's fork had to win.
+- **2026-08-05 — biggest live risk is zero reviews against sellers with 400+.** No
+  copy solves it. If no order arrives, the listing failed, not the offer, and the
+  next move is a real buyer conversation.
 - **2026-08-05 — second demo artefact (B5):
   [`sample-report-2.md`](demo/sample-report-2.md)**, a live company. Ends in
   "proceed, with a question" rather than a score: status Active on both sources, but
