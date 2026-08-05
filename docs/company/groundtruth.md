@@ -123,6 +123,18 @@ what is blocked on Rushi.
   thin, but real budgets and real bidding, unlike PeoplePerHour's three mislabelled
   listings. **The bank account is needed when money lands, not to begin.** Upwork
   stays the better platform for later, once a card exists.
+- **2026-08-06 — a live buyer independently priced this offer at $30–250.**
+  Freelancer.com carries "Business Ownership Verification Needed" — *"confirm that an
+  individual truly operates the business they claim to run"* — at **$30–250 USD**,
+  the exact band B2 and B3 reached separately. **Volume is in the general boards, not
+  the category tag:** research 252 jobs, business-analysis 81, web-search 78, versus
+  2 mislabelled jobs under due-diligence.
+- **2026-08-06 — but a real share of verification jobs want a LOCAL human.** That
+  Belgian job says "we need freelancer of belgium" — the site-visit component again.
+  **Not our offer; do not bid.** Our slice is the remote desk portion for buyers who
+  need triage. Belgium's official register responds, and was **deliberately not
+  added** to the script — no customer has asked, and adding registers pre-demand is
+  building ahead of the evidence.
 - **2026-08-06 — the play is to bid with the work already done.** 24 bids per job is
   the real obstacle, not the fee, and a zero-review seller loses any credentials
   contest. `scripts/company_check.py` makes a real check cost about a minute, so the

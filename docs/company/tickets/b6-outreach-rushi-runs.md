@@ -624,6 +624,48 @@ Never sent unreviewed. He reads and sends every one.
    bid; he reads it and submits it.
 4. **The bank account** — before the first payment clears, not before the first bid.
 
+## Live-job evidence — 2026-08-06
+
+Went to Freelancer.com's actual boards rather than its tag pages, since the
+due-diligence tag held only 2 jobs and both were mismatched (a QGIS plugin, and
+Florida land research in a US registry we do not cover).
+
+**Real volume is in the general boards:** `/jobs/research/` **252 jobs**,
+`/jobs/business-analysis/` **81**, `/jobs/web-search/` **78**,
+`/jobs/internet-research/` **14**. The category tag was not where the work lives.
+
+**One live job is exactly this service:**
+
+> **"Business Ownership Verification Needed"** — budget **$30–250 USD**
+> *"I need to confirm that an individual truly operates the business they claim to
+> run. The core task is to gather solid ev[idence]..."*
+> [link](https://www.freelancer.com/projects/background-research/business-ownership-verification-needed)
+
+**This validates the offer and the price band** — $30–250 is precisely where B2 and
+B3 landed, arrived at independently by a real buyer.
+
+**But it is a poor fit for Rushi, for two honest reasons:**
+
+1. The title reads *"seller which we want inquire is in belgium, **we need freelancer
+   of belgium**"*. They want someone local — the site-visit component again, the same
+   thing Tetra charges $240/man-day for. **Do not bid on it.**
+2. *"confirm that an **individual** truly operates the business"* edges toward
+   verifying a person, against the standing scope boundary of companies only.
+   Confirming a named person is a registered director is company-register data and
+   fine; open-ended investigation of an individual is not.
+
+**The pattern worth carrying:** a meaningful share of verification jobs want a local
+human on the ground. That is not our offer and pretending otherwise loses the money
+and the review. **Our slice is the remote desk portion, across registers, for buyers
+who need triage rather than a site visit** — and the bid template should say so
+explicitly, as it already does.
+
+**Belgium's official register (`kbopub.economie.fgov.be`) responds 200** and could be
+added to `company_check.py`. **Deliberately not added.** The job that prompted it
+wants a local, no customer has asked for Belgium, and adding registers before a buyer
+requests one is building ahead of the evidence — the failure already flagged twice
+this week. Noted as available if a real order needs it.
+
 ## Status
 
 **Channel: Freelancer.com to start (no card, no bank account, 6 free bids/month),
