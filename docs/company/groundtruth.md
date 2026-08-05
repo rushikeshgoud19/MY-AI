@@ -71,6 +71,19 @@ what is blocked on Rushi.
   *completed-order* price is unknown. Verified: n8n/AI-automation gigs on Fiverr
   start at **$50–$125**. Everything richer than that is course-and-agency content
   marketing and was excluded.
+- **2026-08-05 — verification does not sell as a product; it sells as an attribute
+  (B2, wide sweep).** Standalone fact-checking clears **$5** on Fiverr, three
+  listings, same floor. The identical rigour attached to a deliverable people
+  already buy clears **$80–$350**. This amends the map's own premise: the refusal is
+  not the product, it is the reason a buyer picks you over the next seller of a
+  thing they were already buying.
+- **2026-08-05 — "could not verify" is an asset in exactly one category found:
+  counterparty due diligence.** Everywhere else it reads as failure; there it is the
+  most valuable line in the document.
+- **2026-08-05 — Rushi has 1 hour a week, and answered "both" to service-vs-product.**
+  "Both" refused as stated. But 1 hr/week independently selects a fixed-scope,
+  fixed-price marketplace listing — productised in scope, service in delivery — which
+  also removes outreach. Offer recommended in B3, **awaiting his yes/no**.
 - **2026-08-05 — no evidence found of Indian SMBs buying automation services.**
   Indian searches surfaced only tool pricing (~₹1,700–4,200/mo) and ₹15 lakh
   enterprise RPA; the ₹5k–₹50k service sale is absent from the record. Absence of

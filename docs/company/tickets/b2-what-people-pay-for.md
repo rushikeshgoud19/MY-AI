@@ -113,6 +113,58 @@ a live risk with a stated trigger: **if the Indian-buyer question cannot be answ
 by talking to two or three real Indian businesses, B1's domestic-first call should be
 reopened rather than defended.**
 
+### Second pass, 2026-08-05 — swept wide, not just automation
+
+Rushi asked for a proper sweep across categories rather than automation alone. The
+site is still blocked, but Fiverr encodes the price in its own listing titles
+("I will … **for $80** on fiverr.com"), and those titles surface in search. That
+channel works. Every figure below is from that format.
+
+| Category | Observed entry prices | Read |
+|---|---|---|
+| **Fact-checking (standalone)** | $5, $5, $5 | Dead. See below. |
+| **Lead gen / list building** | $5, $10, $10, $15, $20, $20, $20, $25, $50, $50 | Commoditised, and needs scraped lists — out of bounds for us anyway. |
+| **Financial analysis / modelling** | $20 (only one price surfaced) | Under-sampled. |
+| **Due diligence / KYC, company + director research** | $10, $20, $20, $80, $120 | Best fit for the asset. |
+| **Market / competitor research report** | $20, $25, $35, $50, $50, $100, $350 | Highest ceiling seen. |
+| **n8n / AI automation build** | $50–$125 (first pass) | Crowded, and not what we are good at. |
+
+Fiverr's own aggregated cost guide (`/resources/guides/costs/market-researcher`)
+would be better evidence than individual listings. It returned 403. Noted as the
+best unobtained source.
+
+### The finding that changes the premise
+
+**Verification does not sell as a product. It sells as an attribute of a product
+people already buy.**
+
+Standalone fact-checking — "I will fact check your document / your AI-generated
+content / verify any online information" — clears **$5**. Three separate listings,
+same floor. That is the market's price for *checking*, sold as checking.
+
+The same rigour, attached to a deliverable that already has buyers, clears
+**$80–$350**.
+
+This amends the founding premise in the map, which says *"That refusal is the
+product."* On this evidence it is not. **The refusal is the reason a buyer picks you
+over the next seller of a thing they were already buying.** Nobody wakes up wanting
+a checked answer; they want a due-diligence report, and checked is why yours wins.
+The distinction is not pedantic — it decides whether the offer is "verification
+service" (a $5 market) or "due-diligence report, verified" (a $120 one).
+
+### Where "could not verify" is an asset rather than a defect
+
+Sharpest thing in this pass. In most research deliverables, "could not verify a
+current figure" reads as failure — a buyer who ordered a market-size estimate does
+not want "unknown". **Due diligence is the exception, and it inverts completely.**
+In a report on whether a supplier or counterparty is real, *"I could not verify this
+company's registered address"* is the single most valuable line in the document. The
+buyer's actual fear is a confident report that says a company is legitimate when it
+is not.
+
+That is the one category found where the tribunal's defining behaviour is worth
+money rather than being tolerated.
+
 ### What would actually resolve this
 
 Not more searching. The three sources that would settle it are blocked, and the
