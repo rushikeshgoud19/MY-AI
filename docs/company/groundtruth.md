@@ -81,6 +81,16 @@ what is blocked on Rushi.
   risk retired: MCA itself is 403, but ZaubaCorp and Tofler both parse. **Both are
   mirrors of MCA, so they are not two independent sources** — now the largest known
   weakness in the offer.
+- **2026-08-06 — the UK half of the offer is much weaker than claimed (challenge to
+  [B3](tickets/b3-pick-the-offer.md)).** Our UK sample's headline finding is **printed
+  on the free Companies House page in plain sight** — verified in the raw HTML. We
+  were reading a public page aloud, not revealing hidden data, and against B2's own
+  evidence that is a $5 service priced at $60. Australia has the same problem.
+  **India does not:** MCA is 403, the usable mirrors are obscure and paywalled, the
+  stale-filing finding must be *derived*, and those mirrors' arithmetic was wrong on
+  3 of 3 companies. **Proposed: re-narrow the pitch to Indian companies for foreign
+  buyers; keep UK/AU supported but unpromoted.** This reverses Rushi's widening
+  instruction, so it is proposed, not applied.
 - **2026-08-06 — [B4](tickets/b4-company-section-and-log.md) resolved.** Daily log
   built and running; memory rewritten (`groundtruth-company` was stale, and
   `india-crypto-payment-fema` split out as a durable fact that would otherwise be

@@ -134,3 +134,74 @@ bank account is needed either way — but the **domestic-first** conclusion is n
 under real pressure and should be revisited once there is a live listing.
 
 **Status: recommended, not decided. Needs Rushi's yes or no.**
+*(Approved by Rushi 2026-08-05.)*
+
+---
+
+## Challenge to this offer — 2026-08-06. The UK half is much weaker than claimed.
+
+Went looking for real people asking about supplier verification, to unblock Route C
+without waiting on Rushi for a name. **Found no live prospects** — the search
+returned supplier-vetting SEO content and old Quora threads, not identifiable people
+with a current problem. That failed.
+
+**But it surfaced the strongest objection to this offer, stated by the market itself:**
+
+> *"It is incredibly easy to register a new company... very cheap and easy to set up
+> a UK limited company and sadly is often done so in order to commit scams."*
+> *"Registration tells you nothing about the company's current finances, its
+> complaints record or what it actually does."*
+> — [Quora, on Companies House](https://www.quora.com/If-a-company-is-registered-at-Companies-House-does-it-mean-the-company-is-100-legit)
+
+### Then I checked our own UK sample against the free public page. It does not survive.
+
+The headline finding in [sample 3](../demo/sample-report-3-uk.md) — "Active, but a
+proposal to strike off, accounts overdue five years" — is **printed on the free
+Companies House page in plain sight.** Verified in the raw HTML: the string `Warning`
+appears twice, `overdue` four times, `strike off` once. A visitor sees:
+
+> `Company status Active - Active proposal to strike off ... Warning Accounts
+> overdue First accounts made up to 31 May 2020 due by 16 May 2021 Warning
+> Confirmation statement...`
+
+**We were not revealing hidden data. We were reading a public page aloud.** Anyone
+can do it in thirty seconds, free, without knowing anything.
+
+Against B2's own price evidence — *checking sold as checking clears $5* — that makes
+the UK version of this offer a **$5 service being priced at $60**. Australia has the
+same problem: ABN Lookup is free, public and equally legible.
+
+### Where the friction — and therefore the willingness to pay — actually is
+
+**India.** And it is the one place the earlier reasoning got right before it was
+widened:
+
+- `mca.gov.in` returns **HTTP 403** and is genuinely hard to use.
+- The usable data sits on third-party mirrors a foreign buyer has no reason to know
+  exist, and those mirrors **paywall** filing history and financials.
+- CIN format, ROC structure and AGM conventions are unfamiliar to a non-Indian buyer.
+- Nothing on the Indian side prints "Warning: accounts overdue" for you. In
+  [sample 2](../demo/sample-report-2.md) the stale-filings finding had to be
+  **derived** from an AGM date. That derivation is the product.
+- The mirrors' own arithmetic was **wrong on 3 of 3 companies tested**, so a buyer
+  reading them unaided is actively misled.
+
+A foreign buyer genuinely cannot do this themselves. A foreign buyer checking a UK
+company absolutely can.
+
+### Consequence — the expansion should be reversed, but only in the pitch
+
+Rushi asked on 2026-08-05 to cover companies outside India, and that widening was
+executed. **On this evidence it pointed at the weakest part of the offer.**
+
+Proposed correction, which is a re-narrowing to where this started:
+
+- **The pitch is Indian companies, for foreign buyers.** Embarrassingly specific, and
+  the only version where the buyer cannot trivially self-serve.
+- **UK and Australia stay supported, not promoted.** `scripts/company_check.py`
+  already handles them, they cost nothing to keep, and a buyer who asks gets them —
+  possibly cheaply, as an add-on. **Capability is not dropped; positioning is.**
+
+This partially reverses a decision Rushi made, so it is **proposed, not applied.**
+The listing and profile copy in [B6](b6-outreach-rushi-runs.md) currently lead with
+all three jurisdictions and would need reverting to the India-led version.
