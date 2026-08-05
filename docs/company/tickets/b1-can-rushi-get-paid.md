@@ -210,6 +210,54 @@ to revisit is ₹50,000/month.
 - **None of this is tested.** No account exists, no invoice has been issued, no
   rupee has moved. The first genuine test is customer #1 paying.
 
+### Addendum: "can a wallet hold the money in the meantime?" — no, and here is why
+
+Asked 2026-08-05. Checked across the wallet market rather than assuming from the
+FamPay result, because the objection deserved a real answer.
+
+**Every wallet's exit door is a bank account.** That is not a quirk of one product,
+it is how PPIs are built:
+
+- **Paytm Wallet no longer exists.** Wallet operations wound up on 15 March 2024
+  with the Paytm Payments Bank action; after that date users could not top up or
+  receive any credit other than cashbacks and refunds
+  ([Business Today](https://www.businesstoday.in/personal-finance/news/story/rbi-faqs-on-paytm-know-bill-settlement-wallet-usage-rules-linked-to-paytm-payments-bank-after-march-15-417927-2024-02-17)).
+  Paytm's own help page now states that money received via UPI or QR is credited
+  **directly to your designated bank account**, not to a wallet
+  ([Paytm](https://paytm.com/blog/paytm-help/how-to-receive-money-using-paytm/)).
+- **PhonePe wallet → bank requires adding a bank account.** KYC alone is not enough
+  ([ClearTax](https://cleartax.in/s/how-to-transfer-money-from-phonepe-wallet-to-bank-account)).
+- **Minimum-KYC wallets are merchant-payment-only** — spend at shops, no withdrawal.
+- **Merchant settlement is defined as bank settlement.** A PPI issuer moves collected
+  funds from its escrow account to the *merchant's bank account*
+  ([Razorpay](https://razorpay.com/learn/prepaid-payment-instruments-ppis/)).
+
+So the best case a wallet offers is money he can *spend at merchants* and never move
+out. Against the destination in the map — "money is in Rushi's account" — that is
+not revenue, it is store credit. It also does not dodge the commercial-use clause;
+consumer wallet terms restrict personal use generally, as FamPay's 22.2 does.
+
+**The useful finding: what he is describing is a bank account.** The friction he is
+avoiding — a branch, forms, a queue — is not what opening an account looks like now.
+Jupiter, for example, is a **Federal Bank savings account** opened in-app with video
+KYC, reported at around ten minutes, zero balance, DICGC-insured to ₹5 lakh,
+requiring 18+, Indian resident, Aadhaar and PAN
+([Jupiter](https://jupiter.money/savings-account/),
+[BankKaro review](https://bankkaro.com/blog/jupiter-money-review/4653/)).
+He is 19 with a PAN. HDFC InstaAccount, Kotak 811 and IDFC First advertise
+comparable flows. **Not a recommendation of Jupiter specifically** — that is his
+choice and the review mentions a credit assessment step I have not verified against
+Jupiter's own terms — but it is proof that "app-based wallet-feeling thing" and
+"savings account" are now the same ten minutes. There is no faster intermediate
+step to take.
+
+**Correction to what I wrote earlier today.** I put this at the top of the log as
+*Blocked on Rushi* and called it the gate. That overstates it. B2, B3 and B5 —
+research, offer, demo — need no bank account at all. The account is needed at
+exactly one moment: when the first invoice goes out. "I'll get to it later" is
+therefore fine, provided later is before that invoice. Downgrading from blocker to
+prerequisite, and dropping it from the top of the log.
+
 ### Consequence for the rest of the map
 
 The customer is now defined as **Indian and domestic**. That is an input to B2 (what
