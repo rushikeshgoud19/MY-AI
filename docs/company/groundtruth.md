@@ -47,14 +47,24 @@ what is blocked on Rushi.
 
 ## Decisions so far
 
-<!-- nothing yet; charting resolves nothing -->
+- **2026-08-05 — Clustly is not the first channel (B8).** Its own homepage reads
+  "147 services live · $1,950 settled on-chain"; separately, taking USDC from
+  foreign buyers for exported services appears to breach FEMA (no FIRC, penalties
+  up to 3x). Neither the demand nor the legality holds. Crypto rails to
+  international customers are closed.
 
 ## Not yet specified
 
-- Whether Clustly settles both the payment question and the outreach question at
-  once. It pays in USDC on Solana with escrow and a 4% fee, which needs no credit
-  card - but India taxes virtual digital assets at a flat 30% plus 1% TDS, and the
-  marketplace's actual buyer volume is unverified. Ticketed, not assumed.
+- ~~Whether Clustly settles both the payment question and the outreach question at
+  once.~~ **Answered 2026-08-05: no, on both counts — see B8.** Note the assumption
+  that failed: the worry recorded here was the 30% VDA rate hurting take-home. That
+  was the wrong worry. The 30% applies to the *gain* on converting a stablecoin,
+  which is near zero; the receipt itself is ordinary business income at slab rates.
+  The thing that actually kills it is FEMA — export proceeds must arrive through an
+  authorised dealer bank in convertible currency, and crypto does not.
+- Whether the first customer should be **domestic (UPI, no FEMA exposure)** or
+  international (real banking rails, FIRC). B8 closed the crypto shortcut, so this
+  is now a live fork inside B1 rather than a hypothetical.
 - Pricing shape - one-off build fee, monthly retainer, or per-run. Depends entirely
   on what the market research finds people actually paying, and on whether the
   offer is a service or a product.

@@ -24,6 +24,15 @@ Establish, concretely:
   domestic services versus exports?
 - What does Rushi already have — bank account, PAN, UPI, any existing payment app?
 
+## Input from B8 (2026-08-05)
+
+The crypto shortcut is closed. Taking USDC from a foreign buyer for exported
+services appears to breach FEMA — no FIRC/e-FIRA is generated and s.13 exposure is
+up to 3x the amount. So the "international" leg of this ticket means real inward
+remittance through an authorised dealer bank, or it means nothing. A domestic
+customer paying by UPI sidesteps FEMA entirely and is the cheaper first target.
+Detail and sources in `b8-clustly-as-first-channel.md`.
+
 ## Why this is first
 
 Every other ticket is wasted work if the answer turns out to be "he cannot be paid
