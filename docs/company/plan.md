@@ -1,9 +1,25 @@
 # The plan — from here to one paid customer
 
-Written 2026-08-05. Everything in it is decided; nothing in it is done.
+Written 2026-08-05. **Revised 2026-08-06 — Fiverr dropped, so Phase 1 is void and
+the plan now has a hole where its channel used to be.**
 
-**State: revenue ₹0. Nothing published. Zero customers.** The plan is short on
-purpose — most of it is one person doing about forty minutes of work.
+**State: revenue ₹0. Nothing published. Zero customers. No channel.**
+
+## Read this before the phases
+
+Assets are not the problem. There is an offer, three sample reports, tested register
+access in three countries, listing copy, profile copy, and payment mechanics.
+
+**Not one of them has been seen by a single person who might pay.**
+
+That is the whole situation. Every hour spent making the samples better is an hour
+not spent putting one in front of a buyer, and the map's own failure-mode list names
+this exactly: *"if a week passes with no contact with a real potential buyer,
+something is wrong."* One day in, so not yet a failure — but the shape of it is
+visible, and the next move has to be contact, not craft.
+
+**The bottleneck is the channel, and the channel is undecided.** Everything below
+Phase 1 is polish until that is fixed.
 
 ---
 
@@ -21,7 +37,31 @@ purpose — most of it is one person doing about forty minutes of work.
 
 ---
 
-## Phase 1 — get listed
+## Phase 1 — VOID. Pick a channel.
+
+Fiverr was dropped on 2026-08-06. The checklist below is kept only because it
+becomes valid again the moment a marketplace is chosen — the copy is about the
+offer, not about Fiverr, so it ports.
+
+**The live question is which of three routes to take.** They are genuinely
+different, and the right one depends on why Fiverr was rejected — which is
+[asked and unanswered](tickets/b6-outreach-rushi-runs.md).
+
+| Route | What it costs | What it needs from Rushi | Honest read |
+|---|---|---|---|
+| **A. Another marketplace** (Upwork, PeoplePerHour, Freelancer) | A cut of every sale; all of them KYC sellers before payout | Account, ID, publish | Only sensible if the Fiverr objection was the *platform*. **If it was the zero-review problem, this changes nothing** — every marketplace ranks on reputation |
+| **B. Direct outreach** | No cut. Costs his time and mine | He sends every message, having read it | The only route that works with no reviews. Slowest to first rupee, and constrained by the no-spam rules — ten researched messages, not a hundred |
+| **C. Give one report away first** | One session | He picks the recipient and sends it | Not really a channel — a way to get the first real reaction. Strongest signal per unit effort, and it feeds [B2](tickets/b2-what-people-pay-for.md), which desk research could never finish |
+
+**Recommendation: C, then B.** Not because A is bad, but because nobody has ever
+reacted to this offer, and a channel decision made before a single buyer reaction is
+a guess dressed as a plan. One free report to one real business — someone who
+actually deals with overseas suppliers — answers more than another week of research.
+
+If he wants A, that is fine and I will do it properly; the copy is ready and it is
+the fastest route to *listed*. It is just not the fastest route to *learning*.
+
+## Phase 1 (kept, for whenever a marketplace is chosen)
 
 **Rushi. About forty minutes. Nothing else in this plan can start until it is done.**
 
@@ -53,20 +93,27 @@ about a specific company. *Note: the UK sample does not exist yet — see Phase 
 
 ---
 
-## Phase 2 — the things Claude does while waiting
+## Phase 2 — Claude's work
 
-**No dependency on Rushi. Can start immediately.**
+1. ~~A UK sample report.~~ **Done** — [sample 3](demo/sample-report-3-uk.md), and it
+   is the strongest asset produced. "Active" on a company that has never filed
+   accounts in seven years.
+2. **Wire the report to `orchestra.py`.** **Blocked on Rushi's decision about API
+   keys** — the `config.json` permission prompt was declined and has not been
+   retried. Worth saying plainly: **all three samples were assembled by hand, so the
+   engine that is supposed to be the product has not yet produced a deliverable.**
+   Until that changes, what is being sold is a method, not a machine.
+3. **A delivery template.** Real, but it optimises a process that has never run once.
+   Deliberately deferred until there is an order to deliver.
+4. **Turnaround measurement.** Same — cannot honestly measure a process with no
+   customer.
 
-1. **A UK sample report.** UK Companies House is the primary source, the data is
-   richer, and the "confirmation statement overdue" check is directly available
-   rather than derived. This is likely to become the lead sample.
-2. **Wire the report to `orchestra.py`** so a run produces it rather than a person
-   assembling it by hand. **Needs Rushi's decision on API keys** — the `config.json`
-   permission prompt was declined and has not been retried.
-3. **A delivery template** — one file, fill in the company, so an order that arrives
-   at 2am is fulfilled the same way every time.
-4. **Turnaround measurement.** How long a report actually takes end to end, so the
-   gig promises a delivery time that can be met rather than one that sounds good.
+**Items 3 and 4 are parked on purpose.** Both are the kind of tidy preparation that
+feels productive and moves nothing. They become urgent the day an order arrives and
+not before.
+
+Which leaves item 2 as the only genuinely useful thing Claude can do without a
+decision — and it needs one.
 
 ---
 
@@ -142,10 +189,23 @@ Stated plainly rather than buried.
 
 ---
 
-## The honest summary
+## The honest summary — revised 2026-08-06
 
-There is an offer, tested data access in three countries, two sample reports,
-listing copy and profile copy. There is **no listing, no buyer, and no money.**
+There is an offer, tested register access in three countries, **three** sample
+reports, listing copy, profile copy and payment mechanics. There is **no channel, no
+listing, no buyer, and no money.**
 
-Everything in Phase 2 is Claude's and starts now. Everything that turns this into
-revenue is in Phase 1, and it is forty minutes of one person's time.
+Two things are true at once and both need saying:
+
+1. **A day of work produced real assets**, and the UK sample is genuinely good — it
+   demonstrates the product's whole argument on a live company in one line.
+2. **The asset pile is now ahead of the evidence.** Nobody outside this repo has
+   seen any of it. Building a fourth sample, a delivery template or a turnaround
+   metric would all *feel* like progress and would all be the failure mode.
+
+**The next real step is a decision, not a document**, and there are only two open:
+
+- **Which channel** — A, B or C above.
+- **The API keys**, if `orchestra.py` is to produce a report rather than a person.
+
+Until one of those moves, the correct amount of further building is close to zero.
