@@ -81,6 +81,11 @@ what is blocked on Rushi.
   risk retired: MCA itself is 403, but ZaubaCorp and Tofler both parse. **Both are
   mirrors of MCA, so they are not two independent sources** — now the largest known
   weakness in the offer.
+- **2026-08-06 — [B4](tickets/b4-company-section-and-log.md) resolved.** Daily log
+  built and running; memory rewritten (`groundtruth-company` was stale, and
+  `india-crypto-payment-fema` split out as a durable fact that would otherwise be
+  re-derived wrongly). **The console Company section is ruled out of scope** — see
+  Out of scope below.
 - **2026-08-06 — [B6](tickets/b6-outreach-rushi-runs.md) resolved: Route C, then B.**
   Give one report away to one real business before choosing any channel, then direct
   outreach. Another marketplace was **not** taken — the Fiverr objection was never
@@ -190,3 +195,12 @@ what is blocked on Rushi.
   work. Beyond the ethical line and it poisons the domain and the accounts.
 - Selling Mizune herself, or anything that would put Rushi's personal assistant and
   her memory in front of customers.
+- **The Company section in the Agentic OS console** — part of
+  [B4](tickets/b4-company-section-and-log.md), ruled out 2026-08-06. Built honestly it
+  displays ₹0 revenue, zero customers, nothing published: a UI whose entire content is
+  one line of the daily log. A session's work that looks like a milestone and moves
+  nothing toward a paying customer. Returns only if there is real data to show, as a
+  fresh ticket. **Rushi can override — it is his console.**
+- **Delivery template and turnaround measurement** (from [`plan.md`](plan.md) Phase 2)
+  — parked 2026-08-06. Both optimise a process that has never run once. They become
+  urgent the day an order arrives and not before.

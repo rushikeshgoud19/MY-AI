@@ -1,6 +1,6 @@
 # Build the Company section, the daily log, and the memory
 
-`wayfinder:task` · OPEN · **frontier — not blocked**
+`wayfinder:task` · **RESOLVED 2026-08-06 — two of three built, one ruled out of scope**
 
 <!-- Originally blocked on the payment ticket. That was wrong: a console section, a
      log and a memory note do not depend on which payment rail works, and holding
@@ -37,3 +37,57 @@ Rushi asked for three concrete things and they are one build:
 The name is decided (Groundtruth, subject to veto). Branding, logo and a public
 site are not — nothing here is customer-facing yet, and building a brand before an
 offer is the most common way to spend a month achieving nothing.
+
+---
+
+## Resolution — 2026-08-06
+
+Claimed and resolved this session. Two parts built, **one ruled out of scope**.
+
+### 2. Daily report — DONE
+
+`docs/company/log/` has [2026-08-05](../log/2026-08-05.md) and
+[2026-08-06](../log/2026-08-06.md), git-tracked, each carrying Did / Found / Cost /
+Next / Blocked-on-Rushi / Money. Money has read **zero** in every entry, which is
+the point.
+
+### 3. Memory note — DONE
+
+`groundtruth-company` was badly stale — it still described Clustly as "ticketed, not
+adopted" and the payment question as unanswered. Rewritten to hold the current
+state: the offer, the three tested jurisdictions, `scripts/company_check.py`, the
+channel situation, and the standing warning that the asset pile keeps running ahead
+of the evidence.
+
+Split out `india-crypto-payment-fema` as its own note, because it is a durable
+reusable fact that will otherwise be re-derived **wrongly** — the intuitive worry
+(the flat 30% VDA rate) is not the blocker; the blocker is that crypto receipts for
+exported services do not come through an authorised dealer bank and generate no
+FIRC. Both indexed in `MEMORY.md`.
+
+### 1. Company section in the Agentic OS console — OUT OF SCOPE
+
+**Not built, deliberately, and this is the part worth arguing.**
+
+The ticket asks for a console view showing what shipped, what is blocked, and the
+money loop. Its own design constraints say **"No fake progress... If revenue is zero,
+it shows zero."**
+
+Follow that honestly and the view renders: revenue ₹0, zero customers, nothing
+published, one item blocked on Rushi. **That is a dashboard whose entire content is
+already one line of this log.** Building a UI to display four zeroes is precisely
+the motion the map warns against — it would take a session, look like a milestone,
+and move nothing toward a paying customer.
+
+The map's own rule applies: *if a ticket sits beyond the destination, rule it out of
+scope and say so rather than quietly doing it.* A local console section does not
+contribute to one customer paying.
+
+**When it comes back:** if there is ever real data to show — orders, delivery times,
+revenue — this is worth building, and the design constraints recorded above
+(scope view CSS to `.active`; the Memory Galaxy incident) stay valid. That would be a
+fresh ticket under a redrawn destination, not a resumption of this one.
+
+**Rushi can override this.** He asked for it originally and it is his console. If he
+wants it, say so and it gets built properly — but it should be a decision made with
+the above stated, not by default.
