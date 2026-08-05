@@ -132,6 +132,15 @@ what is blocked on Rushi.
   risk. **Trigger: if two or three real Indian businesses cannot confirm the demand,
   reopen B1 rather than defend it.**
 
+- **2026-08-05 — B7 mostly collapses.** Selling through a marketplace means no
+  invoice to write (Fiverr bills the buyer), no scope-of-work contract (the gig
+  description plus Fiverr's terms are the agreement), no GST, no registration. What
+  remains: FIRA at volume, declaring foreign income at ITR, and any student-specific
+  institutional condition — which only Rushi can check.
+- **2026-08-05 — the full runbook is [`plan.md`](plan.md), with a tripwire:** if the
+  gig is live 30 days with zero orders, the **listing** failed, not the offer, and
+  the next move is talking to two or three real buyers rather than editing copy.
+
 ## Not yet specified
 
 - ~~Whether Clustly settles both the payment question and the outreach question at
