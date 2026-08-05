@@ -205,3 +205,98 @@ Proposed correction, which is a re-narrowing to where this started:
 This partially reverses a decision Rushi made, so it is **proposed, not applied.**
 The listing and profile copy in [B6](b6-outreach-rushi-runs.md) currently lead with
 all three jurisdictions and would need reverting to the India-led version.
+
+---
+
+## Competitor pricing — 2026-08-06. Demand is real, and the offer needs re-framing.
+
+Searching for communities where importers ask about supplier verification returned
+almost no buyers — but it returned **vendors**, repeatedly: Tetra Inspection,
+Panoramic Sourcing, Small World India, Globalising, Netyex. An established industry
+sells exactly this.
+
+**[Tetra Inspection](https://tetrainspection.com/supplier-verification-audit/)
+publishes its rates:**
+
+| Service | Price |
+|---|---|
+| Supplier verification | **from $240 per man-day** |
+| Factory audit | **from $440 per man-day** (Asia/Africa) |
+| Subscription | down to $158–189 per man-day |
+
+Their standard supplier verification is **1–3 days of desk research plus a 0.5–1 day
+on-site visit**, delivered in 5–7 business days.
+
+### Two things follow, and they pull in opposite directions
+
+**Good: demand is validated at a real price.** This is the first hard evidence all
+week that anyone pays for this, and it is not $5 — it is **$240 to $1,000+** per
+engagement, from a company confident enough to publish rate cards. B2 could never
+establish this because Fiverr and Upwork are blocked.
+
+**Sobering: what they sell is not what we have.** Their offer includes **a human
+walking into the building.** Our entire product is the *desk research* component —
+which is 1–3 of their 1.5–4 man-days, and the part that does not require being in
+the country.
+
+### The re-framing this forces, and it is better than what we had
+
+Stop positioning this as "supplier verification". It is not, and a buyer who has
+seen Tetra's offer will know it. Position it as what it actually is:
+
+> **The cheap desk check you run before deciding whether a supplier is worth a
+> $500 on-site audit.**
+
+- Honest about what it is not: no site visit, no factory, no one physically confirms
+  anything exists.
+- Has a clear job: **triage.** Most suppliers can be eliminated — or cleared enough
+  to proceed — from the filing record alone, and paying $240/day to discover a
+  company is struck off is absurd.
+- Explains the price gap instead of hiding it. $50 against $240+ is not "cheaper
+  than the competition", it is **a different step in the process**.
+- The "could not verify" section becomes the *handoff*: it is precisely the list of
+  things that would need a site visit to settle.
+
+This also survives the UK problem above, because triage value is highest where
+self-serving is hardest — India.
+
+**Proposed, not applied.** Feeds the listing copy in
+[B6](b6-outreach-rushi-runs.md).
+
+---
+
+## WITHDRAWN — 2026-08-06. The re-narrowing to India is dropped.
+
+Rushi: *"i told u look out of india."* He has now said this twice. **Decision stands:
+the offer covers UK, Australia and India, and all three are promoted.** Not
+re-litigated further.
+
+**The evidence behind the challenge does not go away**, and it is logged as a risk
+rather than argued: the UK finding is visible on the free Companies House page, and
+a UK or Australian buyer *can* self-serve. That remains true.
+
+**But the triage re-framing above resolves most of it, and multi-jurisdiction is
+what makes triage work.** The two findings landed in the same session and fit
+together better than either did alone:
+
+- The value was never "we surface hidden data". It is **"someone runs the check
+  properly, cheaply, and tells you what is missing"** — which holds whether or not
+  the underlying page is public. Tetra charges $240/man-day for desk research on
+  public records; the records being public has never been the point.
+- **Covering three countries is a genuine feature for the buyer who actually exists.**
+  Someone sourcing internationally does not want to learn Companies House, then ABN
+  Lookup, then CIN formats and which Indian mirror is trustworthy. One service, one
+  format, one "could not verify" section, whichever country the supplier is in. A
+  single-jurisdiction service is worth *less* to that buyer, not more.
+- India remains the strongest individual case (MCA 403, paywalled mirrors, arithmetic
+  wrong 3-of-3), so it can lead **within** a multi-jurisdiction offer without the
+  offer shrinking to it.
+
+**Applied position:** all three jurisdictions promoted, pitched as cheap pre-audit
+triage rather than as supplier verification. The B6 listing copy already leads with
+all three and does **not** need reverting.
+
+**Risk carried forward, stated once:** a UK/AU buyer who realises Companies House is
+free may not convert, and the honest counter is the price gap — $50 triage against
+$240+ for the real thing. If UK and Australian orders never materialise while Indian
+ones do, that is the signal to revisit, and it will be evidence rather than argument.

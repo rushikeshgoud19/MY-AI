@@ -89,8 +89,18 @@ what is blocked on Rushi.
   **India does not:** MCA is 403, the usable mirrors are obscure and paywalled, the
   stale-filing finding must be *derived*, and those mirrors' arithmetic was wrong on
   3 of 3 companies. **Proposed: re-narrow the pitch to Indian companies for foreign
-  buyers; keep UK/AU supported but unpromoted.** This reverses Rushi's widening
-  instruction, so it is proposed, not applied.
+  buyers; keep UK/AU supported but unpromoted.** **WITHDRAWN same day** — Rushi has
+  said twice to look outside India; decision stands, all three promoted. Risk logged,
+  not argued.
+- **2026-08-06 — demand is validated at a real price, and the offer is re-framed
+  (B3).** [Tetra Inspection](https://tetrainspection.com/supplier-verification-audit/)
+  publishes **supplier verification from $240/man-day** and factory audits from
+  $440/man-day — but their product includes **a human walking into the building**.
+  Ours is the desk-research component only. So the pitch becomes **"the cheap desk
+  check you run before deciding whether a supplier is worth a $500 on-site audit"** —
+  triage, not verification. This is the first hard evidence anyone pays for this, and
+  it is not $5. **Covering three countries is what makes triage valuable**: a buyer
+  sourcing internationally does not want to learn three registries.
 - **2026-08-06 — [B4](tickets/b4-company-section-and-log.md) resolved.** Daily log
   built and running; memory rewritten (`groundtruth-company` was stale, and
   `india-crypto-payment-fema` split out as a durable fact that would otherwise be
