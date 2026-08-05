@@ -52,6 +52,20 @@ what is blocked on Rushi.
   foreign buyers for exported services appears to breach FEMA (no FIRC, penalties
   up to 3x). Neither the demand nor the legality holds. Crypto rails to
   international customers are closed.
+- **2026-08-05 — FamPay is not a rail (B1).** It is a Triotech PPI wallet, not a
+  bank account; its clause 22.2 prohibits commercial use outright and the Small PPI
+  form cannot pay out to a bank at all.
+- **2026-08-05 — Rushi can be paid, domestically, today-ish (B1 resolved).** He is
+  19 with a PAN, so s.11 contract capacity is fine. Rail: UPI/IMPS into a savings
+  account in his own name against an individual invoice with PAN. No registration
+  needed (sole proprietor by default), no GST below ₹20 lakh services turnover, no
+  gateway. Fee zero. **International is strictly domestic plus 2-3% plus FEMA
+  paperwork, and needs the same bank account** — so domestic first, not as a
+  preference but because there is no cheaper path. **The one blocking action is
+  Rushi opening a savings account.**
+- **2026-08-05 — the customer is Indian and domestic.** Narrows B2 and B3 from
+  "what will businesses pay for" to "what will an Indian SMB pay, in rupees, over
+  UPI."
 
 ## Not yet specified
 
@@ -62,9 +76,8 @@ what is blocked on Rushi.
   which is near zero; the receipt itself is ordinary business income at slab rates.
   The thing that actually kills it is FEMA — export proceeds must arrive through an
   authorised dealer bank in convertible currency, and crypto does not.
-- Whether the first customer should be **domestic (UPI, no FEMA exposure)** or
-  international (real banking rails, FIRC). B8 closed the crypto shortcut, so this
-  is now a live fork inside B1 rather than a hypothetical.
+- Pricing shape and whether TDS at 10% (s.194J, corporate clients, above ₹30,000
+  per contract) changes it. Cashflow fact, not a blocker — feeds B3.
 - Pricing shape - one-off build fee, monthly retainer, or per-run. Depends entirely
   on what the market research finds people actually paying, and on whether the
   offer is a service or a product.

@@ -1,6 +1,6 @@
 # Can Rushi actually receive money?
 
-`wayfinder:task` (HITL) · OPEN · **frontier — blocks everything**
+`wayfinder:task` (HITL) · **RESOLVED 2026-08-05 — yes, domestic** · one action left for Rushi
 
 ## Question
 
@@ -89,3 +89,130 @@ checklist for Rushi — not with an account.
 
 The map records: the chosen rail, what it requires, what Rushi still has to do
 himself, and whether an invoice can legally be issued today.
+
+---
+
+## Resolution — 2026-08-05
+
+**Known inputs (from Rushi, 2026-08-05):** age 19, PAN card yes, savings bank
+account **no** — "waiting for the right time". No credit card. No business
+registration. FamPay only, which is ruled out above.
+
+### Answer: yes, and the rail is boring on purpose
+
+**Chosen rail: UPI / IMPS straight into a savings account in Rushi's own name,
+against an individual invoice carrying his PAN. No gateway, no GST, no company.**
+Fee: zero. Onboarding: none. Settlement: instant.
+
+Everything below is why the fancier options lose.
+
+### Can he legally invoice today? Yes — nothing needs registering.
+
+An Indian freelancer is a sole proprietor by default; the proprietorship exists the
+moment he takes on a client and needs no registration to issue a valid invoice
+([Riffit](https://www.riffit.in/blog/do-freelancers-need-to-register-a-business-india)).
+An invoice with no GSTIN is valid: legal name, address (city + state minimum),
+sequential invoice number (INV-001…), client name and address, description of
+services, and PAN. No CGST/SGST/IGST breakdown, no HSN/SAC, no GSTIN field
+([Riffit](https://www.riffit.in/blog/invoice-without-gst-number-india),
+[JetInvoice](https://jetinvoice.in/blog/how-to-create-an-invoice-without-gst-in-india)).
+
+**GST: not required.** The registration threshold for *services* is ₹20 lakh of
+aggregate annual turnover, uniform and unconditional — the ₹40 lakh figure applies
+to goods only ([Tally](https://tallysolutions.com/gst/gst-limit-registration-threshold-india/),
+[CalcGuru](https://calcguru.in/gst-registration-threshold-20-40-lakh/)). Telangana
+is not a special-category state, so ₹20 lakh applies, not ₹10 lakh. Customer #1 is
+nowhere near this. **Note for later:** aggregate turnover includes exports, so
+going international does not dodge the threshold, it fills it faster.
+
+**TDS will bite, and it is not a loss.** An Indian *corporate* client must deduct
+10% TDS under s.194J on professional fees above ₹30,000 per contract or ₹1 lakh per
+year ([myhq](https://myhq.in/guides/gst-for-freelancers)). On a ₹10,000 invoice from
+a company, ₹9,000 arrives and ₹1,000 is credited against his tax, reclaimed at ITR.
+Individual and small unregistered clients generally do not deduct. This is a
+pricing and cashflow fact, not a blocker — noted into B3.
+
+### Why domestic, and it is not close
+
+| | Domestic (UPI → savings a/c) | International (Skydo / Wise / Payoneer) |
+|---|---|---|
+| Fee on a $1,000-equivalent | **₹0** | Skydo $19 (1.9%), Wise $19–21.50, Payoneer $20–30 (2–3%) |
+| Compliance surface | none | FIRA per payment, purpose codes, 15-month realisation window |
+| Needs a bank account | yes | yes — *also* yes |
+| Speed | instant | days |
+| Buyer pool | smaller | larger |
+
+Fee figures from [Skydo](https://www.skydo.com/blog/payoneer-vs-wise%E2%80%8B);
+FEMA obligations from [Wisemonk](https://www.wisemonk.io/blogs/rbi-rules-for-indian-freelancers).
+Note Skydo is a competitor to Wise and Payoneer and is the source for their fees —
+directionally consistent with [xFlow](https://www.xflowpay.com/blog/skydo-vs-wise)
+but treat the exact cents as indicative, not audited.
+
+The decisive column is the third one: **every international rail still requires the
+savings account he does not have.** International is strictly domestic plus fees
+plus FEMA paperwork. There is no version of "start international because it is
+easier". Combined with B8 having closed the crypto shortcut, the sequencing is
+forced: **domestic first, international only once there is a repeatable offer.**
+
+If and when international does happen, the shortlist is Skydo or Winvesta (flat fee,
+free FIRA auto-issued) over Payoneer (2–3%, FIRA is documentation not automatic) and
+PayPal (most expensive). Wise caps India invoice payments at $10,000 and supports
+sole proprietors but not registered companies. Not decided here; revisit at that time.
+
+### Payment gateway: not needed for customer #1
+
+Razorpay does onboard individuals and unregistered freelancers, unlike Stripe India
+which requires a registered business
+([Razorpay](https://razorpay.com/freelancer-individual-business/)). Worth having
+later for payment links and cards. For one customer paying one invoice, a gateway
+adds ~2% and an onboarding step to solve a problem UPI already solves for free.
+**Ruled out for now, not ruled out forever.**
+
+### The one real constraint: savings account, not current account
+
+Banks' standard position — and the consensus of the freelancer-banking write-ups — is
+that savings accounts are for personal transactions and business receipts belong in
+a current account, with practical guidance to switch above roughly ₹50,000/month of
+inflow, or on GST registration, to avoid freeze risk
+([MoneyMattr](https://moneymattr.com/current-account-vs-savings-account-for-indian-freelancers/),
+[Karbon](https://www.karboncard.com/blog/best-banks-for-indian-freelancers)).
+**Not verified against the RBI KYC Master Direction itself** — this is blog
+consensus and bank T&Cs, not primary law read in the original. For customer #1 at
+a few thousand rupees it is a non-issue; it becomes real at scale, and the trigger
+to revisit is ₹50,000/month.
+
+### What Rushi has to do — the whole list
+
+1. **Open a savings account in his own name.** This is the only blocking item and
+   the only one nobody can do for him. Banks now open accounts online with Aadhaar
+   + PAN and a 5–10 minute video KYC, issuing account number and virtual debit card
+   immediately; several offer zero-balance variants
+   ([Lemonn](https://lemonn.co.in/blog/banking/online-account-opening-step-by-step-guide-in-india-2026/),
+   [GoodReturns](https://www.goodreturns.in/classroom/how-to-open-a-savings-bank-account-in-india-in-2026-documents-eligibility-full-process-step-by-step-1491269.html)).
+   Prerequisite: **Aadhaar linked to his mobile number**, or the OTP step fails.
+   Which bank is his call — it is a personal financial decision with fee and
+   minimum-balance consequences, and choosing one for him is not this ticket's job.
+2. **Link a UPI ID to that account.** This is the thing that goes on the invoice.
+3. **Do not route client money through FamPay.** Clause 22.2 prohibits commercial
+   use; the wallet can be frozen for it, and it cannot pay out to a bank in the
+   Small PPI form anyway.
+4. **Nothing else.** No registration, no GST, no gateway, no accountant, until
+   ₹20 lakh turnover or ₹50,000/month inflow.
+
+### Not verified
+
+- No primary law read: GST Act, RBI KYC Master Direction and s.194J were taken from
+  tax and fintech write-ups that agree with each other, not from bare statute. Given
+  four independent sources concur on the ₹20 lakh services threshold, the risk is
+  low, but it is stated rather than hidden.
+- Razorpay's individual-onboarding requirements come from Razorpay's own marketing
+  page, not their KYC documentation. Irrelevant unless a gateway is adopted.
+- **None of this is tested.** No account exists, no invoice has been issued, no
+  rupee has moved. The first genuine test is customer #1 paying.
+
+### Consequence for the rest of the map
+
+The customer is now defined as **Indian and domestic**. That is an input to B2 (what
+people pay for) and B3 (pick the offer), and it narrows both usefully — the question
+is no longer "what will businesses pay for" but "what will an Indian SMB pay for, in
+rupees, over UPI."
