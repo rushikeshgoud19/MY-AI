@@ -123,6 +123,21 @@ what is blocked on Rushi.
   thin, but real budgets and real bidding, unlike PeoplePerHour's three mislabelled
   listings. **The bank account is needed when money lands, not to begin.** Upwork
   stays the better platform for later, once a card exists.
+- **2026-08-06 — CORRECTION, and it changes the plan: Rushi placed bids on
+  Freelancer.com and they were REJECTED on criteria.** I had inferred from a
+  screenshot that he had not bid; that was wrong and stated as fact. The zero-review
+  problem is no longer a risk, it is a **measured outcome**. With Fiverr abandoned
+  and Upwork rejecting ~30% of new applicants, **the marketplace route is closed for
+  now — not by choice.** The channel requirement is therefore concrete: **no
+  gatekeeper.**
+- **2026-08-06 — new frontier ticket, [B9](tickets/b9-gst-vendor-checks.md): GST
+  vendor-compliance checks for Indian SMBs.** An Indian GSTIN can read **"Active"**
+  while the vendor has not filed GSTR-1/3B for months — and the buyer silently loses
+  input tax credit, plus interest and penalties. **That is the same product as
+  [sample 3](demo/sample-report-3-uk.md)** ("Active" is the most misleading word on
+  the record), with a domestic buyer, a rupee-denominated loss, no forex, no FEMA and
+  **no gatekeeper**. **Not yet a pivot** — gated on whether the filing history is
+  retrievable without bypassing a captcha.
 - **2026-08-06 — the Freelancer.com account exists and the card wall was skippable.**
   Rushi is live at `@rushikeshg64`, balance ₹0.00. The "Add Verified Payment Method"
   step feeds the credibility badge, not bidding, and was bypassed via
