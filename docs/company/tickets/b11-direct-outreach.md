@@ -116,15 +116,102 @@ invented figure. "Could not verify" is not a limitation there — it is a requir
 >
 > Rushikesh
 
+## REVISED 2026-08-06 — v1 was weak, here is why
+
+Rushi asked for a recheck before sending. Reread both and found three faults, all
+real.
+
+**1. Both apologised for existing.** Railway: *"I'd guess that's a complication."*
+Atria: *"I'm in India, so I'm not a candidate."* The first invites them to agree he
+is a problem. **The second is also factually wrong** — Atria's posting says
+*"Global Remote (almost anywhere)"*, so he pre-rejected himself against their own
+stated policy. And Railway's careers page says they are **"a team of 39 across 16
+countries"**. Distance was never the objection; v1 invented it and then conceded it.
+
+**2. The ask was vague.** *"A small paid scoped piece"* gives nobody anything to say
+yes to. Vague asks get vague non-answers. v2 names the deliverable, the timeframe
+and the price.
+
+**3. Neither showed he had looked at their product.** v2 cites the **"Railway for
+Agents"** section of their docs, and Atria's actual domain.
+
+Also cut roughly a third of the length. Cold emails are skimmed.
+
+### Target 1 — Railway · REMOTE (Worldwide) · `railway.com/careers`
+
+> Subject: what does "Railway for Agents" do when the agent is wrong?
+>
+> Hi — I read the Railway for Agents section of your docs. Agents acting on infra is
+> the place where a confidently wrong answer actually costs something, and that is
+> the problem I have spent the last while on.
+>
+> I built a multi-agent system that grounds answers in pages it actually fetched,
+> re-derives every figure in code instead of trusting the model, and checks each
+> citation against the source text. It has a scored eval — 15 cases, graded by regex,
+> deliberately not by a model, because an LLM grader can hallucinate the grade.
+>
+> It used to invent "$0.25 per million tokens" and do arithmetic on it. Now it
+> returns "could not verify a current figure."
+>
+> Writeup: https://gist.github.com/rushikeshgoud19/8c2dd391d5545b4030d10f382d7ec0de
+>
+> Concretely: **$400, one week, for an eval harness on one agent path you already
+> ship** — a case set that catches your real failure modes, deterministic grading,
+> and the failures written down. If it is not useful when you read it, do not pay.
+>
+> I am in India; I saw you are 39 people across 16 countries so I assume that is
+> workable. If this is not a fit, no reply needed.
+>
+> Rushikesh
+
+### Target 2 — Atria · Global Remote (almost anywhere)
+
+> Subject: what does your agent output when it cannot verify something?
+>
+> Hi — I saw you are hiring a Staff SWE for Agentic AI, and that you hire almost
+> anywhere.
+>
+> A genuine question rather than a pitch: when your agent cannot verify something,
+> what does it output? In most systems the honest answer is "a plausible sentence".
+> In preventative healthcare that is the expensive failure, because the output reads
+> exactly as confident as a correct one.
+>
+> I build the checking layer for this — grounding in fetched sources, deterministic
+> arithmetic re-derivation, citation verification against source text, and a scored
+> eval graded by regex rather than by a model, because a model grader can hallucinate
+> the grade. Baseline 15/16, then 15/15 after closing a routing hole that let volatile
+> facts through ungrounded.
+>
+> Writeup: https://gist.github.com/rushikeshgoud19/8c2dd391d5545b4030d10f382d7ec0de
+>
+> Concretely: **$400, one week, for an eval set on one agent workflow you already
+> run**, with the failure modes documented. If it is not useful when you read it, do
+> not pay.
+>
+> I am in India and available in your mornings. If this is not a fit, no reply needed.
+>
+> Rushikesh
+
+### On the price and the guarantee
+
+**$400 fixed**, not hourly. Contract genAI rates run $42-105/hr
+([Consultadd](https://consultadd.com/blog/how-to-hire-generative-ai-engineers)), but
+those attach to demonstrated production experience. A fixed price on a defined
+deliverable is easier to approve than an hourly rate from someone unknown, and it
+caps their risk without pretending to a seniority he does not have.
+
+**"If it is not useful, do not pay"** is risk reversal, not free work. It is not an
+earnings promise and it promises them nothing about outcomes — only that he will not
+invoice for something they judge worthless. For a first customer with no track
+record it is the strongest honest lever available.
+
 ## Rules held in both drafts
 
 - **No earnings promise**, to them or about them.
 - **No invented experience.** Every claim maps to code in this repo.
-- **The India/timezone fact is stated up front**, not hidden. Discovering it later
-  wastes their time and reads as evasive.
-- **An explicit exit** — "if not, no reply needed." A cold message that does not
-  offer one is pressure.
-- **The ask is small and paid**, not "can we hop on a call".
+- **Location stated as a fact, not an apology.**
+- **An explicit exit** — "if not a fit, no reply needed."
+- **A concrete ask** — named deliverable, timeframe and price.
 
 ## Published 2026-08-06
 
