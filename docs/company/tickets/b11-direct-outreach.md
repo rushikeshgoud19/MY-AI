@@ -315,3 +315,38 @@ what comes back. If it is ignored, the next batch changes the message or the tar
 **Next targets when needed:** 8 of the 10 filtered postings remain unexamined for
 contact details. That is the queue, and it does not need more research until this
 one has been answered or ignored.
+
+
+---
+
+## SENT — 2026-08-06
+
+Rushi sent the message to `hackernewshiring@atria.org`. **First contact with a
+potential buyer in the entire effort.**
+
+**What this is:** one cold email, to one company, from someone with no track record,
+into a hiring inbox. Cold outreach is answered rarely and the honest expectation is
+no reply. That is not pessimism — it is the base rate, and pretending otherwise would
+be the fake-dashboard failure the map warns about.
+
+**What it is not:** progress toward the destination. Money is the measure and it is
+still zero. What changed is that the thesis is now testable — before today,
+everything was assets nobody had seen.
+
+## Standing rules while waiting
+
+1. **Do not follow up before 7 days.** A chase inside a week reads as pressure and
+   costs more than the original message gains.
+2. **Do not send more to Atria.** One message, one company.
+3. **Any reply gets pasted in and drafted, not answered live.** Same rule as before —
+   Claude drafts, Rushi sends.
+4. **If no reply by 2026-08-13:** that is data. The next attempt changes **one**
+   variable — the target, or the message — not the volume. Sending five next time
+   would make the result unreadable.
+
+## The queue, if needed
+
+8 of the 10 internationally-open AI postings from the
+[August 2026 HN thread](https://news.ycombinator.com/item?id=49156683) have not been
+checked for contact details. Railway is out (Ashby forms only). That queue does not
+need working until this send is answered or has clearly gone unanswered.

@@ -150,6 +150,11 @@ what is blocked on Rushi.
   role for weeks has the problem *now* and a hire who starts in three months, so a
   small scoped paid piece beats another CV. The messages are explicitly **not**
   applications, and state the India/timezone fact up front rather than hiding it.
+- **2026-08-06 — FIRST BUYER CONTACT. The Atria message was sent.** One cold email,
+  one company, $400 fixed for a one-week eval set, with a public writeup behind it.
+  **Money still zero** — this is not progress toward the destination, it is the first
+  time the thesis became testable. No follow-up before 2026-08-13; if unanswered, the
+  next attempt changes one variable, not the volume.
 - **2026-08-06 — one sendable target, not two.** **Railway has no email** — every
   role routes to an Ashby form, and hunting an address would be scraping by another
   name, so it is dropped. **Atria published `hackernewshiring@atria.org`** with
