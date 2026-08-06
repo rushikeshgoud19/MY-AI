@@ -101,3 +101,70 @@ Not asserted — flagged as worth retesting.
 
 **Who is shown this, and how are they reached?** The channel question survives every
 pivot, and it is the only one that has never been answered.
+
+
+---
+
+## Progress 2026-08-06 — the evidence already existed and was buried
+
+Went looking for the channel and found something better first: **the portfolio piece
+already exists, in `docs/wayfinder/orchestra-accuracy.md`, where no client will ever
+see it.**
+
+Measured, dated, and specific:
+
+| | |
+|---|---|
+| Eval baseline | **15 / 16** |
+| After the volatile-routing fix | **15 / 15** |
+| Settled path | ~2 calls, ~500 tokens |
+| Contested path | ~11 calls, ~6k tokens |
+| Concrete change | invented **"$0.25 per million tokens"** became **"could not verify a current figure, check [Pricing]"** |
+
+Plus a documented instance of the exact problem the product solves, found in his own
+process: a component *remembered* as scoring "8/9" measured **13/15** when actually
+tested.
+
+**This is the "criteria" evidence Freelancer said he lacked.** The bids were rejected
+because nothing demonstrated capability. This demonstrates it with a number.
+
+**Written up as [`case-study-refusal.md`](../demo/case-study-refusal.md)** — a
+technical case study, not marketing. It leads with the failure, explains why model-
+grading is a trap, gives the fix, gives the score, and ends with a section stating
+what it does **not** claim (15 cases is not a benchmark; the eval only covers
+checkable answers; 15/15 is a test result, not a guarantee).
+
+### Why this is not the branding trap the map warns about
+
+The map rules out landing pages, logos and audiences as fake progress. This is
+different and the distinction is load-bearing:
+
+- A landing page **claims** capability. This **demonstrates** it with a reproducible
+  score.
+- It addresses the **documented** reason the bids were rejected — no evidence of
+  capability — rather than a hypothetical one.
+- It costs nothing, needs no card, no account and no gatekeeper.
+- Every future application, on any channel, can point at it.
+
+It is not an audience play. One artefact, once, because there is currently nothing
+a client can look at.
+
+### Channel scan, recorded so it is not repeated
+
+Freelancer.com dev boards carry far more volume than the research boards ever did —
+**python 201 jobs, machine-learning 36, artificial-intelligence 22, chatbot 8**,
+against 2 mislabelled jobs under due-diligence. But filtering 16 AI/dev candidates
+for *open* (not select-only) **and** ≤15 bids returned **one** match, and it was an
+AI *trainer* teaching sessions rather than building.
+
+**Contract rates for the work itself are real:** $75–$200+/hour for generative-AI
+contract work, with evaluation expertise named as what drives the top end
+([Consultadd](https://consultadd.com/blog/how-to-hire-generative-ai-engineers)).
+**Caveat that matters:** those rates are for *demonstrated production experience*.
+Rushi has a repo, not production. The case study narrows that gap; it does not close
+it.
+
+## Next
+
+**Rushi's approval to publish the case study**, and where. It is drafted and
+unpublished. Nothing goes public without him reading it.

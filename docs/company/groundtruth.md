@@ -139,6 +139,19 @@ what is blocked on Rushi.
   that refuse to make things up, with a scored eval that proves it"** — built on the
   1,670 lines of tribunal and deterministic eval already in this repo. Keeps the
   differentiator, moves it onto work he can deliver.
+- **2026-08-06 — the portfolio piece already existed and was buried.**
+  `docs/wayfinder/orchestra-accuracy.md` holds measured results — eval **15/16 ->
+  15/15**, settled path ~2 calls/500 tokens vs contested ~11/6k, and the invented
+  **"$0.25 per million tokens"** becoming **"could not verify a current figure"**.
+  Written up as [`case-study-refusal.md`](demo/case-study-refusal.md). **This is the
+  "criteria" evidence Freelancer said was missing** — a demonstration with a number,
+  not a claim. Drafted, **unpublished**, awaiting Rushi.
+- **2026-08-06 — dev boards have real volume but thin low-competition supply.**
+  Freelancer: python 201 jobs, ML 36, AI 22 — versus 2 mislabelled under
+  due-diligence. But 16 AI/dev candidates filtered for open + <=15 bids yielded
+  **one**, and it was a teaching gig. Contract genAI rates are **$75-200+/hr** with
+  evaluation expertise driving the top end — **but for demonstrated production
+  experience**, which a repo is not.
 - **2026-08-06 — the marketplace rejection may be category-specific, not general.**
   His bids were rejected for research and data jobs where he had no portfolio. **For
   development work he has a repo.** Worth retesting rather than generalising from one
