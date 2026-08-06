@@ -1,6 +1,6 @@
 # Pivot the buyer: GST vendor-compliance checks for Indian SMBs
 
-`wayfinder:research` · **RESOLVED 2026-08-06 — viable, but delivered by hand**
+`wayfinder:research` · **RESOLVED + CONFIRMED 2026-08-06 — tool built and tested**
 
 ## Why this ticket exists
 
@@ -151,3 +151,74 @@ visible to a logged-out member of the public** — sourced from tax write-ups, n
 witnessed directly, because the CAPTCHA stopped me at the door.
 
 If the table is behind a login, this ticket reopens.
+
+
+---
+
+## CONFIRMED by Rushi — 2026-08-06
+
+He ran it. The portal returns, to a logged-out member of the public, after one
+CAPTCHA:
+
+**Registration block:** legal name, trade name, effective date of registration,
+constitution, **GSTIN status**, taxpayer type, jurisdiction (centre and state),
+principal place of business, nature of business activities, and HSN/SAC codes.
+
+**Two fields not anticipated, and both are real risk signals:**
+**"Whether Aadhaar Authenticated?"** and **"Whether e-KYC Verified?"** — on the
+sample both read **No**. On a licensed bank that means little; on an unknown small
+vendor, *registered but never Aadhaar-authenticated* is worth a line in a report and
+nobody looks at it.
+
+**And the button that matters: `SHOW FILING TABLE`**, plus
+`SHOW RETURN FILING FREQUENCY`. The table gives, per return type, with a
+financial-year selector:
+
+| | Tax Period | Date of filing | Status |
+|---|---|---|---|
+| GSTR-3B | June | 20/07/2026 | Filed |
+| GSTR-1/IFF | June | 10/07/2026 | Filed |
+
+**Tax period + filing date + status.** That makes three things computable rather
+than asserted: **gaps**, **days late**, and **consecutive non-filing streak**.
+
+The ticket's premise is no longer sourced-from-blogs. It is witnessed.
+
+## Built — `scripts/gst_check.py`
+
+Rushi solves the CAPTCHA and pastes the table; the tool does the arithmetic. That is
+the correct division: the CAPTCHA blocks automation, not the work.
+
+Statutory due dates, verified rather than assumed
+([SoftwareSuggest](https://www.softwaresuggest.com/blog/gst-filing-due-dates/),
+[ClearTax](https://cleartax.in/s/gstr-3b)): monthly **GSTR-1 11th**, **GSTR-3B
+20th** of the following month; QRMP **GSTR-1 13th**, **GSTR-3B 22nd or 24th by
+state**. The script uses the 22nd and **prints the caveat rather than guessing the
+state**.
+
+Tested on the real Ujjivan data (clean — every return on time, reported as *"a
+result, not an absence of one"*) and on synthetic data with gaps and late filings
+(correctly found +2, +8, +19, +46 days late and the missing periods).
+
+### The bug worth recording
+
+The first version extrapolated missing periods **into financial years the user never
+queried** and reported them as "past due with no filing shown". That is inventing a
+finding out of absent data — the precise failure this whole company exists to
+eliminate, reproduced in our own tool inside an hour of writing it.
+
+Fixed: gap detection is now bounded to the financial years actually present in the
+pasted data, and the report prints **"Financial year(s) queried: X. Nothing outside
+these years is reasoned about."**
+
+Verified: 24 possible periods in FY2025-26, 5 filed, 2 not yet due at year end,
+**17** genuinely missing — arithmetic checked by hand.
+
+## Next
+
+Positioning line, unchanged and now evidenced:
+> **"Your vendor's GSTIN says Active. That is not the same as your input tax credit
+> being safe."**
+
+Still open: **who to sell it to, and how they are reached without a gatekeeper.**
+That is the channel question B6 left open, now with a domestic buyer.
