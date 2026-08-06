@@ -150,6 +150,20 @@ what is blocked on Rushi.
   role for weeks has the problem *now* and a hire who starts in three months, so a
   small scoped paid piece beats another CV. The messages are explicitly **not**
   applications, and state the India/timezone fact up front rather than hiding it.
+- **2026-08-06 — [B12](tickets/b12-what-400-dollars-buys.md): the $400 is now a
+  concrete spec, reply-ready.** Four named artefacts (case set, deterministic grader,
+  two scores, findings doc), an explicit NOT-included list, and three scoping
+  questions. **Designed assuming NO production access** — no company hands a stranger
+  a live agent — with three tiers: they share ~30 sample pairs, or public surface
+  only, or **they run the grader in-house and he never sees their data**. That last
+  one may be the only legal option for FurtherAI (insurance) and Atria (healthcare),
+  and it is a feature, not a fallback.
+- **2026-08-06 — payment remains the unsolved gap.** Rushi offered his brother's or
+  sister's account; **refused, with reasons** — it makes the money their taxable
+  income, an invoice in one name paid to another account is the exact AML pattern
+  banks flag, and it risks a family member's account to avoid a ten-minute task.
+  Also corrected myself: I called the bank account "critical path" and it is not
+  blocking today — nobody has replied. It is needed before a reply, not before a send.
 - **2026-08-06 — batch 2 drafted: [six messages](tickets/b11-batch2.md), not ten.**
   Rushi asked for ten and was right that one send teaches nothing at cold-email reply
   rates — my "change one variable" rule was A/B logic for high volume. But of 25
