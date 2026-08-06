@@ -4674,3 +4674,67 @@ lines at all means the watcher itself died, which is the failure that hid for tw
   INVOCATION, not delivery. The cortex.db echo row (whatsapp_messages, fromMe) is real
   ground truth and needs no bridge change.
   ⛔ NEEDED FROM RUSHI: restart the laptop device agent; Google re-consent (calendar still red).
+
+---
+
+# 2026-08-07 — RECENCY GATE (Claude). Deployed to MizuneVM. **Do not re-fix; do not revert.**
+
+**The disease:** three daily reports each read "the newest row" and presented it as last
+night's. A stale row was therefore narrated fresh every morning, forever.
+
+**Fixed + DEPLOYED to the VM + committed (`d597750`):**
+- `config.py` — ONE shared gate: `is_recent(ts, hours)` + `parse_mizune_ts()`. An unknown or
+  unparseable timestamp returns **False**: silence beats a false report. Use these; do not
+  write a fourth date check.
+- `night_shift.latest_report()` — 18h gate on `updated_at`/`deadline`. Was retelling the
+  2026-07-27 smoke-test shift (window 00:14→06:00) daily; Aug 5 and Aug 6 WhatsApp reports
+  were word-for-word identical. Takes `max_age_hours=None` for an explicit "show me the last
+  report", which `ai.py` then labels as old. **Empty return is correct** — it means no shift
+  ran, and `processor.py` now says so plainly at 07:40 instead of going quiet. The LLM never
+  touches that path.
+- `briefing._last_night_review()` — 18h gate. Was replaying the 2026-07-23 groq finding
+  ("fix drafted on branch mizune/auto-fix-20260723") forever; that is the only `dispatched=1`
+  row that will ever exist, so this collector is now permanently silent. That is CORRECT.
+- `self_review.send_bug_report()` — 18h gate, so "issues found while you slept" cannot ship an
+  old row when the 2AM review did not run. `latest_findings()` stays ungated (the Dreaming tab
+  is a history view and shows its own dates).
+
+**Two bugs of the same shape — a guard present in one branch, missing from its siblings:**
+- `processor.py` imported `memory` locally in **six** functions. Any assignment inside a
+  function makes the name local for that whole function, so the nested `_deep_recall()` closure
+  saw an unbound free variable and semantic recall died with "cannot access free variable
+  'memory'" (20 occurrences in server.log) unless a music/schedule/whatsapp fast-path happened
+  to fire first in the same turn. The module-level import at line 21 covers every use.
+  **Never re-add a local `from server.memory import memory`.**
+- `_parse_whatsapp_send_command()` excluded self-recipients in pattern 1 but not in patterns 2
+  and 3, so "Tell me what you recall about my work setup" parsed as `who="me"` and SENT a
+  message instead of answering. Now one `_SELF_RECIPIENTS` constant checked at all three
+  return points.
+
+**Config (VM + laptop, not in git — config.json is gitignored):**
+`memory_recall_budget_seconds: 3.0`. The old 1.2s default was exceeded by the cold
+embedding-model warm-up, so the first message after every restart silently lost its memory.
+Warm recall is ~0.2s, so this never binds again.
+
+**Also committed (`9967fd4`)** — Rushi's in-flight work, which was ALREADY running on the VM
+but only half-present in git: `build_briefing_sitrep()` listed `_google_down` in its collector
+tuple while the definition lived only in the working tree. The tuple is built *before* the
+per-collector try/except, so a clean checkout died with NameError before running one collector.
+Covers the orchestra tool + fast-path, `_remote_device_tool()` (phone actions derived from the
+live device registry), OAuth `invalid_grant` detection, the research-agent search fix, and the
+headless-brain fall-throughs.
+
+**VM deploy method — READ THIS BEFORE TOUCHING THE VM.** `az vm run-command` **silently
+no-ops past roughly 150 KB** and reports success. `ai.py` (146 KB) and `processor.py` (114 KB)
+are near or over that line, so they were patched IN PLACE with small idempotent Python scripts
+shipped base64 with a sha256 check on both ends. Never ship those two whole. Backups on the VM:
+`server/*.prerecency`, `server/processor.py.prewaguard`, `server/ai.py.prephonecaps`.
+
+**VM verification (not the local file):** `latest_report()` returns empty against the live
+`night_shift.db` (newest shift 265.9h old); `_last_night_review()` returns empty; the sentence
+that used to misfire is answered from real long-term memory with zero fast-path sends, zero
+recall errors and zero budget timeouts. All three patchers re-run as no-ops.
+
+**⚠️ EXECUTOR: the VM now runs code that is AHEAD of what a plain `git pull` gives you for
+some files, and BEHIND for others (it was patched from an older base). Do not "sync" the VM by
+copying whole files without diffing first — you will silently revert one of the fixes above.**
