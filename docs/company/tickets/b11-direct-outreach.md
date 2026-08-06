@@ -74,7 +74,7 @@ precisely where a confidently-wrong answer is expensive.
 > The change that mattered: it used to invent "$0.25 per million tokens" and do
 > arithmetic on it. Now it returns "could not verify a current figure."
 >
-> Writeup: [link] · Code: [link]
+> Writeup: https://gist.github.com/rushikeshgoud19/8c2dd391d5545b4030d10f382d7ec0de
 >
 > I am not applying for the full-time roles — I am in India and I would guess that is
 > a complication. What I am asking is whether a small paid scoped piece is useful:
@@ -107,7 +107,7 @@ invented figure. "Could not verify" is not a limitation there — it is a requir
 > hallucinate the grade. Baseline 15/16, 15/15 after fixing a routing hole that let
 > volatile facts through ungrounded.
 >
-> Writeup: [link]
+> Writeup: https://gist.github.com/rushikeshgoud19/8c2dd391d5545b4030d10f382d7ec0de
 >
 > I am in India, so I am not a candidate for the staff role. I am asking whether a
 > scoped piece of contract work is useful — for example, an eval set for one agent
@@ -125,6 +125,29 @@ invented figure. "Could not verify" is not a limitation there — it is a requir
 - **An explicit exit** — "if not, no reply needed." A cold message that does not
   offer one is pressure.
 - **The ask is small and paid**, not "can we hop on a call".
+
+## Published 2026-08-06
+
+The case study is live as a **public gist** on his own GitHub account
+(`rushikeshgoud19`), authorised explicitly by him: *"you have my github access so go
+for it man dont worry about it."*
+
+**https://gist.github.com/rushikeshgoud19/8c2dd391d5545b4030d10f382d7ec0de**
+
+Verified public and rendering (HTTP 200, raw content readable logged-out). Both
+messages now carry a real link.
+
+**Deliberately a gist, not the repo.** `my Ai` holds `config.json` with API keys; it
+must not be linked or made public.
+
+**One thing he has not done, and it is his to do:** confirm the technical claims are
+accurate. The numbers come from his own `docs/wayfinder/orchestra-accuracy.md`, but
+they are being published under his name. If anything is overstated, one command
+removes it:
+
+```
+gh gist delete 8c2dd391d5545b4030d10f382d7ec0de
+```
 
 ## Blocked on Rushi
 

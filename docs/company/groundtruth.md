@@ -150,7 +150,15 @@ what is blocked on Rushi.
   role for weeks has the problem *now* and a hire who starts in three months, so a
   small scoped paid piece beats another CV. The messages are explicitly **not**
   applications, and state the India/timezone fact up front rather than hiding it.
-- **2026-08-06 — B11 is blocked by the B10 publishing decision.** The messages need
+- **2026-08-06 — FIRST PUBLIC ARTEFACT. The case study is live**, as a public gist on
+  Rushi's own GitHub, on his explicit authorisation:
+  [gist.github.com/rushikeshgoud19/8c2dd…](https://gist.github.com/rushikeshgoud19/8c2dd391d5545b4030d10f382d7ec0de).
+  Verified readable logged-out. **Gist, not the repo** — `my Ai` holds `config.json`
+  with API keys and must never be published. This unblocks
+  [B11](tickets/b11-direct-outreach.md): both messages now carry a real link.
+  **Outstanding: Rushi has not confirmed the technical claims are accurate**, and
+  they are published under his name.
+- ~~**2026-08-06 — B11 is blocked by the B10 publishing decision.**~~ The messages need
   two links, and the case study is not public anywhere Rushi controls. Publishing is
   now on the critical path rather than optional.
 - **2026-08-06 — the portfolio piece already existed and was buried.**
