@@ -168,3 +168,62 @@ it.
 
 **Rushi's approval to publish the case study**, and where. It is drafted and
 unpublished. Nothing goes public without him reading it.
+
+
+---
+
+## Channel scan 2, 2026-08-06 — all freelance marketplaces excluded by Rushi
+
+*"no frelance website bro it didnt letting me bid so please look for alternative."*
+Taken as final. Fiverr, Upwork, Freelancer, PeoplePerHour, Guru, Truelancer and
+Contra are all out. Looked at structurally different models instead.
+
+### Algora — open-source bounties. **Dead as a route.**
+
+The model was ideal: sign in with GitHub, claim a bounty, submit a PR, get paid on
+merge. No application, no bidding, no reviews, no criteria gate — pure merit, which
+is exactly what suits a developer with a repo and no track record.
+
+**But Algora has pivoted to recruiting.** The homepage now reads *"Hire the top 1%
+open source engineers / Open source tech recruiting"*. `algora.io/bounties` returns
+**404**. Of five org-scoped bounty pages tested (`cal`, `turso`, `prettier`,
+`comfyui`, `golem`), **only one still resolves.**
+
+Same shape as Clustly: a platform whose model moved on, found by checking rather
+than by reading its marketing.
+
+### Hacker News "Freelancer? Seeking freelancer?" — **dead as a route.**
+
+Genuinely gate-free: monthly thread, free to post, no account criteria, no card, and
+an audience technical enough to understand what a deterministic eval is. The August
+2026 thread was live and three days old when checked.
+
+**Then the numbers:**
+
+| Month | SEEKING FREELANCER (buyers) | Seeking work (sellers) |
+|---|---|---|
+| August 2026 | **0** | 11 |
+| July 2026 | **0** | 20 |
+| June 2026 | **1** | 30 |
+
+**One buyer in three months against 61 sellers**, and that one specified
+*"Remote (US+EU only)"*, which excludes Rushi. This is a thread where developers
+advertise to each other. It is not a demand channel.
+
+### Where this leaves the search, honestly
+
+Everything with a gatekeeper rejects him. Everything without a gatekeeper turns out
+to have no buyers. That is not bad luck — it is the same trade appearing over and
+over: **a channel's gate is what keeps its buyers there.** Clustly (4%, no buyers),
+Contra (0%, no buyers), HN (free, no buyers), Algora (merit-based, model gone) all
+failed the same way, while the channels that did have buyers all gated him out.
+
+**What has not been tested: direct approach to companies.** No platform, no gate, no
+fee — and no inbound either. It needs Rushi to send messages, which is the one input
+that has never been supplied.
+
+**And a harder question worth putting plainly:** the evidence increasingly points at
+*contract or remote employment* rather than a first freelance customer — job boards
+take an application with a portfolio, which he now has, rather than a bid against
+400-review sellers. **That is a different destination from the one this map names**
+and is Rushi's decision, not one to make quietly on his behalf.
