@@ -321,6 +321,34 @@ TOOLS_SCHEMA = [
     {
         "type": "function",
         "function": {
+            "name": "agent_orchestra",
+            # Deliberately narrow. A tribunal is ~11 model calls and ~15 seconds, so
+            # the description spends most of its words saying when NOT to reach for it.
+            # The fast-path ("orchestra: ...") is how Master demands one explicitly;
+            # this tool exists only so a genuinely contested question can escalate
+            # without him having to know the prefix.
+            "description": (
+                "Convene the Agent Orchestra: four advocates argue the question on "
+                "different models under different stances, and Alucard judges them. "
+                "EXPENSIVE — about 11 model calls and 15 seconds. Use ONLY when the "
+                "question is genuinely contested: a real trade-off, a design choice, "
+                "an ethical judgement, or something where thoughtful people disagree "
+                "AND getting it wrong matters. NEVER for facts, arithmetic, chitchat, "
+                "anything you already know, or anything urgent. If in doubt, answer "
+                "normally instead. Tell Master you are convening it before you do."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question": {"type": "string", "description": "The contested question to put to the panel, stated in full."}
+                },
+                "required": ["question"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "night_shift",
             "description": "Queue an overnight autonomous work shift, or check it. Use when Master says 'tonight work on...', 'overnight, do...', 'while I sleep...', or 'shift status/report'. Each task becomes a verified mission run silently overnight on a spare provider; ONE honest report arrives at 7:40 AM. Never for anything that sends/deletes/pays — those need him awake.",
             "parameters": {
@@ -643,16 +671,84 @@ def _capability_lines(config: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+# Arg hints for phone actions. THIS IS NOT THE CAPABILITY LIST — the phone's own
+# registration decides which of these are offered. A name here that the phone never
+# registers is simply never shown; a name the phone registers without an entry here is
+# still shown, bare. See _remote_device_tool().
+_PHONE_ACTION_HINTS = {
+    "open_app": "open_app (args {app_name})",
+    "open_url": "open_url (args {url})",
+    "read_screen": "read_screen (no args — returns visible buttons/fields so you can SEE the screen before tapping)",
+    "tap": "tap (args {text})",
+    "type": "type (args {text} — into focused field, for forms)",
+    "press": "press (args {key: back|home|recents})",
+    "scroll": "scroll (args {direction: up|down})",
+    "notify": "notify (args {title, message})",
+    "speak": "speak (args {text})",
+    "media_play": "media_play (no args — sends the play key to the active media session)",
+    "media_pause": "media_pause (no args)",
+    "media_next": "media_next (no args)",
+}
+
+
+def _remote_device_tool(tool: dict) -> dict:
+    """Rewrite remote_device_command's phone actions from the LIVE device registry.
+
+    The phone's capability list used to exist in three places — the app's socket
+    registration, this tool description, and the executor's `when(action)` — and all
+    three disagreed: the phone executed tap/type/scroll/read_screen while registering
+    none of them and the description advertised its own set. Same failure mode, and same
+    fix, as _capability_lines() above: derive it, don't restate it.
+
+    Falls back to the static description if the phone is offline or anything goes wrong,
+    so a registry hiccup can never strip the brain of its laptop tooling.
+    """
+    try:
+        from .device_registry import device_registry
+        phone = device_registry.list_devices().get("phone")
+        if not phone:
+            return tool
+        caps = [c for c in (phone.get("capabilities") or []) if c]
+        if not caps:
+            return tool
+        import copy
+        out = copy.deepcopy(tool)
+        fn = out["function"]
+        phone_line = "Phone: " + ", ".join(_PHONE_ACTION_HINTS.get(c, c) for c in caps) + "."
+        # Replace everything from "Phone:" onward, keeping the laptop half verbatim.
+        head = fn["description"].split("Phone:")[0]
+        description = head + phone_line
+        if "read_screen" in caps:
+            description += (
+                " For multi-step phone tasks, call in sequence and use read_screen "
+                "between steps to see what's there (open app → read_screen → tap → "
+                "type → tap)."
+            )
+        fn["description"] = description
+        fn["parameters"]["properties"]["action"]["description"] = (
+            "Laptop: download_file, open_app, open_url, run_command, run_task, "
+            "claude_task, claude_code. Phone (live, only these work right now): "
+            + ", ".join(caps) + "."
+        )
+        return out
+    except Exception:
+        return tool
+
+
 def _active_tools_schema(config: dict):
     """Return TOOLS_SCHEMA, minus local-only tools when running in cloud mode."""
+    tools = TOOLS_SCHEMA
     try:
         from .config import is_cloud_mode
         if is_cloud_mode(config):
-            return [t for t in TOOLS_SCHEMA
-                    if t.get("function", {}).get("name") not in _LOCAL_ONLY_TOOLS]
+            tools = [t for t in tools
+                     if t.get("function", {}).get("name") not in _LOCAL_ONLY_TOOLS]
     except Exception:
         pass
-    return TOOLS_SCHEMA
+    return [
+        _remote_device_tool(t) if t.get("function", {}).get("name") == "remote_device_command" else t
+        for t in tools
+    ]
 
 
 import re as _re
@@ -760,7 +856,7 @@ _SIDE_EFFECT_TOOLS = {
     "execute_python", "run_command", "schedule_task", "create_skill",
     "notify_master", "take_note", "store_memory", "add_core_directive",
     "play_music", "control_music", "find_my_phone", "start_mission", "cancel_mission", "learn",
-    "night_shift",
+    "night_shift", "agent_orchestra",
 }
 _recent_tool_calls: dict = {}
 _recent_tool_lock = _dedup_threading.Lock()
@@ -1251,6 +1347,27 @@ def _execute_tool_call_impl(tool_name: str, args: dict, config: dict, background
         if tool_name == "cancel_mission":
             from .missions import cancel_mission
             return cancel_mission(config)
+
+        if tool_name == "agent_orchestra":
+            from .orchestra import orchestra_answer, stash_provenance, recent_run, remember_run
+            q = (args.get("question") or "").strip()
+            if not q:
+                return "What should I put to the panel, Master?"
+            # A tribunal already sat this turn? Reuse it. She called this tool twice
+            # for one question in testing and paid for two full debates.
+            res = recent_run() or orchestra_answer(q, config)
+            remember_run(res)
+            if not res.get("ok"):
+                return f"The tribunal couldn't sit: {res.get('error', 'unknown error')}"
+            # She RELAYS this in her own voice - Master asked for the answer to come
+            # from Mizune, not from a formatter. The provenance is stashed rather than
+            # handed to her, and the processor appends it verbatim after she speaks:
+            # she owns the wording, code owns the numbers.
+            stash_provenance(res)
+            return ("THE TRIBUNAL'S VERDICT (relay this to Master in your own voice, "
+                    "keeping every fact and number intact; do not add statistics of "
+                    "your own and do not claim to have deliberated yourself):\n\n"
+                    + (res.get("answer") or ""))
 
         if tool_name == "night_shift":
             from .night_shift import queue_shift, build_proof_of_work, latest_report

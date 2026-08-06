@@ -915,6 +915,29 @@ def _get_session_lock(session_id: str) -> threading.Lock:
             _session_locks[session_id] = lock
         return lock
 
+def _format_orchestra_reply(res: dict) -> str:
+    """Render an orchestra verdict DETERMINISTICALLY, for the same reason mesh does.
+
+    Code owns the provenance line — which path was taken, how many advocates agreed,
+    what it cost. If a model voiced this it could narrate "the panel deliberated"
+    over a SETTLED single-call answer, which is precisely the overstatement the
+    orchestra exists to prevent.
+    """
+    if not res.get("ok"):
+        return ("I couldn't convene the tribunal, Master. "
+                f"({res.get('error', 'unknown error')})")
+    body = (res.get("answer") or "").strip()
+    case = str(res.get("case") or "").upper()
+    if case == "SETTLED":
+        # Be honest that nobody argued: this took one direct answer, not a debate.
+        return body + "\n\n— settled question, answered directly (no debate needed)"
+    who = "adopted and improved one advocate's answer" if case == "ADOPT" \
+        else "synthesised after a round of revisions"
+    return (body + f"\n\n⚖️ Alucard {who} · agreement {res.get('agreement', '?')} · "
+            f"round {res.get('rounds', '?')} · {res.get('calls', '?')} calls · "
+            f"{res.get('tokens', '?')} tokens")
+
+
 def _format_mesh_reply(res: dict) -> str:
     """Render a mesh result DETERMINISTICALLY. Code owns the agreement label, the provider
     list and the verifier name — if a model voiced this it could narrate 'I double-checked'
@@ -944,7 +967,28 @@ def process_command(text: str, config: dict, broadcast_sync_fn, session_id: str 
         log_info(f"[PROCESSOR] Ignoring overlapping input '{text}' for session '{session_id}' (busy).")
         return None
     try:
-        return _process_command_internal(text, config, broadcast_sync_fn, session_id)
+        reply = _process_command_internal(text, config, broadcast_sync_fn, session_id)
+        # If a tribunal sat during this turn, stamp its receipt onto whatever she
+        # said. She gets to voice the verdict in her own words - Master asked for the
+        # answer to come from Mizune - but the agreement level, round and cost are
+        # appended HERE, by code, at the one choke point every reply passes through.
+        # Same reason the outcome seal lives in execute_tool_call(): a model asked to
+        # report its own numbers will eventually report flattering ones.
+        try:
+            from server.orchestra import take_provenance, take_verdict, relay_failed
+            prov = take_provenance()
+            verdict = take_verdict()
+            if prov:
+                # She is allowed to voice it, but not to lose it. Observed: handed a
+                # full verdict she answered "Done!" and dropped every word of it.
+                if relay_failed(reply, verdict):
+                    log_info("[ORCHESTRA] relay dropped the verdict - substituting it verbatim")
+                    reply = verdict
+                if reply and prov not in reply:
+                    reply = reply.rstrip() + "\n\n" + prov
+        except Exception:
+            pass          # a missing receipt must never cost Master the answer
+        return reply
     finally:
         lock.release()
 
@@ -1066,6 +1110,22 @@ def _process_command_internal(text: str, config: dict, broadcast_sync_fn, sessio
             from server.mesh import mesh_answer
             log_info(f"[MESH] fast-path trigger: {_mq[:80]}")
             return _format_mesh_reply(mesh_answer(_mq, config))
+
+    # ── ORCHESTRA fast-path (Z6): a full tribunal is expensive and slow, so asking
+    # for one must be an explicit act, never a guess. Same reasoning as mesh above:
+    # the model will not reach for a 15-second 11-call deliberation on its own, and
+    # if it could it would do it at the wrong moments. Colon/dash required so
+    # ordinary sentences containing the word "debate" do not convene four advocates.
+    _orc_m = re.search(
+        r"(?:^|\b)(?:orchestra|tribunal|debate this|deliberate)"
+        r"\s*[:\-]\s*(.+)",
+        text, re.IGNORECASE | re.DOTALL)
+    if _orc_m and "[mission" not in lower_text and not text.startswith("[SYSTEM"):
+        _oq = _orc_m.group(1).split("\n(SYSTEM:")[0].strip()
+        if _oq:
+            from server.orchestra import orchestra_answer
+            log_info(f"[ORCHESTRA] fast-path trigger: {_oq[:80]}")
+            return _format_orchestra_reply(orchestra_answer(_oq, config))
 
     # ── WHATSAPP SEND fast-path: an explicit send order is CODE's job, not the model's.
     # Two independent failures made this unusable, and both bypass the model entirely now:

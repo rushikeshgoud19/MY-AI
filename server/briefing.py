@@ -97,6 +97,27 @@ def _important_whatsapp() -> str:
     return "IMPORTANT WHATSAPP (12h):\n" + "\n".join(lines)
 
 
+def _google_down() -> str:
+    """One loud line when Google auth is permanently dead, otherwise nothing.
+
+    The calendar/email collectors below deliberately stay quiet when Google is
+    unreachable, which is right for a transient blip but hid a genuinely dead
+    token for weeks — the briefing kept reporting stale cached email as if it
+    were today's. This distinguishes "nothing to report" from "I cannot see".
+    Only a recorded PERMANENT failure (invalid_grant) trips it, so a flaky
+    network never nags.
+    """
+    try:
+        from .integrations import integrations
+        fail = integrations.auth_failure("google")
+    except Exception:
+        return ""
+    if not fail:
+        return ""
+    return ("GOOGLE DISCONNECTED: calendar and email are unavailable "
+            f"({fail.get('reason', 'auth failure')}). Master needs to reconnect.")
+
+
 def _todays_calendar() -> str:
     """Real Google Calendar (live since Phase G) — the briefing's anchor item."""
     from server.integrations.google_api import global_google_api
