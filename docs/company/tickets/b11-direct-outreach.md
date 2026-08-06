@@ -252,3 +252,66 @@ gh gist delete 8c2dd391d5545b4030d10f382d7ec0de
 Two messages, then nothing until there is signal. If both are ignored, that is
 information about the message or the target, and the next batch changes one variable
 — not the volume.
+
+
+---
+
+## Recipients checked 2026-08-06 — one target survives, not two
+
+**Railway: no email address exists.** Their HN posting routes every role to Ashby
+application forms (`jobs.ashbyhq.com/Railway/...`). There is nothing to cold-email.
+Finding an address would mean guessing patterns or using a lookup service —
+scraping by another name, and forbidden. **Railway is dropped** unless Rushi wants
+to submit a normal application through their form, which is a job application and a
+different thing from this.
+
+**Atria: `hackernewshiring@atria.org`**, published in their own posting with *"Every
+resume sent here will be reviewed by a human."* Real address, human-monitored,
+explicitly inviting contact.
+
+**One adjustment forced by that wording:** they asked for resumes. This is not one.
+The message now says so in the first line rather than ignoring their stated process
+— a cold pitch into a hiring inbox that pretends to be an application wastes the
+reviewer's time and starts on a lie about what it is.
+
+### FINAL — Atria · `hackernewshiring@atria.org`
+
+> Subject: not a resume — a question about your agentic AI
+>
+> Hi — you asked for resumes at this address and this is not one, so I will be
+> brief.
+>
+> You are hiring a Staff SWE for Agentic AI. A genuine question rather than a pitch:
+> when your agent cannot verify something, what does it output? In most systems the
+> honest answer is "a plausible sentence" — and in preventative healthcare that is
+> the expensive failure, because a wrong output reads exactly as confident as a
+> right one.
+>
+> I build the checking layer for that problem: grounding in pages actually fetched,
+> deterministic arithmetic re-derivation, citation verification against source text,
+> and a scored eval graded by regex rather than by a model — because a model grader
+> can hallucinate the grade. Baseline 15/16, then 15/15 after closing a routing hole
+> that let volatile facts through ungrounded.
+>
+> Writeup, with the numbers and what they do not prove:
+> https://gist.github.com/rushikeshgoud19/8c2dd391d5545b4030d10f382d7ec0de
+>
+> What I am proposing is small: **$400 fixed, one week, an eval set for one agent
+> workflow you already run**, with the failure modes written down. If it is not
+> useful when you read it, do not pay.
+>
+> I am in India and available in your mornings. If this is not a fit, no reply
+> needed — and good luck with the staff hire either way.
+>
+> Rushikesh
+
+### Why one message and not a batch
+
+The map forbids spam volume, and there is a better reason: **nothing has ever been
+sent, so nothing is known about whether this message works.** One send, then read
+what comes back. If it is ignored, the next batch changes the message or the target
+— not the quantity.
+
+**Next targets when needed:** 8 of the 10 filtered postings remain unexamined for
+contact details. That is the queue, and it does not need more research until this
+one has been answered or ignored.
