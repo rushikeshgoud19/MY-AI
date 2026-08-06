@@ -139,6 +139,20 @@ what is blocked on Rushi.
   that refuse to make things up, with a scored eval that proves it"** — built on the
   1,670 lines of tribunal and deterministic eval already in this repo. Keeps the
   differentiator, moves it onto work he can deliver.
+- **2026-08-06 — [B11](tickets/b11-direct-outreach.md): direct outreach, first batch
+  drafted.** Targeting rule that needs no scraping: **a live job posting is a public
+  statement of need from an organisation with budget, published to attract contact.**
+  Source: HN "Who is hiring?" (August 2026, 178 postings). Filtered for AI/LLM/eval
+  **and** not US-only: **10 survive.** Two messages drafted — Railway (REMOTE
+  worldwide) and Atria (Global Remote, Staff SWE Agentic AI). **Two, not twenty.**
+- **2026-08-06 — most internationally-open AI roles are employment, not contract.**
+  The angle that keeps it a customer relationship: a company advertising a senior AI
+  role for weeks has the problem *now* and a hire who starts in three months, so a
+  small scoped paid piece beats another CV. The messages are explicitly **not**
+  applications, and state the India/timezone fact up front rather than hiding it.
+- **2026-08-06 — B11 is blocked by the B10 publishing decision.** The messages need
+  two links, and the case study is not public anywhere Rushi controls. Publishing is
+  now on the critical path rather than optional.
 - **2026-08-06 — the portfolio piece already existed and was buried.**
   `docs/wayfinder/orchestra-accuracy.md` holds measured results — eval **15/16 ->
   15/15**, settled path ~2 calls/500 tokens vs contested ~11/6k, and the invented

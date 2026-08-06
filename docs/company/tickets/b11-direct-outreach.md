@@ -1,0 +1,144 @@
+# The direct outreach motion — Claude drafts, Rushi sends
+
+`wayfinder:task` (HITL) · **OPEN — first batch drafted 2026-08-06**
+
+## Why this ticket
+
+All nine marketplaces are closed ([B6](b6-outreach-rushi-runs.md),
+[B10](b10-build-what-rushi-builds.md)): the gated ones reject him, the ungated ones
+have no buyers. Rushi chose direct outreach and asked whether Claude can handle the
+email.
+
+**Answer: everything except two things.** Claude finds targets, researches each,
+drafts each message, drafts every reply, and tracks the pipeline. Claude does **not**
+hold credentials, press send, or read the inbox. Rushi sends; he pastes replies back
+in. That is his own rule and it is right — a cold email that lands badly lands on
+*his* name.
+
+## Targeting rule — no scraped lists, ever
+
+**A live job posting is a public, explicit statement of need from an organisation
+with budget, published to attract contact.** That is the legitimate version of the
+"engagement is a hand raise" insight — no scraping, no data brokers, no enrichment
+waterfall, and no invented personas.
+
+**Source: the HN "Who is hiring?" monthly thread**
+([August 2026](https://news.ycombinator.com/item?id=49156683), 178 postings).
+Public, current, and companies post there specifically to be contacted.
+
+Filtered: mentions LLM / eval / RAG / agentic / AI engineering, **and** does not
+restrict to US-only. **10 of 178 survive.**
+
+## The honest problem with these targets
+
+**Most are full-time employment, not contract work.** Applying to them is a job hunt,
+which is a different destination from the one this map names.
+
+**But there is a real angle that keeps it a customer relationship, and it is how
+contractors actually get in:**
+
+> A company that has been advertising a senior AI role for weeks has a problem *now*
+> and a hire who starts in three months. A small, scoped, paid piece of work is worth
+> more to them than another CV.
+
+So the message is **not** an application. It is: *here is a specific thing I noticed,
+here is a small scoped piece I can do now, here is the work that shows I can.*
+
+## First batch — 2 messages, not 20
+
+Volume discipline is deliberate. Ten researched messages beat a hundred generic ones,
+and the map forbids spam volume. **Two, then wait for signal before writing more.**
+
+### Target 1 — Railway (`railway.com/careers`)
+
+Posting: *"Infra Eng-Storage, Product Eng (full-stack), Infra Eng-Observability,
+Infra Eng-General | REMOTE (Worldwide)"* — and the pitch itself is agent-shaped:
+*"Do you wish you could just tell Claude to manage your infra, and it would just
+work?"*
+
+**Angle:** they are building agent-driven infrastructure. Agents acting on infra is
+precisely where a confidently-wrong answer is expensive.
+
+> Subject: the failure mode in "just tell Claude to manage your infra"
+>
+> Hi — your Who Is Hiring post asks whether I dream of telling Claude to manage my
+> infra. I have been building the unglamorous half of that: what the agent does when
+> it does **not** know.
+>
+> I built a multi-agent system that grounds answers in pages it actually fetched,
+> re-derives every figure in code rather than trusting the model, and checks each
+> citation against the source text. It has a scored eval — 15 cases, graded by regex,
+> deliberately **not** by a model, because grading with an LLM puts the failure mode
+> inside the measuring instrument.
+>
+> The change that mattered: it used to invent "$0.25 per million tokens" and do
+> arithmetic on it. Now it returns "could not verify a current figure."
+>
+> Writeup: [link] · Code: [link]
+>
+> I am not applying for the full-time roles — I am in India and I would guess that is
+> a complication. What I am asking is whether a small paid scoped piece is useful:
+> an eval harness for one agent path you already ship, with the failure cases written
+> down. If it is not useful, no reply needed.
+>
+> Rushikesh
+
+### Target 2 — Atria (`Global Remote (almost anywhere)`)
+
+Posting: *"Product Engineer roles (across levels) and a **Staff SWE, Agentic AI**"*,
+preventative healthcare.
+
+**Angle:** healthcare plus agents is the highest-stakes possible place for an
+invented figure. "Could not verify" is not a limitation there — it is a requirement.
+
+> Subject: agentic AI in healthcare — what does yours do when it isn't sure?
+>
+> Hi — I saw you are hiring a Staff SWE for Agentic AI, and that you are open to
+> almost anywhere.
+>
+> One question, asked as someone who has spent a while on it rather than as a pitch:
+> when your agent cannot verify something, what does it output? In most systems the
+> honest answer is "a plausible sentence", and in healthcare that is the expensive
+> failure.
+>
+> I have built the checking layer for this — grounding in fetched sources,
+> deterministic arithmetic re-derivation, citation verification against source text,
+> and a scored eval graded by regex rather than by a model, because an LLM grader can
+> hallucinate the grade. Baseline 15/16, 15/15 after fixing a routing hole that let
+> volatile facts through ungrounded.
+>
+> Writeup: [link]
+>
+> I am in India, so I am not a candidate for the staff role. I am asking whether a
+> scoped piece of contract work is useful — for example, an eval set for one agent
+> workflow you already run, with the failure modes documented. If not, no reply
+> needed.
+>
+> Rushikesh
+
+## Rules held in both drafts
+
+- **No earnings promise**, to them or about them.
+- **No invented experience.** Every claim maps to code in this repo.
+- **The India/timezone fact is stated up front**, not hidden. Discovering it later
+  wastes their time and reads as evasive.
+- **An explicit exit** — "if not, no reply needed." A cold message that does not
+  offer one is pressure.
+- **The ask is small and paid**, not "can we hop on a call".
+
+## Blocked on Rushi
+
+1. **Read both messages.** Change anything that does not sound like him — they are
+   drafts, not scripts.
+2. **Two links needed before sending:** the case study and the code. Neither is
+   public yet. **The case study cannot go in an email until it is published
+   somewhere he controls** — that is the [B10](b10-build-what-rushi-builds.md)
+   publishing decision, and it now blocks this ticket.
+3. **He sends them**, from his own address.
+4. **He pastes any reply back**, and Claude drafts the response.
+
+## Then stop and wait
+
+Two messages, then nothing until there is signal. If both are ignored, that is
+information about the message or the target, and the next batch changes one variable
+— not the volume.
