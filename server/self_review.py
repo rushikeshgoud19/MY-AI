@@ -11,9 +11,12 @@ import os
 import re
 import sqlite3
 
-from .config import log_info, mizune_now
+from .config import log_info, mizune_now, is_recent
 
 DB_PATH = os.path.join(".data", "self_review.db")
+
+# The 2AM review must have actually run for its findings to be "last night's".
+REPORT_MAX_AGE_HOURS = 18.0
 
 
 def _db():
@@ -159,6 +162,13 @@ def send_bug_report(config: dict) -> str:
     if not found or not found[0]["items"] or found[0]["top_issue"] == "None":
         log_info("[SELF_REVIEW] Nothing to report this morning.")
         return "nothing to report"
+    # RECENCY GATE — "issues found while you slept" must be from LAST NIGHT. If the 2AM
+    # review didn't run, the newest row is an old one and sending it is fabrication.
+    # (latest_findings itself stays ungated: the dashboard's Dreaming tab is a history
+    # view and shows its own dates.)
+    if not is_recent(found[0].get("created_at"), REPORT_MAX_AGE_HOURS):
+        log_info("[SELF_REVIEW] Newest review is stale — the 2AM review did not run. Staying quiet.")
+        return "stale review — not sent"
 
     f = found[0]
     lines = [f"🐛 Nightly bug report — {len(f['items'])} issue(s) found while you slept:", ""]

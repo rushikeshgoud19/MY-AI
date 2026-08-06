@@ -1269,7 +1269,15 @@ def _execute_tool_call_impl(tool_name: str, args: dict, config: dict, background
                         f"7:40 AM. Sleep well. 🌙")
             if action == "report":
                 rep = latest_report()
-                return rep or "No shift report yet, Master."
+                if rep:
+                    return rep
+                # Master asked explicitly, so an OLD report is still worth showing — but it
+                # gets labelled as old rather than passed off as last night's work.
+                old = latest_report(max_age_hours=None)
+                if old:
+                    return ("No shift ran last night, Master. The most recent report I have "
+                            "is an older one:\n\n" + old)
+                return "No shift report yet, Master."
             # status (default)
             import sqlite3, os
             p = os.path.join(".data", "night_shift.db")

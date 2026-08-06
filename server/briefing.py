@@ -12,7 +12,7 @@ import os
 import sqlite3
 import datetime
 
-from .config import log_info, mizune_now, mizune_tz
+from .config import log_info, mizune_now, mizune_tz, is_recent as _is_recent
 
 BRIEFING_TASK_DESC = "MIZUNE_MORNING_BRIEFING"
 
@@ -110,24 +110,39 @@ def _todays_calendar() -> str:
 NIGHTLY_TASK_DESC = "MIZUNE_NIGHTLY_REVIEW"
 BUGREPORT_TASK_DESC = "MIZUNE_BUG_REPORT"   # 07:45 — lands BEFORE the 8AM briefing
 
+# Same recency contract as the night-shift report: "newest row" is not "last night".
+REVIEW_MAX_AGE_HOURS = 18.0
+
+
 def _last_night_review() -> str:
+    """LAST NIGHT'S self-review, or nothing.
+
+    RECENCY GATE. Without it the newest dispatched row won forever and the briefing
+    replayed the 2026-07-23 finding ("Provider groq failed; fix drafted on branch
+    mizune/auto-fix-20260723") every single morning as if it had just happened.
+    """
     db_path = os.path.join(".data", "self_review.db")
     if not os.path.exists(db_path):
         return ""
     try:
         con = sqlite3.connect(db_path)
-        row = con.execute("SELECT top_issue, branch_name FROM self_reviews WHERE dispatched = 1 ORDER BY id DESC LIMIT 1").fetchone()
+        row = con.execute("SELECT top_issue, branch_name, created_at FROM self_reviews"
+                          " WHERE dispatched = 1 ORDER BY id DESC LIMIT 1").fetchone()
         con.close()
-        if row:
-            top_issue, branch = row
-            return f"SELF-REVIEW: {top_issue} — fix drafted on branch {branch}"
+        if not row:
+            return ""
+        top_issue, branch, _created = row
+        if not _is_recent(_created, REVIEW_MAX_AGE_HOURS):
+            log_info("[BRIEFING] newest dispatched self-review is stale - omitting it.")
+            return ""
+        return f"SELF-REVIEW: {top_issue} — fix drafted on branch {branch}"
     except Exception:
         pass
     return ""
 
 def build_briefing_sitrep() -> str:
     parts = []
-    for collector in (_todays_calendar, _weather, _todays_tasks, _important_emails, _important_whatsapp, _last_night_review):
+    for collector in (_google_down, _todays_calendar, _weather, _todays_tasks, _important_emails, _important_whatsapp, _last_night_review):
         try:
             part = collector()
             if part:

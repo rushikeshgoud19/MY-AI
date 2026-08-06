@@ -37,7 +37,7 @@ import sqlite3
 import threading
 import time
 
-from .config import log_info, mizune_now
+from .config import log_info, mizune_now, parse_mizune_ts
 
 DB_PATH = os.path.join(".data", "night_shift.db")
 
@@ -342,14 +342,51 @@ def build_proof_of_work(shift_id: int) -> str:
     return "\n".join(lines)
 
 
-def latest_report() -> str:
-    """The most recent finished shift's report, for the 07:40 delivery + dashboard."""
+# How recent a finished shift must be for its report to count as "last night's work".
+# Covers a 22:00 → 06:00 window read at 07:40 with room to spare.
+REPORT_MAX_AGE_HOURS = 18.0
+
+
+def _finished_at(updated_at: str, deadline: str):
+    """Best-effort finish time of a shift row. `updated_at` is stamped by _touch() on the
+    transition to done/expired, so it IS the finish time; `deadline` is the fallback for
+    rows written before that stamp existed. Returns None if neither parses."""
+    for raw in (updated_at, deadline):
+        dt = parse_mizune_ts(raw)
+        if dt is not None:
+            return dt
+    return None
+
+
+def latest_report(max_age_hours: float = REPORT_MAX_AGE_HOURS) -> str:
+    """The most recent finished shift's report, for the 07:40 delivery + dashboard.
+
+    RECENCY GATE (Law 3 / Rule 8 — never invent success). "Newest row" is not "last
+    night". Without this gate the 07:40 cron narrated the 2026-07-27 smoke-test shift
+    every single morning as work she had just finished — the Aug 5 and Aug 6 WhatsApp
+    reports were word-for-word identical. Returns "" when nothing finished recently;
+    the caller must then say plainly that no shift ran, not fall back to older text.
+    Pass max_age_hours=None to bypass the gate (explicit "show me the last report").
+    """
     con = _db()
     row = con.execute(
-        "SELECT report FROM shifts WHERE status IN ('done','expired') "
+        "SELECT report, updated_at, deadline FROM shifts WHERE status IN ('done','expired') "
         "AND report != '' ORDER BY id DESC LIMIT 1").fetchone()
     con.close()
-    return row[0] if row and row[0] else ""
+    if not row or not row[0]:
+        return ""
+    if max_age_hours is None:
+        return row[0]
+    now = mizune_now()
+    finished = _finished_at(row[1], row[2])
+    if finished is None:
+        log_info("[SHIFT] newest report has no usable finish time — not reporting it as last night's.")
+        return ""
+    age_h = (now - finished).total_seconds() / 3600.0
+    if age_h > max_age_hours:
+        log_info(f"[SHIFT] newest report is {age_h:.1f}h old (limit {max_age_hours}h) — no shift ran last night.")
+        return ""
+    return row[0]
 
 
 # ── boot resume ────────────────────────────────────────────────────────────────

@@ -45,6 +45,14 @@ from server.scheduler import CronManager
 global_cron_manager = CronManager()
 
 
+# A "recipient" that means Master himself is not a send target — "tell me what you recall
+# about my work setup" is a QUESTION, not a WhatsApp send. Pattern 1 below always had this
+# guard inline; patterns 2 and 3 did not, so that exact sentence sent a message to Master's
+# own chat and answered "Done! Message sent to Master's own chat (SELF)" (2026-08-07).
+# One tuple, checked at every return point — the same dedup shape as _clean_final_text().
+_SELF_RECIPIENTS = ("me", "myself", "self", "master", "master rushi")
+
+
 def _parse_whatsapp_send_command(wa_text: str):
     """
     Parse recipient and message body from WhatsApp send intents.
@@ -60,14 +68,14 @@ def _parse_whatsapp_send_command(wa_text: str):
     m1 = re.search(r"^(?:mizune\s+)?(?:say|send|message|text|msg)\s+(.+?)\s+to\s+([A-Za-z0-9_\s\+\@\.]+)", clean, re.IGNORECASE)
     if m1:
         b, w = m1.group(1).strip().strip('"\''), m1.group(2).strip()
-        if b and w and w.lower() not in ("me", "myself", "self", "master", "master rushi"):
+        if b and w and w.lower() not in _SELF_RECIPIENTS:
             return w, b
 
     # 2. 'say to <who> <body/msg>' or 'tell <who> <body/msg>' (e.g. 'tell Pranay baka', 'say to Pranay baka')
     m2 = re.search(r"^(?:mizune\s+)?(?:say\s+to|tell)\s+([A-Za-z0-9_\s\+\@\.]+?)\s+(?:saying\s+)?(.+)", clean, re.IGNORECASE)
     if m2:
         w, b = m2.group(1).strip(), m2.group(2).strip().strip('"\'')
-        if w and b:
+        if w and b and w.lower() not in _SELF_RECIPIENTS:
             return w, b
 
     # 3. Standard 'send/message/text/dm <who> saying/says/that says/: <body/msg>'
@@ -86,7 +94,7 @@ def _parse_whatsapp_send_command(wa_text: str):
             tos = list(re.finditer(r"\bto\b\s+", left, re.IGNORECASE))
             who = (left[tos[-1].end():] if tos else left).strip(" ,.")
             who = re.sub(r"^(?:a|an|the)\s+", "", who, flags=re.IGNORECASE).strip()
-            if who and body:
+            if who and body and who.lower() not in _SELF_RECIPIENTS:
                 return who, body
 
     return None, None
@@ -347,7 +355,6 @@ def _handle_scheduled_whatsapp_send(text: str, config: dict):
 def _seal_watermark():
     """Highest history rowid now — used to find [TOOL RESULTS] seals created after."""
     try:
-        from server.memory import memory
         cur = memory.db.cursor()
         row = cur.execute("SELECT MAX(rowid) FROM history").fetchone()
         return row[0] or 0
@@ -361,7 +368,6 @@ def _report_seal_failures(since_rowid, broadcast):
     if since_rowid is None:
         return
     try:
-        from server.memory import memory
         cur = memory.db.cursor()
         rows = cur.execute(
             "SELECT content FROM history WHERE rowid > ? AND content LIKE '%[TOOL RESULTS]%'",
@@ -452,8 +458,17 @@ def _scheduler_callback(task_description):
             try:
                 from server.night_shift import latest_report
                 report = latest_report()
+                # No RECENT finished shift. Say so plainly and stop — do not let the LLM
+                # voice anything here, and never fall through to an older report (that is
+                # exactly the fabrication the recency gate in latest_report() closed).
                 if not report:
-                    log_info("[SHIFT] no report to deliver.")
+                    log_info("[SHIFT] no shift finished last night - sending the honest no-shift line.")
+                    _text = ("No night shift ran last night, Master - nothing was queued, "
+                             "so I have no work to report.")
+                    from server.commands import whatsapp_automation
+                    _sent = str(whatsapp_automation("Master", _text))
+                    log_info(f"[SHIFT] no-shift notice: {_sent[:120]}")
+                    ws_manager.broadcast_sync({"type": "speak", "text": _text, "emotion": "neutral"})
                     return
                 text = ""
                 try:
@@ -805,7 +820,6 @@ def _scheduler_callback(task_description):
             res = whatsapp_automation(target_contact, msg_body)
             log_info(f"[SCHEDULER] Direct-executed WA_SEND to {target_contact!r}: {res}")
             try:
-                from server.memory import memory
                 memory.add_to_history("system", f"[TOOL RESULTS] message_whatsapp: {res[:150]}")
             except Exception as _e:
                 log_info(f"[SCHEDULER] seal failed: {_e}")
@@ -1145,7 +1159,6 @@ def _process_command_internal(text: str, config: dict, broadcast_sync_fn, sessio
             log_info(f"[MUSIC] fast-path: {_mtool} {_margs}")
             _mres = str(execute_tool_call(_mtool, _margs, config))
             try:
-                from server.memory import memory
                 memory.add_to_history("system", f"[TOOL RESULTS] {_mtool}: {_mres[:150]}")
             except Exception as _e:
                 log_info(f"[MUSIC] seal failed: {_e}")
@@ -1179,7 +1192,6 @@ def _process_command_internal(text: str, config: dict, broadcast_sync_fn, sessio
             # Seal it like any other tool result, so the audit and the lie-detector see a
             # real scheduling event rather than an unexplained gap.
             try:
-                from server.memory import memory
                 memory.add_to_history("system", f"[TOOL RESULTS] schedule_task: booked "
                                                 f"{_trigger.isoformat()} — {_rem_what[:100]}")
             except Exception as _e:
@@ -1211,7 +1223,6 @@ def _process_command_internal(text: str, config: dict, broadcast_sync_fn, sessio
                 log_info(f"[WHATSAPP] fast-path send → {_target_dest!r}: {_body[:60]!r}")
                 _res = str(whatsapp_automation(_target_dest, _body))
                 try:
-                    from server.memory import memory
                     memory.add_to_history("system", f"[TOOL RESULTS] message_whatsapp: {_res[:150]}")
                 except Exception as _e:
                     log_info(f"[WHATSAPP] seal failed: {_e}")
