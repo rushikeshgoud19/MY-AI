@@ -130,6 +130,19 @@ what is blocked on Rushi.
   and Upwork rejecting ~30% of new applicants, **the marketplace route is closed for
   now — not by choice.** The channel requirement is therefore concrete: **no
   gatekeeper.**
+- **2026-08-06 — [B10](tickets/b10-build-what-rushi-builds.md): the offer pivots to
+  what Rushi can actually build. Decided by him.** India dropped as the buyer market
+  (no contacts), so **B9 is shelved, not deleted**. Every prior offer was research
+  work he has no background in — an offer the principal cannot personally deliver is
+  fragile. **But "web development" is refused as an offer**: most commoditised
+  category there is, and the opposite of narrowing. **Proposed instead: "AI features
+  that refuse to make things up, with a scored eval that proves it"** — built on the
+  1,670 lines of tribunal and deterministic eval already in this repo. Keeps the
+  differentiator, moves it onto work he can deliver.
+- **2026-08-06 — the marketplace rejection may be category-specific, not general.**
+  His bids were rejected for research and data jobs where he had no portfolio. **For
+  development work he has a repo.** Worth retesting rather than generalising from one
+  category. Flagged, not asserted.
 - **2026-08-06 — [B9](tickets/b9-gst-vendor-checks.md) resolved: the GST filing data
   is public and usable, but NOT automatable by us — so it gets delivered by hand.**
   Official portal is CAPTCHA'd (not bypassed); knowyourgst's API carries registration
