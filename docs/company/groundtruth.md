@@ -130,6 +130,15 @@ what is blocked on Rushi.
   and Upwork rejecting ~30% of new applicants, **the marketplace route is closed for
   now — not by choice.** The channel requirement is therefore concrete: **no
   gatekeeper.**
+- **2026-08-06 — [B9](tickets/b9-gst-vendor-checks.md) resolved: the GST filing data
+  is public and usable, but NOT automatable by us — so it gets delivered by hand.**
+  Official portal is CAPTCHA'd (not bypassed); knowyourgst's API carries registration
+  details only, no filing history, and costs ₹2,500+; gstsearch is CAPTCHA'd; taxadda
+  is rate-limited; legaldev exposes no endpoint. **But a CAPTCHA blocks automation,
+  not the work** — a person reads the filing table in about a minute. For ONE customer
+  that is the right shape, and manual effort is the input Rushi actually has. **Ceiling
+  recorded: ~1 min/GSTIN, so small batches only**; scaling means a paid GSP API on his
+  own account, never captcha evasion.
 - **2026-08-06 — new frontier ticket, [B9](tickets/b9-gst-vendor-checks.md): GST
   vendor-compliance checks for Indian SMBs.** An Indian GSTIN can read **"Active"**
   while the vendor has not filed GSTR-1/3B for months — and the buyer silently loses

@@ -1,6 +1,6 @@
 # Pivot the buyer: GST vendor-compliance checks for Indian SMBs
 
-`wayfinder:research` · OPEN · **frontier** · supersedes the channel half of B6
+`wayfinder:research` · **RESOLVED 2026-08-06 — viable, but delivered by hand**
 
 ## Why this ticket exists
 
@@ -88,3 +88,66 @@ answers hold.
 
 The map records whether the GST filing history is retrievable without bypassing a
 captcha, and therefore whether this becomes the primary offer or is dropped.
+
+
+---
+
+## Resolution — 2026-08-06
+
+**The filing history is public and usable. It is not automatable by us. That is
+survivable, and the distinction is the whole answer.**
+
+### What was tested
+
+| Route | Result |
+|---|---|
+| Official portal `services.gst.gov.in/services/searchtp` | **CAPTCHA.** Not bypassed — out of bounds, and this is the last business that should start there |
+| `knowyourgst.com` GSTIN API | **Registration details only** — trade name, legal name, address, status, registration date, PAN. **No filing history.** Trial is 2 days / 50 calls, then plans "start with Rs. 2500", signup required |
+| `gstsearch.in` return-status tool | **CAPTCHA** |
+| `taxadda.com` return-status tool | Free tier exists but returned *"Sorry! your limit is over"* — rate-limited |
+| `legaldev.in` return-status tool | Renders "Fetching filing status… month by month" via JS; **no endpoint exposed in the static HTML.** Reverse-engineering someone's private endpoint is not a foundation for a business and was not attempted |
+
+### The distinction that resolves the ticket
+
+**A CAPTCHA blocks automation. It does not block the work.**
+
+A person can open the official portal, enter a GSTIN, solve the CAPTCHA and read the
+filing table — every return, its status, its date — in about a minute. The data is
+public and the government publishes it precisely so counterparties can check.
+
+So the product is not blocked. **Delivery is manual.** For a first customer that is
+not merely acceptable, it is the correct shape:
+
+- Customer #1 needs **one buyer**, not throughput. Twenty vendors is twenty minutes.
+- Rushi has time and no money. Manual effort is the input he actually has.
+- The value was never the automation. The value is that **someone does it properly,
+  records the source, and states what could not be confirmed** — which is exactly
+  what a competitor's "Active ✓" does not do.
+
+### The ceiling, stated now rather than discovered later
+
+This does not scale on Rushi's hands. Roughly a minute per GSTIN means a
+200-vendor ledger is a multi-hour job. The honest ceiling is small batches — a
+business checking its top 20–50 vendors, not its entire supplier master.
+
+If it ever needs to scale, the route is a **paid GSP/commercial API on Rushi's own
+account**, not captcha evasion. That is a decision for after money exists, and it
+is deliberately not taken now.
+
+### What changes in the offer
+
+- `scripts/company_check.py` stays for UK/AU/India company checks and is unaffected.
+- The GST check is a **separate, manual** deliverable using the same report format:
+  sources on every line, durations recomputed, explicit "could not verify".
+- **Positioning is unchanged and now sharper:** *"Your vendor's GSTIN says Active.
+  That is not the same as your input tax credit being safe."*
+
+### The one thing Rushi should confirm
+
+Open `https://services.gst.gov.in/services/searchtp`, enter any GSTIN, solve the
+CAPTCHA, and check that the **return-filing table** (GSTR-1 / GSTR-3B, month by
+month) actually appears. Two minutes. **Everything above rests on that table being
+visible to a logged-out member of the public** — sourced from tax write-ups, not
+witnessed directly, because the CAPTCHA stopped me at the door.
+
+If the table is behind a login, this ticket reopens.
