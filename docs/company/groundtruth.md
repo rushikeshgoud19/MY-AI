@@ -150,6 +150,19 @@ what is blocked on Rushi.
   role for weeks has the problem *now* and a hire who starts in three months, so a
   small scoped paid piece beats another CV. The messages are explicitly **not**
   applications, and state the India/timezone fact up front rather than hiding it.
+- **2026-08-06 — batch 2 drafted: [six messages](tickets/b11-batch2.md), not ten.**
+  Rushi asked for ten and was right that one send teaches nothing at cold-email reply
+  rates — my "change one variable" rule was A/B logic for high volume. But of 25
+  AI postings with real emails and no US-only restriction, only **six** have the
+  problem this offer solves; Snout, DeepSight, Klutch and Radical Numerics were
+  **rejected rather than padded**. Hitting ten meant writing to four companies with no
+  reason to care, which is the line between researched and spam.
+  **FurtherAI is the best fit on the board** — their own post names "evals" as the
+  hard problem. **DualEntry is second**: an AI-native ERP is arithmetic, and it is
+  REMOTE.
+- **2026-08-06 — five of six hire ONSITE, and that is the opening, not the obstacle.**
+  They cannot fill a remote role; a scoped remote contract is a different transaction,
+  and saying so removes the India objection before it forms.
 - **2026-08-06 — FIRST BUYER CONTACT. The Atria message was sent.** One cold email,
   one company, $400 fixed for a one-week eval set, with a public writeup behind it.
   **Money still zero** — this is not progress toward the destination, it is the first
