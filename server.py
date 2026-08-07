@@ -434,7 +434,13 @@ async def websocket_endpoint(websocket: WebSocket):
                                         "payload": {"valence": v, "arousal": a}
                                     })
                                     
-                                    ws_manager.broadcast_sync({"type": "speak", "text": res})
+                                    # "tts": True promises her REAL Japanese voice is coming, so the
+                                    # client waits for it instead of racing a timer. Without this the
+                                    # dashboard guessed 1800ms while edge-tts measured 1.25-2.42s on
+                                    # the VM, so the English browser voice won and got cut off
+                                    # mid-word when the Japanese finally landed.
+                                    ws_manager.broadcast_sync({"type": "speak", "text": res, "tts": True})
+                                    spoke = False
                                     try:
                                         from server.tts import generate_tts
                                         from server.audio import play_audio_bytes
@@ -448,6 +454,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                                 "format": "mp3",
                                                 "b64": base64.b64encode(audio_bytes).decode("utf-8"),
                                             })
+                                            spoke = True
                                             # Also play locally (only audible when running on a machine
                                             # with speakers; harmless no-op/err on the headless VM).
                                             try:
@@ -456,6 +463,11 @@ async def websocket_endpoint(websocket: WebSocket):
                                                 pass
                                     except Exception as e:
                                         log_info(f"[WS] TTS generation error: {e}")
+                                    if not spoke:
+                                        # The promise failed. Release the client NOW rather than
+                                        # leaving it silent until its safety timer expires.
+                                        log_info("[WS] TTS produced no audio - releasing client to browser voice.")
+                                        ws_manager.broadcast_sync({"type": "audio_failed"})
                             except Exception as e:
                                 import traceback
                                 traceback.print_exc()
