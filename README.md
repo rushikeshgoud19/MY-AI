@@ -86,9 +86,52 @@ audio, and device-node registration.
 | **Morning briefing** | Deterministic collection (weather, calendar, due tasks, important mail) at a configurable hour. Code collects and code delivers; the model only voices it. If voicing fails, the raw data still ships — data over silence. |
 | **Evaluation harness** | Scores every provider on response fidelity *and* tool-selection correctness against a fixed prompt set, separating **availability** from **fidelity** so a rate-limited provider isn't mistaken for a bad one. |
 | **Cross-model verification** | Fans one question to K providers in parallel, then a *different* model reconciles the answers and flags disagreement. Nearly free because it runs across free tiers. |
+| **Agent Orchestra** | For questions with a trade-off rather than an answer: four advocates argue in parallel on different models under different stances, a held-out judge scores each and names its defect, and **code** applies the adopt/refine threshold. [Details below](#agent-orchestra). |
 | **Portable self** | `mizune_export.py` dumps identity, memory, knowledge and embeddings to one checksummed archive — secrets excluded, redacted config schema included. `mizune_import.py` reconstitutes her on a clean machine with integrity verification. |
 | **Self-extension** | Writes, registers and version-tracks its own skill plugins, with success-rate telemetry. |
 | **Neural voice** | Browser speech recognition in; server-generated neural TTS streamed back over WebSocket — real voice quality, not browser synthesis. |
+
+---
+
+## Agent Orchestra
+
+Truth seals catch a model lying about what it *did*. They do nothing about a model that is
+confidently wrong about what is *true*. Some questions have no retrievable answer — they have a
+trade-off — and there, one model answering fluently is the failure mode.
+
+```
+ question ──► TRIAGE     settled or contested?
+               │            settled  → one direct answer   (2 calls, ~150 tokens)
+               │            contested ↓
+               ├─► GROUND  web search, merged and deduped; a missing fact is reported
+               │           as missing, never filled in by a model
+               ├─► ARGUE   4 advocates · 4 models · 4 stances · in parallel
+               │             ATTACK THE PREMISE · BREAKS AT SCALE? ·
+               │             SIMPLEST PATH · COST FIRST
+               ├─► JUDGE   scores each 0–10 and names its specific defect
+               │             CODE applies the threshold → adopt or refine
+               └─► VERDICT synthesised, dissent kept   (~11 calls, ~6k tokens)
+```
+
+**The judge scores; code decides.** In an 18-question soak where the *judge* held the decision it
+chose "adopt" **18 times out of 18** — including on ten deliberately contentious questions —
+because with four competent models at least one answer is always defensible. The entire refinement
+path was dead code until the threshold moved out of the prompt and into Python. Same lesson as the
+scheduler: **LLMs voice, code delivers.**
+
+**Model size did not predict judging quality.** A 52-model benchmark scored candidates on the judge
+role itself — pick the correct advocate *and* name a real error in a loser. A 3B model scored 6/6 on
+both; the flagship scored 4/6 and 2/6, and rate-limited on two of six cases. A stalled judge stalls
+the whole panel, so the flagship lost on operations as well as on merit.
+
+**Fabricated numbers are caught deterministically.** Advocates must emit their arithmetic as a
+`CALC:` line, re-evaluated by an AST walker (never `eval`), and every citation-shaped span is tested
+against the reference text. Either failure caps the score below the adoption threshold. A grounding
+probe suite went 3/9 → 6/7 across this work, and the bug that mattered most wasn't bad reasoning:
+the judge had never been shown the reference material it was being asked to judge against.
+
+Every debate persists to SQLite with each argument, each score and each named defect, and can be
+marked *followed* or *rejected* later — so the decision record outlives the session.
 
 ---
 
@@ -184,7 +227,8 @@ character/         personality definition (SOUL.md)
 mizune-android/    Kotlin companion app — WebSocket client, TTS, wake word,
                    MizuneAccessibilityService (the phone's hands)
 device_agent.py    device-node agent for desktop machines
-scripts/           smoke test · export/import · benchmarks · content engine
+scripts/           smoke test · export/import · benchmarks · run_orchestra (streaming
+                   CLI) · orchestra_journal (decision record) · mizune_acp (ACP bridge)
 docs/              engineering ledger and architecture references
 legacy/            retired implementations, kept for reference
 ```
@@ -204,6 +248,18 @@ legacy/            retired implementations, kept for reference
    An assistant that pings 20× a day gets muted, and then it may as well not exist.
 7. **Secrets stay home.** Keys live in gitignored config; telemetry capture is scrubbed at the
    decorator level.
+
+---
+
+## Related projects
+
+Two standalone projects of mine that this system integrates. Both stand on their own, and both
+exist because an assistant that acts on your behalf has to be checkable:
+
+| Project | What it is |
+|---|---|
+| **[stepproof](https://github.com/rushikeshgoud19/stepproof)** | Verification for agent actions, as a zero-dependency library. Checks a claimed effect against real state, seals it into a hash-chained tamper-evident ledger, and rejects narration offered as evidence. 138 passing checks; adapters for LangChain, OpenAI Agents SDK and CrewAI. This is the truth-seal idea, generalised. |
+| **[Tribunal](https://github.com/rushikeshgoud19/datahub-tribunal)** | The deliberation engine above, aimed at irreversible data-platform decisions — grounded in a live metadata catalogue and writing its rulings back as linked Decision documents. |
 
 ---
 
