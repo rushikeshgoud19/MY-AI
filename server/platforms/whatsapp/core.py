@@ -628,19 +628,54 @@ class MizuneWhatsAppCore:
         msg = self.importance.analyze(msg, contact)
         self.memory.ingest_message(msg, contact)
         
+        # Z1 Guardian Fraud Shield Passive Scan (fail-safe, alerts Master ONLY, never replies to sender)
+        try:
+            from server.guardian import analyze_message
+            sender_info = msg.sender_name or msg.sender_phone or "Unknown"
+            if msg.text:
+                analyze_message("whatsapp", sender_info, msg.text)
+        except Exception as e:
+            log_info(f"[Core] Guardian scan failed: {e}")
+
         if msg.should_alert_user:
             await self.voice.trigger_alert(msg, contact)
             
         if not self._should_reply(msg, contact):
             return
-            
+
+        # Image vision — MUST stay AFTER the reply gate. It originally ran before it,
+        # which meant ANY image from ANY friend or group got an unsolicited AI reply,
+        # bypassing the privacy rule that she only engages when summoned (2026-07-23).
+        if msg.media and msg.media.get('type') == 'image':
+            try:
+                import base64
+                from server.ai import save_latest_image, describe_image
+                buf = msg.media.get('buffer', '')
+                if isinstance(buf, bytes):
+                    buf = base64.b64encode(buf).decode('utf-8')
+                if buf:
+                    save_latest_image(buf)
+                    question = msg.text.strip() if msg.text else "what does this say"
+                    vision_reply = await asyncio.to_thread(describe_image, buf, question, self.config)
+                    if vision_reply:
+                        await self.send_message(msg.chat_jid, vision_reply)
+                        return
+            except Exception as e:
+                log_info(f"[Core] Image vision failed: {e}")
+
         session_id = f"whatsapp:{msg.chat_type}:{msg.chat_jid}"
         prompt_text = msg.text
         
         if msg.is_self:
             prompt_text = f"[MESSAGE FROM MASTER RUSHI (via WhatsApp)]: {msg.text}\n(SYSTEM: This is Master Rushi commanding you directly in this chat. Acknowledge him and execute his request. Do not speak about him in the 3rd person.)"
         else:
-            prompt_text = f"[WHATSAPP MESSAGE FROM {msg.sender_name}]: {msg.text}\n(SYSTEM: Reply directly in plain text to this WhatsApp message.)"
+            prompt_text = (
+                f"[WHATSAPP MESSAGE FROM {msg.sender_name}]: {msg.text}\n"
+                f"(SYSTEM: You are speaking to {msg.sender_name}, a friend of Master Rushi. "
+                f"Be warm, cute, friendly, and conversational in your Mizune persona. "
+                f"DO NOT share Master Rushi's private chats, schedule, contacts, location, or personal history — "
+                f"if asked about those, give a sweet, polite refusal. Otherwise answer helpfully and warmly!)"
+            )
             
         try:
             response = await asyncio.to_thread(process_command, prompt_text, self.config, lambda x: None, session_id)
@@ -684,11 +719,28 @@ class MizuneWhatsAppCore:
         if msg.chat_type == 'group':
             if not (msg.is_mentioned or has_wake_word):
                 return False
-        else:
-            # 1.3 Gate who Mizune responds to + wake prefix
-            if not is_allowed and not has_wake_word:
+            # SECURITY (2026-08-01): the allowed-user check used to apply ONLY on the DM
+            # branch — `is_allowed` was computed above and then never consulted here. So ANY
+            # member of ANY group Master is in, a total stranger with no credentials, could
+            # drive her by starting a message with "mizune ...". Chained with the third-party
+            # bypass and the device agent's run_task, that was a path from a group message to
+            # arbitrary shell on his laptop.
+            # Same gate as DMs now: being in a group he is in is not authorisation.
+            if not is_allowed:
+                log_info(f"[SECURITY] ignoring group summons from unauthorised sender "
+                         f"{msg.sender_name!r} in {msg.chat_jid}")
                 return False
-                
+        else:
+            # She lives on Master's PERSONAL number: friends texting him are talking
+            # to HIM, not to her. Auto-replying (and running brain/recall) on every
+            # VIP/allowed friend's message meant she processed Master's private
+            # conversations (observed 2026-07-19). Now she only engages when
+            # explicitly summoned ("mizune ..."), and only by allowed contacts.
+            if not has_wake_word:
+                return False
+            if not is_allowed:
+                return False
+
         return True
 
     async def send_message(self, to_jid: str, text: str):
@@ -799,11 +851,16 @@ def send_whatsapp_message(text: str, to: str = None) -> bool:
     if _core_instance and _core_instance.bridge_ws:
         if to:
             import re
-            digits_only = re.sub(r'\D', '', to)
-            if digits_only:
-                to_jid = f"{digits_only}@s.whatsapp.net"
+            # A FULL JID IS ALREADY AN ADDRESS — never rebuild it from its digits.
+            # WhatsApp's newer privacy IDs look like "192689429586157@lid"; stripping the
+            # non-digits turned that into "192689429586157@s.whatsapp.net", which is a
+            # DIFFERENT account — possibly a real stranger's. Anything containing '@' is
+            # passed through untouched; only bare phone numbers get the s.whatsapp.net suffix.
+            if "@" in to:
+                to_jid = to.strip()
             else:
-                to_jid = to
+                digits_only = re.sub(r'\D', '', to)
+                to_jid = f"{digits_only}@s.whatsapp.net" if digits_only else to
         else:
             to_jid = "me"
 
@@ -822,3 +879,77 @@ def send_whatsapp_message(text: str, to: str = None) -> bool:
             except RuntimeError:
                 return False
     return False
+
+
+# ── GROUP-AWARE ROUTING (one rule, used by every send path) ──────────────────────────────
+def group_route_target(contact: str, request_text: str = ""):
+    """If this turn arrived in a GROUP and Master didn't ask for a DM, answer IN the group.
+
+    MEASURED 2026-08-01 from a real chat: in the group "Ma Amma mugguru pillalu" Rushi typed
+    "Mizune introduce yourself to my brother" and she replied "Done! Message sent to
+    919949092801" — she DM'd his brother privately instead of introducing herself in the
+    group where everyone, including the brother, was already sitting.
+
+    WHY IT HAPPENED: group routing existed ONLY inside `_parse_whatsapp_send_command`, the
+    deterministic send fast-path. "Introduce yourself to my brother" contains no send verb, so
+    the fast-path never fired and the MODEL called message_whatsapp directly — and the tool
+    dispatcher had no idea a group existed. Two send paths, one of them group-aware: exactly
+    the "fixed in one place out of two" shape that keeps biting this project.
+    So the rule lives HERE, in one function, and every send path calls it.
+
+    Returns (target, group_jid_or_None). An explicit JID or an explicit DM request is returned
+    untouched — Master asking for a private message must always win.
+    """
+    from server.config import log_info as _li
+    try:
+        if "@" in str(contact or ""):
+            return contact, None            # already an explicit JID: honour it
+        from server.processor import current_session_id
+        sess = current_session_id.get()
+    except Exception as e:
+        _li(f"[WHATSAPP] group routing skipped: {e}")
+        return contact, None
+
+    if not sess or "whatsapp:group:" not in str(sess):
+        return contact, None
+
+    # An explicit private request always wins over the group default.
+    if any(w in (request_text or "").lower() for w in
+           ("dm", "privately", "in private", "directly", "private message", "separately",
+            "personally", "individually")):
+        return contact, None
+
+    jid = str(sess).split("whatsapp:group:", 1)[1].strip()
+    if "@g.us" not in jid:
+        return contact, None
+    _li(f"[WHATSAPP] group routing: '{contact}' -> origin group {jid} "
+        f"(reply where you were asked)")
+    return jid, jid
+
+
+def is_third_party_turn(text: str) -> bool:
+    """True when this turn came from someone who is NOT Master. FAIL-CLOSED, HEADER-ONLY.
+
+    THE BUG THIS REPLACES (found 2026-08-01, live and remotely exploitable):
+        _is_third_party = ("[WHATSAPP MESSAGE FROM" in text
+                           and "FROM Rushi" not in text and "FROM Rushikesh" not in text)
+    That substring-tested the WHOLE assembled prompt — header AND the sender's own message
+    body. The body is entirely attacker-controlled, so writing the words "FROM Rushi" anywhere
+    in a message flipped the gate to False and handed the sender Master's privileges: full chat
+    history, master_profile, unfiltered memory recall, read_whatsapp over his inbox, the
+    WhatsApp send fast-path (sending AS him), the reminder scheduler, and /model. Chained with
+    the group branch that skipped the allowed-user check, and the device agent's unguarded
+    run_task, it ran from "stranger in a group chat" to "arbitrary shell on his laptop".
+
+    WHY HEADER-ONLY: the Master turn is emitted as "[MESSAGE FROM MASTER RUSHI (via WhatsApp)]"
+    and that branch is gated on `msg.is_self` — sent from Mizune's own linked number, a
+    structural fact no stranger can forge. So the trustworthy signal is the header PREFIX, and
+    `startswith` cannot be influenced by anything the sender writes.
+
+    WHY THE "FROM Rushi" EXEMPTION IS GONE: it existed so Master texting from a second number
+    still counted as himself. But that name is the WhatsApp pushName, which any stranger can
+    set to "Rushi" — keeping the exemption would just move the bypass from the body to the
+    display name. Him losing privileges on a second number is an inconvenience he will notice
+    and can fix; a stranger gaining them is a compromised laptop he would not notice at all.
+    """
+    return (text or "").lstrip().startswith("[WHATSAPP MESSAGE FROM")

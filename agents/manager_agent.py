@@ -235,6 +235,14 @@ class ManagerAgent(BaseAgent):
             return None  # Fall through to server.py built-in handlers
 
         elif intent == "autonomous":
+            # On the headless cloud brain there's no screen to "operate" — the
+            # perceive/plan/execute pipeline just fabricates a Done. The REAL
+            # executor there is the tool-calling brain (remote_device_command,
+            # run_task/claude_task...), so fall through to it.
+            import sys as _sys
+            if _sys.platform.startswith("linux"):
+                self.log("[Brain/Auto] headless brain — routing goal to the tool pipeline instead")
+                return None
             self.current_mode = "autonomous"
             return await self._handle_autonomous(text, context)
 
@@ -315,6 +323,13 @@ class ManagerAgent(BaseAgent):
 
     async def _handle_obsidian(self, text: str, context: Optional[Dict]) -> Optional[str]:
         """Obsidian: save to brain or create notes."""
+        # These handlers only emit [OBSIDIAN_*] placeholder tags that never actually
+        # search/save on the headless cloud brain — and they were HIJACKING "what do
+        # you know about X" away from the real recall_knowledge tool (2026-07-20).
+        # Fall through to the tool-calling brain (has learn/recall_knowledge/obsidian_vault).
+        import sys as _sys
+        if _sys.platform.startswith("linux"):
+            return None
         if "obsidian" not in self.workers:
             return "I don't have my brain connected right now, Master! (ObsidianVault not configured)"
             

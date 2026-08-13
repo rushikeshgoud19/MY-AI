@@ -239,7 +239,7 @@ class SystemAgent(BaseAgent):
     @observe(name="planner.schedule", type="agent")
     async def execute(self, task_input: str, context: Optional[Dict] = None) -> Any:
         self.log(f"Executing system task: {task_input}")
-        update_current_span({"task_input": task_input})
+        update_current_span(metadata={"task_input": task_input})
 
         text = task_input.lower()
 

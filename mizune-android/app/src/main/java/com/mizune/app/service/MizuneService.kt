@@ -8,6 +8,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.media.RingtoneManager
+import android.net.Uri
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
@@ -37,6 +38,9 @@ class MizuneService : Service() {
     private val listenersLock = Object()
     private var isAppInForeground = false
     private var lastConnectionState = ConnectionState.DISCONNECTED
+    private var wakeWord: com.mizune.app.audio.WakeWordDetector? = null
+    private var porcupine: com.mizune.app.audio.PorcupineWakeWord? = null
+    private var serviceTts: com.mizune.app.audio.TtsPlayer? = null
 
     companion object {
         private const val TAG = "MizuneService"
@@ -65,13 +69,89 @@ class MizuneService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForeground(NOTIFICATION_ID, createPersistentNotification())
+        startWakeWord()
         return START_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
 
+    /**
+     * Start the wake word. Prefers Porcupine ("Baka Mizune", accurate, low-power) when
+     * configured (AccessKey + baka_mizune.ppn present); otherwise falls back to Vosk
+     * continuous fuzzy matching so it always does SOMETHING.
+     */
+    private fun startWakeWord() {
+        if (wakeWord == null) {
+            wakeWord = com.mizune.app.audio.WakeWordDetector(this, object : com.mizune.app.audio.WakeWordListener {
+                override fun onWakeWordDetected() {
+                    vibrateOnce()
+                    setWakeStatus("✨ Baka Mizune — heard you!")
+                }
+                override fun onCommandRecognized(command: String) {
+                    if (command.isNotBlank() && ::webSocket.isInitialized) {
+                        webSocket.sendMessage(command)
+                        setWakeStatus("▶ running: $command")
+                    }
+                }
+                override fun onHeard(text: String) {
+                    if (text.isNotBlank()) setWakeStatus("🎙 heard: ${text.take(40)}")
+                }
+                override fun onError(error: String) {
+                    Log.w(TAG, "WakeWord: $error"); setWakeStatus("⚠ wake: $error")
+                }
+                override fun onReadyForSpeech() { setWakeStatus("🎙 Listening for \"Baka Mizune\"…") }
+            })
+        }
+
+        porcupine = com.mizune.app.audio.PorcupineWakeWord(this) { onPorcupineWake() }
+        if (porcupine?.start() == true) {
+            setWakeStatus("🎙 \"Baka Mizune\" ready (Porcupine)")
+            Log.d(TAG, "Wake via Porcupine")
+        } else {
+            porcupine = null
+            wakeWord?.startListening()          // Vosk fallback (until Rushi adds key + .ppn)
+            setWakeStatus("⏳ Loading wake word (Vosk)…")
+            Log.d(TAG, "Wake via Vosk fallback")
+        }
+    }
+
+    /** Porcupine detected the wake word → hand the mic to Vosk to capture the command. */
+    private fun onPorcupineWake() {
+        vibrateOnce()
+        setWakeStatus("✨ Baka Mizune — listening…")
+        porcupine?.stop()                        // release mic
+        wakeWord?.captureCommandOnce(7000) { cmd ->
+            if (!cmd.isNullOrBlank() && ::webSocket.isInitialized) {
+                webSocket.sendMessage(cmd)
+                setWakeStatus("▶ running: $cmd")
+            } else {
+                setWakeStatus("🎙 \"Baka Mizune\" ready")
+            }
+            porcupine?.resume()                  // reclaim mic for the next wake
+        }
+    }
+
+    /** Pause/resume wake detection so it doesn't fight push-to-talk for the mic. */
+    fun pauseWakeWord() { porcupine?.stop(); wakeWord?.pause() }
+    fun resumeWakeWord() { if (porcupine != null) porcupine?.resume() else wakeWord?.resume() }
+
+    private fun vibrateOnce() {
+        try {
+            val v = getSystemService(android.os.Vibrator::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+                v?.vibrate(android.os.VibrationEffect.createOneShot(35, android.os.VibrationEffect.DEFAULT_AMPLITUDE))
+            else @Suppress("DEPRECATION") v?.vibrate(35)
+        } catch (_: Exception) {}
+    }
+
     override fun onDestroy() {
         super.onDestroy()
+        wakeWord?.stopListening()
+        wakeWord = null
+        porcupine?.release()
+        porcupine = null
+        serviceTts?.release()
+        serviceTts = null
         if (::webSocket.isInitialized) {
             webSocket.disconnect()
         }
@@ -117,6 +197,99 @@ class MizuneService : Service() {
                     uiListeners.forEach { it.onTaskList(tasks) }
                 }
             }
+
+            override fun onAudio(base64Mp3: String) {
+                synchronized(listenersLock) {
+                    uiListeners.forEach { it.onAudio(base64Mp3) }
+                }
+                // Hands-free: if the app isn't in the foreground (e.g. wake-word command
+                // with the phone locked), the service plays her real voice itself.
+                if (!isAppInForeground) {
+                    if (serviceTts == null) serviceTts = com.mizune.app.audio.TtsPlayer(this@MizuneService)
+                    serviceTts?.playBase64(base64Mp3)
+                }
+            }
+
+            override fun onDeviceCommand(requestId: String, action: String, args: Map<String, String>) {
+                val result = try {
+                    when (action) {
+                        "notify" -> {
+                            val title = args["title"] ?: "Mizune"
+                            val message = args["message"] ?: args["text"] ?: ""
+                            showAlertNotification(title, message)
+                            "Notification shown on phone."
+                        }
+                        "open_url" -> {
+                            val url = args["url"] ?: ""
+                            if (url.startsWith("http://") || url.startsWith("https://")) {
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                                // Optional: force a specific browser (e.g. Brave) instead of
+                                // letting the URL deep-link into an app (YT Music app).
+                                val browser = args["browser"] ?: args["package"]
+                                val pkg = if (!browser.isNullOrBlank()) resolveBrowserPackage(browser) else null
+                                if (pkg != null) intent.setPackage(pkg)
+                                launchIntent(intent, "open $url" + if (pkg != null) " in $browser" else "")
+                            } else "Refused: only http(s) URLs are allowed."
+                        }
+                        "open_app" -> {
+                            val name = args["app_name"] ?: args["app"] ?: args["name"] ?: ""
+                            val launch = resolveLaunchIntent(name)
+                            if (launch == null) "Couldn't find an app matching '$name' on the phone."
+                            else launchIntent(launch, "open $name")
+                        }
+                        "tap" -> {
+                            val text = args["text"] ?: args["target"] ?: ""
+                            if (!MizuneAccessibilityService.isEnabled())
+                                needsAccessibility("tap '$text'")
+                            else if (MizuneAccessibilityService.instance?.tapByText(text) == true)
+                                "Tapped '$text' on the phone."
+                            else "Couldn't find '$text' on the current screen."
+                        }
+                        "type" -> {
+                            val text = args["text"] ?: ""
+                            if (!MizuneAccessibilityService.isEnabled())
+                                needsAccessibility("type text")
+                            else if (MizuneAccessibilityService.instance?.typeText(text) == true)
+                                "Typed the text on the phone."
+                            else "No text field is focused on the phone right now."
+                        }
+                        "press" -> {
+                            val key = args["key"] ?: args["button"] ?: ""
+                            if (!MizuneAccessibilityService.isEnabled())
+                                needsAccessibility("press $key")
+                            else if (MizuneAccessibilityService.instance?.press(key) == true)
+                                "Pressed $key on the phone."
+                            else "Couldn't press '$key' (try: back, home, recents, notifications)."
+                        }
+                        "scroll" -> {
+                            val dir = args["direction"] ?: "down"
+                            if (!MizuneAccessibilityService.isEnabled())
+                                needsAccessibility("scroll")
+                            else if (MizuneAccessibilityService.instance?.scroll(dir) == true)
+                                "Scrolled $dir on the phone."
+                            else "Nothing scrollable on the current screen."
+                        }
+                        "read_screen" -> {
+                            if (!MizuneAccessibilityService.isEnabled())
+                                needsAccessibility("read the screen")
+                            else "SCREEN:\n" + (MizuneAccessibilityService.instance?.dumpScreen() ?: "(unreadable)")
+                        }
+                        "speak" -> {
+                            val text = args["text"] ?: args["message"] ?: ""
+                            synchronized(listenersLock) {
+                                uiListeners.forEach { it.onMessage(text, "neutral") }
+                            }
+                            if (!isAppInForeground) showAlertNotification("Mizune", text)
+                            "Spoken/notified on phone."
+                        }
+                        else -> "Unknown action '$action'. Phone supports: notify, open_url, open_app, tap, type, press, scroll, read_screen, speak."
+                    }
+                } catch (e: Exception) {
+                    Log.e("MizuneService", "Device command failed", e)
+                    "Error executing $action on phone: ${e.message}"
+                }
+                webSocket.sendDeviceResult(requestId, result)
+            }
         }, serverUrl)
 
         webSocket.connect()
@@ -138,6 +311,100 @@ class MizuneService : Service() {
         synchronized(listenersLock) {
             uiListeners.remove(listener)
         }
+    }
+
+    private fun needsAccessibility(what: String): String =
+        "I need the Accessibility permission to $what. Open the Mizune app once and tap " +
+        "\"Enable Mizune's hands\" (Settings → Accessibility → Mizune → On). Then I can do it every time."
+
+    /**
+     * Launch an app/URL. Preferred path is the AccessibilityService — it's exempt from
+     * the OEM background-launch blocking (OnePlus/OxygenOS etc.) that silently swallows
+     * a plain foreground-service startActivity. Falls back to overlay-based launch, then
+     * to a tappable notification — and reports HONESTLY which happened.
+     */
+    private fun launchIntent(intent: Intent, describe: String): String {
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        // 1. Accessibility (reliable everywhere)
+        if (MizuneAccessibilityService.isEnabled() &&
+            MizuneAccessibilityService.instance?.launch(intent) == true) {
+            return "Done — opened it on the phone ($describe)."
+        }
+        // 2. Overlay-privileged direct launch (works on stock Android with permission)
+        val canOverlay = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ||
+                android.provider.Settings.canDrawOverlays(this)
+        if (canOverlay) {
+            try {
+                startActivity(intent)
+                // On OEM ROMs this can be silently dropped, so be honest, not boastful.
+                return "Tried to $describe on the phone. If nothing appeared, enable " +
+                    "Mizune's Accessibility permission and I'll do it reliably."
+            } catch (_: Exception) { /* fall through */ }
+        }
+        // 3. Tappable notification fallback
+        showLaunchNotification(intent, describe)
+        return "I couldn't launch it directly (OEM background limits). I sent a tappable " +
+            "notification — or enable Mizune's Accessibility permission for one-tap-free launches."
+    }
+
+    /** Resolve a browser name to its installed package (so a URL opens THERE, not in
+     *  an app that claims the link). Falls back to null if the browser isn't installed. */
+    private fun resolveBrowserPackage(name: String): String? {
+        val pm = packageManager
+        val q = name.trim().lowercase()
+        val candidates = when {
+            q.contains("brave") -> listOf("com.brave.browser", "com.brave.browser_beta")
+            q.contains("chrome") -> listOf("com.android.chrome")
+            q.contains("firefox") -> listOf("org.mozilla.firefox")
+            q.contains("edge") -> listOf("com.microsoft.emmx")
+            else -> listOf(q)
+        }
+        for (c in candidates) {
+            try { pm.getPackageInfo(c, 0); return c } catch (_: Exception) {}
+        }
+        return null
+    }
+
+    /** Resolve a spoken app name (e.g. "brave", "spotify") to a launch intent. */
+    private fun resolveLaunchIntent(name: String): Intent? {
+        if (name.isBlank()) return null
+        val pm = packageManager
+        val query = name.trim().lowercase()
+        // Common aliases → package hints
+        val aliases = mapOf(
+            "brave" to "com.brave", "chrome" to "com.android.chrome",
+            "youtube" to "com.google.android.youtube", "yt music" to "com.google.android.apps.youtube.music",
+            "youtube music" to "com.google.android.apps.youtube.music",
+            "spotify" to "com.spotify", "whatsapp" to "com.whatsapp",
+            "instagram" to "com.instagram", "maps" to "com.google.android.apps.maps",
+            "gmail" to "com.google.android.gm"
+        )
+        val hint = aliases.entries.firstOrNull { query.contains(it.key) }?.value
+        val installed = pm.getInstalledApplications(0)
+        val match = installed.firstOrNull { app ->
+            (hint != null && app.packageName.startsWith(hint)) ||
+                pm.getApplicationLabel(app).toString().lowercase() == query ||
+                pm.getApplicationLabel(app).toString().lowercase().contains(query)
+        }
+        return match?.let { pm.getLaunchIntentForPackage(it.packageName) }
+    }
+
+    private fun showLaunchNotification(intent: Intent, describe: String) {
+        val pending = PendingIntent.getActivity(
+            this, describe.hashCode(), intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val notif = NotificationCompat.Builder(this, ALERT_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle("Mizune")
+            .setContentText("Tap to $describe")
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setFullScreenIntent(pending, true)
+            .setContentIntent(pending)
+            .build()
+        getSystemService(NotificationManager::class.java)
+            .notify(describe.hashCode(), notif)
     }
 
     fun sendMessage(text: String) {
@@ -191,13 +458,24 @@ class MizuneService : Service() {
         )
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Mizune is awake")
+            .setContentTitle(wakeStatus)
             .setContentText("Status: ${lastConnectionState.label}")
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setOngoing(true)
             .setContentIntent(pendingIntent)
             .setOnlyAlertOnce(true)
             .build()
+    }
+
+    @Volatile private var wakeStatus = "Mizune is awake"
+    private var lastWakeUpdate = 0L
+    private fun setWakeStatus(s: String) {
+        wakeStatus = s
+        val now = System.currentTimeMillis()
+        if (now - lastWakeUpdate > 700) {   // throttle notification updates
+            lastWakeUpdate = now
+            updatePersistentNotification()
+        }
     }
 
     private fun updatePersistentNotification() {

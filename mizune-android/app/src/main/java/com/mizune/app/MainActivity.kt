@@ -1,5 +1,6 @@
 package com.mizune.app
 
+import android.annotation.SuppressLint
 import android.Manifest
 import android.content.ComponentName
 import android.content.Context
@@ -62,6 +63,7 @@ class MainActivity : ComponentActivity() {
     private var isRecording = mutableStateOf(false)
     private var recordingAmplitude = mutableStateOf(0)
     private val chatHistory = mutableStateListOf<ChatMessage>()
+    private var lastMizuneChunkAt = 0L
     private val tasks = mutableStateListOf<TaskItem>()
     private var currentScreen = mutableStateOf(Screen.COMPANION)
     private var shortcutAction = mutableStateOf<String?>(null)
@@ -70,8 +72,8 @@ class MainActivity : ComponentActivity() {
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
-        // Handle permissions
+    ) { _ ->
+        // Result handled implicitly; features check permissions at use time.
     }
 
     private val serviceConnection = object : ServiceConnection {
@@ -103,13 +105,23 @@ class MainActivity : ComponentActivity() {
 
         override fun onMessage(text: String, emotion: String) {
             runOnUiThread {
-                mizuneMessage.value = text
-                chatHistory.add(ChatMessage(isUser = false, text = text))
+                // The server streams one reply as several sentence chunks — merge
+                // them into ONE bubble instead of a fragmented wall of messages.
+                val now = System.currentTimeMillis()
+                val coalescing = chatHistory.isNotEmpty() && !chatHistory.last().isUser &&
+                        (now - lastMizuneChunkAt) < 4000
+                lastMizuneChunkAt = now
 
-                lifecycleScope.launch {
-                    appPreferences.setLastMessage(text)
-                    MizuneWidget().updateAll(this@MainActivity)
+                val fullText: String
+                if (coalescing) {
+                    fullText = chatHistory.last().text + " " + text
+                    chatHistory[chatHistory.size - 1] = ChatMessage(isUser = false, text = fullText)
+                } else {
+                    fullText = text
+                    chatHistory.add(ChatMessage(isUser = false, text = text))
+                    vibrateLight()   // buzz once per reply, not per sentence
                 }
+                mizuneMessage.value = fullText
 
                 currentEmotion.value = when (emotion.lowercase()) {
                     "happy" -> SlimeEmotion.HAPPY
@@ -120,21 +132,26 @@ class MainActivity : ComponentActivity() {
                     "surprised" -> SlimeEmotion.PLAYFUL
                     else -> SlimeEmotion.CALM
                 }
-
-                lifecycleScope.launch {
-                    appPreferences.setWidgetEmotion(currentEmotion.value)
-                    MizuneWidget().updateAll(this@MainActivity)
-                }
-
                 isThinking.value = false
-                vibrateLight()
 
+                if (!coalescing) {
+                    lifecycleScope.launch {
+                        appPreferences.setLastMessage(text)
+                        appPreferences.setWidgetEmotion(currentEmotion.value)
+                        MizuneWidget().updateAll(this@MainActivity)
+                    }
+                }
+                // Voice: played ONCE per reply via the streamed 'audio' event (onAudio) —
+                // per-sentence /tts calls raced each other and garbled playback.
+            }
+        }
+
+        override fun onAudio(base64Mp3: String) {
+            runOnUiThread {
                 val previousEmotion = currentEmotion.value
                 currentEmotion.value = SlimeEmotion.SPEAKING
-                ttsPlayer.playTts(text, currentApiBaseUrl) {
-                    runOnUiThread {
-                        currentEmotion.value = previousEmotion
-                    }
+                ttsPlayer.playBase64(base64Mp3) {
+                    runOnUiThread { currentEmotion.value = previousEmotion }
                 }
             }
         }
@@ -207,9 +224,11 @@ class MainActivity : ComponentActivity() {
         pttManager?.release()
         pttManager = PushToTalkManager(this, object : PushToTalkListener {
             override fun onRecordingStarted() {
+                mizuneService?.pauseWakeWord()   // free the mic for push-to-talk
                 runOnUiThread { isRecording.value = true }
             }
             override fun onRecordingStopped() {
+                mizuneService?.resumeWakeWord()
                 runOnUiThread { isRecording.value = false }
             }
             override fun onAmplitude(amplitude: Int) {
@@ -237,11 +256,18 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun buildApiBaseUrl(serverUrl: String): String {
-        val normalized = serverUrl.trim().trimEnd('/')
+        // Users enter ws:// URLs for the socket — HTTP calls (TTS/STT) must use
+        // http(s). The old version produced "https://ws://..." → every API call died.
+        var normalized = serverUrl.trim().trimEnd('/')
+        if (normalized.endsWith("/ws", ignoreCase = true)) normalized = normalized.dropLast(3)
         return when {
+            normalized.startsWith("ws://", ignoreCase = true) ->
+                normalized.replaceFirst("ws://", "http://", ignoreCase = true)
+            normalized.startsWith("wss://", ignoreCase = true) ->
+                normalized.replaceFirst("wss://", "https://", ignoreCase = true)
             normalized.startsWith("http://", ignoreCase = true) ||
                     normalized.startsWith("https://", ignoreCase = true) -> normalized
-            else -> "https://$normalized"
+            else -> "http://$normalized"   // VM serves plain HTTP on :8001
         }
     }
 
@@ -264,6 +290,28 @@ class MainActivity : ComponentActivity() {
         if (needed.isNotEmpty()) {
             requestPermissionLauncher.launch(needed.toTypedArray())
         }
+
+        // Accessibility — Mizune's "hands". This is the RELIABLE way to launch apps,
+        // tap, type and scroll on any phone (exempt from OEM background-launch blocks).
+        // Guide the user to enable it once if it isn't already.
+        if (!isAccessibilityEnabled()) {
+            try {
+                startActivity(Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                android.widget.Toast.makeText(
+                    this,
+                    "Enable \"Mizune\" here so she can open apps & do tasks on your phone.",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+            } catch (_: Exception) { }
+        }
+    }
+
+    private fun isAccessibilityEnabled(): Boolean {
+        val enabled = android.provider.Settings.Secure.getString(
+            contentResolver, android.provider.Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+        ) ?: return false
+        return enabled.contains("$packageName/.service.MizuneAccessibilityService") ||
+            enabled.contains("$packageName/com.mizune.app.service.MizuneAccessibilityService")
     }
 
     private fun startAndBindService(serverUrl: String) {
@@ -376,6 +424,9 @@ class MainActivity : ComponentActivity() {
         )
     }
 
+    // VIBRATE is declared in the manifest (install-time permission) and the call is
+    // guarded; Lint can't see the manifest merge so it false-flags MissingPermission.
+    @SuppressLint("MissingPermission")
     private fun vibrateLight() {
         try {
             val vibrator = getSystemService(Vibrator::class.java)

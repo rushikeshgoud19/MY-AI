@@ -34,6 +34,38 @@ def mizune_now():
     import datetime as _dt
     return _dt.datetime.now(mizune_tz())
 
+
+def parse_mizune_ts(raw):
+    """Parse a stored ISO timestamp into a tz-aware datetime in Master's timezone.
+
+    Rows written before the tz-aware rule are naive; those are read AS Master's local
+    time, which is what they were. Returns None when `raw` is missing or unparseable —
+    callers must treat None as "unknown", never as "recent"."""
+    if not raw:
+        return None
+    import datetime as _dt
+    try:
+        dt = _dt.datetime.fromisoformat(str(raw))
+    except (ValueError, TypeError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=mizune_tz())
+    return dt
+
+
+def is_recent(raw, max_age_hours: float) -> bool:
+    """True only if `raw` is a timestamp within the last `max_age_hours`.
+
+    THE ANTI-FABRICATION GATE. A daily report that reads the newest row and assumes it
+    is recent will narrate a 10-day-old row as this morning's news forever (2026-08-07:
+    the night-shift report, the briefing self-review line, and the nightly bug report all
+    had this bug). Unknown/unparseable timestamps return False — silence over a false
+    report."""
+    dt = parse_mizune_ts(raw)
+    if dt is None:
+        return False
+    return (mizune_now() - dt).total_seconds() <= max_age_hours * 3600.0
+
 # Set up logging for the module
 logger = logging.getLogger("mizune")
 logger.setLevel(logging.INFO)

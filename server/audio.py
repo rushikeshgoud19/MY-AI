@@ -421,16 +421,23 @@ def listen_for_wake_word(config: dict, on_wake_trigger_fn, broadcast_sync_fn):
             time.sleep(1)
 
 def play_audio_bytes(audio_bytes: bytes):
-    """Play raw mp3 audio bytes locally using pygame.mixer."""
+    """Play raw mp3 audio bytes locally using pygame.mixer. Blocks until playback finishes."""
     if not audio_bytes:
         return
     try:
         import pygame
         import io
         if not pygame.mixer.get_init():
+            pygame.mixer.pre_init(44100, -16, 2, 512)
             pygame.mixer.init()
+        # Stop any currently playing audio before loading new one
+        pygame.mixer.music.stop()
         pygame.mixer.music.load(io.BytesIO(audio_bytes))
+        pygame.mixer.music.set_volume(1.0)
         pygame.mixer.music.play()
+        # Block until done so audio isn't cut off by the next call
+        while pygame.mixer.music.get_busy():
+            time.sleep(0.05)
     except ImportError:
         log_info("[AUDIO] Pygame not installed. Cannot play TTS.")
     except Exception as e:

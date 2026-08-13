@@ -3,6 +3,7 @@ Core command processor for Mizune AI.
 Stitches together Vision, AI, Commands, and Context.
 """
 import os
+import json
 import re
 import time
 import subprocess
@@ -23,6 +24,13 @@ from server.evolution import evolution_engine
 from server.vision import _acquire_vision_lock, _release_vision_lock, _analyze_screen_now, _vision_mode_running, _coding_monitor_running, _coding_monitor_paused, _vision_mode_loop, _coding_monitor_loop, _capture_screen
 
 
+from contextvars import ContextVar
+current_session_id = ContextVar("current_session_id", default=None)
+# What Master actually typed this turn. execute_tool_call only receives (tool_name, args,
+# config), so without this the tool layer cannot tell "message him" from "dm him privately"
+# and group routing would override an explicit private request.
+current_user_text = ContextVar("current_user_text", default="")
+
 logger = logging.getLogger("mizune.processor")
 
 # Memory recall runs off-thread with a time budget so it never blocks a reply.
@@ -36,10 +44,317 @@ global_session_store = SessionStore()
 from server.scheduler import CronManager
 global_cron_manager = CronManager()
 
+
+# A "recipient" that means Master himself is not a send target — "tell me what you recall
+# about my work setup" is a QUESTION, not a WhatsApp send. Pattern 1 below always had this
+# guard inline; patterns 2 and 3 did not, so that exact sentence sent a message to Master's
+# own chat and answered "Done! Message sent to Master's own chat (SELF)" (2026-08-07).
+# One tuple, checked at every return point — the same dedup shape as _clean_final_text().
+_SELF_RECIPIENTS = ("me", "myself", "self", "master", "master rushi")
+
+
+def _parse_whatsapp_send_command(wa_text: str):
+    """
+    Parse recipient and message body from WhatsApp send intents.
+    Returns (who, body) or (None, None).
+    """
+    from server.platforms.whatsapp.core import is_third_party_turn as _itp
+    if _itp(wa_text):
+        return None, None
+
+    clean = wa_text.strip()
+
+    # 1. 'say/send/message <body/msg> to <who>' (e.g. 'say baka to Pranay', 'send hi to +919876543210')
+    m1 = re.search(r"^(?:mizune\s+)?(?:say|send|message|text|msg)\s+(.+?)\s+to\s+([A-Za-z0-9_\s\+\@\.]+)", clean, re.IGNORECASE)
+    if m1:
+        b, w = m1.group(1).strip().strip('"\''), m1.group(2).strip()
+        if b and w and w.lower() not in _SELF_RECIPIENTS:
+            return w, b
+
+    # 2. 'say to <who> <body/msg>' or 'tell <who> <body/msg>' (e.g. 'tell Pranay baka', 'say to Pranay baka')
+    m2 = re.search(r"^(?:mizune\s+)?(?:say\s+to|tell)\s+([A-Za-z0-9_\s\+\@\.]+?)\s+(?:saying\s+)?(.+)", clean, re.IGNORECASE)
+    if m2:
+        w, b = m2.group(1).strip(), m2.group(2).strip().strip('"\'')
+        if w and b and w.lower() not in _SELF_RECIPIENTS:
+            return w, b
+
+    # 3. Standard 'send/message/text/dm <who> saying/says/that says/: <body/msg>'
+    # `mes{1,4}age` tolerates the fast-typing spellings: message / mesage / messsage.
+    # Rushi typed "messsage my brother abhish saying I love you" on 2026-07-29, the verb
+    # missed, and the request fell through to the model — which then hit the truncation
+    # guard and refused. A deterministic path that a typo can switch off isn't
+    # deterministic in practice; the whole point is that it never depends on the model.
+    verb = re.search(r"\b(?:send|mes{1,4}age|msg|text|whatsapp|dm)\b", clean, re.IGNORECASE)
+    if verb:
+        rest = clean[verb.end():]
+        sep = re.search(r"\bsaying\b|\bthat says\b|\bsays\b|\bsay\b|:", rest, re.IGNORECASE)
+        if sep:
+            left = rest[:sep.start()]
+            body = rest[sep.end():].lstrip(" :").split("\n(SYSTEM:")[0].strip().strip('"\'')
+            tos = list(re.finditer(r"\bto\b\s+", left, re.IGNORECASE))
+            who = (left[tos[-1].end():] if tos else left).strip(" ,.")
+            who = re.sub(r"^(?:a|an|the)\s+", "", who, flags=re.IGNORECASE).strip()
+            if who and body and who.lower() not in _SELF_RECIPIENTS:
+                return who, body
+
+    return None, None
+
+
+_REMINDER_UNITS = {
+    "min": 1, "mins": 1, "minute": 1, "minutes": 1, "m": 1,
+    "hour": 60, "hours": 60, "hr": 60, "hrs": 60, "h": 60,
+    "day": 1440, "days": 1440,
+}
+
+# Asking ABOUT reminders is not setting one. Without this gate "cancel my reminder for 8pm"
+# parses a time and a body and would silently schedule the very thing it asked to cancel.
+_REMINDER_NEGATIVE = re.compile(
+    r"\b(cancel|delete|remove|clear|list|show|what|which|when|any|how many|do i have)\b[^.?!]*"
+    r"\breminder", re.IGNORECASE)
+
+
+def _parse_reminder_command(text: str):
+    """Parse 'remind me …' into (delay_minutes, what). Returns (None, None) if not a reminder.
+
+    WHY THIS EXISTS — it is a MEASURED fix, not a guess. 378-call ablation on 2026-07-28
+    (`scripts/mistral_ablation.py`): mistral emitted a `schedule_task` tool call on only
+    **69%** of reminder requests, versus **97%** for `message_whatsapp`. The difference is not
+    the model and not the prompt — every capability with a deterministic pre-LLM fast-path is
+    reliable, and `schedule_task` was the one without one. It IS in `FAST_TRACK_TOOLS`, but
+    that only skips the second LLM round AFTER the model already decided to call it, which
+    does nothing to make it decide. Input shape cost real accuracy too (bare 95% -> wrapped
+    79%), so this parses the WRAPPED shape as a first-class case, not an afterthought.
+
+    And the failure mode was not always a visible refusal. One measured reply was
+    "[EMOTION: relaxed] Done, Master. I'll make sure you remember to call Mom at 8 PM tonight."
+    with ZERO tool calls — a silent fake success that the night shift would file as completed
+    work. Rule #4: anything that MUST happen gets a fast-path. The model narrates; code books.
+    """
+    # Strip the WhatsApp wrapper: "[MESSAGE FROM MASTER RUSHI (via WhatsApp)]: <text>\n(SYSTEM: …)"
+    clean = re.sub(r"^\s*\[[^\]]*\]\s*:\s*", "", text).split("\n(SYSTEM:")[0].strip()
+    low = clean.lower()
+
+    # `\bremind\b` deliberately does NOT match "reminded", so "she reminded me at 3am" — a
+    # statement about the past — cannot book anything.
+    if not re.search(r"\bremind\b|\breminder\b", low):
+        return None, None
+    if _REMINDER_NEGATIVE.search(low):
+        return None, None
+
+    import datetime
+    from server.config import mizune_now
+
+    delay = None
+    # ── RELATIVE: "in 20 minutes", "after 2 hours", "for 20 minutes" ──
+    # "for" belongs here, not only on the clock branch: "set a reminder FOR 20 MINUTES" is a
+    # duration. The test caught the clock regex reading "for 20" as 20:00 and booking it 862
+    # minutes out — a reminder that arrives 14 hours late is indistinguishable from one that
+    # never fired.
+    m_rel = re.search(r"\b(?:in|after|for)\s+(\d+)\s*([a-z]+)", low)
+    if m_rel and m_rel.group(2) in _REMINDER_UNITS:
+        delay = int(m_rel.group(1)) * _REMINDER_UNITS[m_rel.group(2)]
+
+    # ── ABSOLUTE clock: "at 8pm", "at 8:30 pm", "at 20:00", "tomorrow at 9am" ──
+    m_abs = None
+    if delay is None:
+        # The lookahead stops a DURATION being misread as a wall-clock time: without it,
+        # "for 20 minutes" matches as 20:00. A bare hour must not be followed by a time unit.
+        m_abs = re.search(r"\b(?:at|for|by)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b"
+                          r"(?!\s*(?:min|sec|hour|hr|day)[a-z]*)", low)
+        if m_abs:
+            hh = int(m_abs.group(1))
+            mm = int(m_abs.group(2) or 0)
+            ap = m_abs.group(3)
+            if ap == "pm" and hh < 12:
+                hh += 12
+            elif ap == "am" and hh == 12:
+                hh = 0
+            elif ap is None and hh <= 7:
+                # No meridiem and a small hour: "at 8" in the evening means 20:00, not 08:00
+                # tomorrow morning. Only nudge genuinely ambiguous small hours.
+                hh += 12
+            if not (0 <= hh <= 23 and 0 <= mm <= 59):
+                return None, None
+            now = mizune_now()
+            target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+            if "tomorrow" in low:
+                target += datetime.timedelta(days=1)
+            elif target <= now:
+                # The time already passed today, so he means the next one. Rolling forward is
+                # the only non-surprising reading — scheduling it in the past would silently
+                # never fire.
+                target += datetime.timedelta(days=1)
+            delay = max(1, int(round((target - now).total_seconds() / 60.0)))
+
+    if not delay or delay <= 0:
+        return None, None          # no time expressed -> let the model ask him
+
+    # ── The task body ──
+    what = clean
+    m_to = re.search(r"\bto\s+(.+)", clean, re.IGNORECASE)
+    m_that = re.search(r"\breminder\s*(?:for|:)\s*(.+)", clean, re.IGNORECASE)
+    if m_to:
+        what = m_to.group(1)
+    elif m_that:
+        what = m_that.group(1)
+    # Remove the time phrase from the body so the reminder does not read
+    # "call mom at 8pm at 8pm".
+    what = re.sub(r"\b(?:in|after)\s+\d+\s*[a-z]+\b", "", what, flags=re.IGNORECASE)
+    what = re.sub(r"\b(?:at|by)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b", "", what, flags=re.IGNORECASE)
+    what = re.sub(r"\b(?:tonight|tomorrow|today)\b", "", what, flags=re.IGNORECASE)
+    what = re.sub(r"^\s*(?:me\s+to|me)\s+", "", what, flags=re.IGNORECASE)
+    what = what.strip(" ,.:;-").strip()
+
+    if not what or len(what) < 2:
+        return None, None
+    return delay, what
+
+
+# Things that are "played" but are not music. Without these, "play chess", "play it safe" and
+# "play devil's advocate" all become song searches — a fast-path that hijacks ordinary
+# conversation is worse than the unreliability it fixes.
+_NOT_MUSIC_OBJECTS = re.compile(
+    r"^(?:chess|a\s+game|games?|along|dead|it\s+safe|devil'?s?\s+advocate|catch|"
+    r"hard\s+to\s+get|the\s+field|ball|nice|dumb|favou?rites?\s+with)\b", re.IGNORECASE)
+
+# A request that names WhatsApp, a sender, or a link is NOT a direct play — it needs
+# read_whatsapp FIRST and then play_music with the resolved URL. That chain shipped in dc12642
+# ("play the song Sarthak sent me"), and a greedy music fast-path would silently break it by
+# searching YouTube for the literal words "the song sarthak sent me".
+_MUSIC_NEEDS_LOOKUP = re.compile(
+    r"\b(whatsapp|sent\s+me|shared|forwarded|the\s+link|that\s+link|message|"
+    r"he\s+sent|she\s+sent|they\s+sent)\b", re.IGNORECASE)
+
+
+def _parse_music_command(text: str):
+    """Parse music intent. Returns (tool_name, args) or (None, None).
+
+    WHY: `play_music` is the 3rd most-used side-effecting tool in the real seals (16 calls) and
+    had NO deterministic pre-LLM fast-path — the exact profile that measured 69% for
+    schedule_task before it got one (scripts/mistral_ablation.py, 378 calls). Music is also a
+    capability Rushi actually notices when it silently doesn't happen.
+
+    Deliberately CONSERVATIVE. A false negative costs one model round-trip and the tool still
+    usually fires; a false positive hijacks a sentence that was never about music and is
+    invisible until he notices she's searching YouTube for "devil's advocate".
+    """
+    clean = re.sub(r"^\s*\[[^\]]*\]\s*:\s*", "", text).split("\n(SYSTEM:")[0].strip()
+    low = clean.lower()
+
+    # ── control_music: pause / resume / next ──
+    if re.search(r"\b(?:pause|stop)\s+(?:the\s+)?(?:music|song|track|playback|it)\b", low) \
+            or re.fullmatch(r"\s*(?:pause|pause it)\s*[.!]?\s*", low):
+        return "control_music", {"action": "pause"}
+    if re.search(r"\b(?:resume|unpause|continue)\s+(?:the\s+)?(?:music|song|track|playback|it)\b", low) \
+            or re.fullmatch(r"\s*(?:resume|unpause)\s*[.!]?\s*", low):
+        return "control_music", {"action": "resume"}
+    if re.search(r"\b(?:next|skip)\s+(?:the\s+)?(?:song|track|one)\b", low) \
+            or re.search(r"\bskip\s+this\b", low) \
+            or re.fullmatch(r"\s*(?:next|skip)\s*[.!]?\s*", low):
+        return "control_music", {"action": "next"}
+
+    # ── play_music ──
+    # `\bplay\b` will not match "display" or "replay"; "put on" needs the object to follow.
+    m = re.search(r"\b(?:play|put\s+on)\s+(.+)", clean, re.IGNORECASE)
+    if not m:
+        return None, None
+    rest = m.group(1).strip()
+
+    # Defer to the model when the song has to be LOOKED UP before it can be played.
+    if _MUSIC_NEEDS_LOOKUP.search(rest) or _MUSIC_NEEDS_LOOKUP.search(low):
+        return None, None
+    if _NOT_MUSIC_OBJECTS.match(rest):
+        return None, None
+
+    device = "phone"
+    m_dev = re.search(r"\bon\s+(?:my\s+)?(laptop|pc|computer|phone|mobile)\b", rest, re.IGNORECASE)
+    if m_dev:
+        device = "laptop" if m_dev.group(1).lower() in ("laptop", "pc", "computer") else "phone"
+        rest = rest[:m_dev.start()] + rest[m_dev.end():]
+
+    # Strip filler that would otherwise end up in the search query.
+    rest = re.sub(r"^(?:me\s+|some\s+|the\s+song\s+|a\s+song\s+by\s+|songs?\s+by\s+)", "",
+                  rest, flags=re.IGNORECASE)
+    rest = re.sub(r"\b(?:please|for\s+me|right\s+now|now)\b", "", rest, flags=re.IGNORECASE)
+    query = rest.strip(" ,.:;-\"'")
+
+    # A bare "play" is a resume, not a search for the empty string.
+    if not query:
+        return "control_music", {"action": "resume"}
+    if len(query) < 2:
+        return None, None
+    return "play_music", {"query": query, "device": device}
+
+
+def _handle_scheduled_whatsapp_send(text: str, config: dict):
+    """
+    Parses scheduled WhatsApp send requests:
+    - 'in 5 minutes say good night to Harshita'
+    - 'say good night to Harshita in 5 minutes'
+    - 'say good night to Harshita in 5 minutes, 10 times'
+    Returns confirmation string if scheduled, or None.
+    """
+    clean = re.sub(r"^\s*\[[^\]]*\]\s*:\s*", "", text).split("\n(SYSTEM:")[0].strip()
+    lower_clean = clean.lower()
+
+    # Check for time delay keywords: 'in X minutes', 'after X minutes'
+    m_time = re.search(r"\b(?:in|after)\s+(\d+)\s*(?:min|minute|minutes|m|hour|hours|h)\b", lower_clean)
+    m_repeat = re.search(r"\b(\d+)\s*(?:times|x|repeats)\b", lower_clean)
+
+    if not m_time and not m_repeat:
+        return None
+
+    delay_mins = int(m_time.group(1)) if m_time else 0
+    if m_time and ("hour" in m_time.group(0) or "h" in m_time.group(0)):
+        delay_mins *= 60
+
+    repeats = int(m_repeat.group(1)) if m_repeat else 1
+    max_repeats = config.get("max_scheduled_repeats", 10)
+    if repeats > max_repeats:
+        log_info(f"[SCHEDULER] Capping repeats {repeats} -> {max_repeats}")
+        repeats = max_repeats
+
+    # Gap between repeats (default 60 seconds / 1 minute minimum)
+    m_gap = re.search(r"\bevery\s+(\d+)\s*(?:sec|second|seconds|min|minute|minutes|s|m)\b", lower_clean)
+    gap_sec = 60
+    if m_gap:
+        val = int(m_gap.group(1))
+        unit = m_gap.group(0)
+        if "min" in unit or "m" in unit:
+            gap_sec = val * 60
+        else:
+            gap_sec = val
+    min_gap = config.get("min_repeat_interval_sec", 60)
+    if gap_sec < min_gap:
+        gap_sec = min_gap
+
+    # Remove schedule phrases to extract target & body
+    clean_no_sched = re.sub(r"\b(?:in|after)\s+\d+\s*(?:min|minute|minutes|m|hour|hours|h)\b", "", clean, flags=re.IGNORECASE)
+    clean_no_sched = re.sub(r"\b\d+\s*(?:times|x|repeats)\b", "", clean_no_sched, flags=re.IGNORECASE)
+    clean_no_sched = re.sub(r"\bevery\s+\d+\s*(?:sec|second|seconds|min|minute|minutes|s|m)\b", "", clean_no_sched, flags=re.IGNORECASE).strip()
+
+    who, body = _parse_whatsapp_send_command(clean_no_sched)
+    if not who or not body:
+        return None
+
+    from server.config import mizune_now
+    from datetime import timedelta
+    now_ist = mizune_now()
+    base_trigger = now_ist + timedelta(minutes=delay_mins)
+
+    for i in range(repeats):
+        trigger_time = base_trigger + timedelta(seconds=i * gap_sec)
+        trigger_iso = trigger_time.isoformat()
+        desc = f'WA_SEND target="{who}" message="{body}"'
+        global_cron_manager.add_one_time_task(desc, trigger_iso)
+
+    log_info(f"[SCHEDULER] Scheduled {repeats} WhatsApp message(s) to {who!r}: {body[:40]!r} starting at {base_trigger.isoformat()}")
+    return f"Scheduled {repeats} message(s) to {who} via WhatsApp starting at {base_trigger.strftime('%H:%M:%S IST')}."
+
+
 def _seal_watermark():
     """Highest history rowid now — used to find [TOOL RESULTS] seals created after."""
     try:
-        from server.memory import memory
         cur = memory.db.cursor()
         row = cur.execute("SELECT MAX(rowid) FROM history").fetchone()
         return row[0] or 0
@@ -53,7 +368,6 @@ def _report_seal_failures(since_rowid, broadcast):
     if since_rowid is None:
         return
     try:
-        from server.memory import memory
         cur = memory.db.cursor()
         rows = cur.execute(
             "SELECT content FROM history WHERE rowid > ? AND content LIKE '%[TOOL RESULTS]%'",
@@ -74,32 +388,461 @@ def _scheduler_callback(task_description):
     config = load_config()
     log_info(f"[SCHEDULER WAKEUP] Processing task: {task_description}")
 
-    # Morning briefing: deterministic data, one LLM call only to voice it.
-    if task_description == "MIZUNE_MORNING_BRIEFING":
-        from server.briefing import build_briefing_sitrep
-        sitrep = build_briefing_sitrep()
-        log_info(f"[BRIEFING] Sitrep built ({len(sitrep)} chars).")
-        prompt = (
-            f"[MORNING BRIEFING] Here is today's data:\n{sitrep}\n\n"
-            f"Summarize this warmly in-persona for Master in under 150 words, then send that "
-            f"summary to 'Master' on WhatsApp using the message_whatsapp tool. Facts must come "
-            f"from the data above only — do not invent weather, emails, or tasks."
-        )
-        wm = _seal_watermark()
-        def _brief():
-            process_command(prompt, config, ws_manager.broadcast_sync, 'main')
-            _report_seal_failures(wm, ws_manager.broadcast_sync)
-        threading.Thread(target=_brief, daemon=True).start()
+    # 07:45 bug report — pure DB read + WhatsApp send (no LLM, no quota).
+    if task_description == "MIZUNE_BUG_REPORT":
+        from server.self_review import send_bug_report
+        threading.Thread(target=lambda: log_info(
+            f"[SELF_REVIEW] morning bug report -> {send_bug_report(config)}"), daemon=True).start()
+        return
+
+    # Briefing/digest: deterministic data + GUARANTEED delivery. The old design let
+    # the LLM both voice AND send (via the message_whatsapp tool) — on 2026-07-20 the
+    # 8AM voicing hung on a provider mid-cascade and the briefing silently died.
+    # Now: LLM only voices (override call, no tools); OUR code always sends; if every
+    # provider fails, Master gets the raw sitrep — data over silence, always.
+    if task_description in ("MIZUNE_MORNING_BRIEFING", "MIZUNE_EVENING_DIGEST"):
+        morning = task_description == "MIZUNE_MORNING_BRIEFING"
+        tag = "BRIEFING" if morning else "DIGEST"
+
+        def _deliver():
+            try:
+                from server.briefing import build_briefing_sitrep, build_evening_sitrep
+                sitrep = build_briefing_sitrep() if morning else build_evening_sitrep()
+                log_info(f"[{tag}] Sitrep built ({len(sitrep)} chars).")
+                persona = (
+                    "You are Mizune, Master Rushi's warm AI companion. Rewrite the data as a "
+                    + ("morning briefing (under 150 words)" if morning
+                       else "SHORT calm evening recap (under 80 words), ending with a goodnight")
+                    + ". Facts must come from the data only. Output ONLY the message text.")
+                text = ""
+                try:
+                    from server.ai import get_ai_response
+                    res, _ = get_ai_response(sitrep, [], config, system_prompt_override=persona)
+                    text = str(res or "").strip()
+                except Exception as e:
+                    log_info(f"[{tag}] Voicing failed ({e}) — sending raw sitrep.")
+                if len(text) < 30:
+                    text = sitrep          # raw fallback beats silence
+                # NOTE: send_message() already prepends the "✨ Mizune" header —
+                # adding it here printed it TWICE (caught 2026-07-20).
+                from server.commands import whatsapp_automation
+                sent = str(whatsapp_automation("Master", text))
+                log_info(f"[{tag}] Delivery result: {sent[:120]}")
+                if any(k in sent.lower() for k in ("error", "failed", "not connected")):
+                    time.sleep(120)        # bridge may be reconnecting — one retry
+                    sent = str(whatsapp_automation("Master", text))
+                    log_info(f"[{tag}] Retry delivery result: {sent[:120]}")
+                ws_manager.broadcast_sync({"type": "speak", "text": text, "emotion": "neutral"})
+            except Exception as e:
+                log_info(f"[{tag}] Delivery thread error: {e}")
+        threading.Thread(target=_deliver, daemon=True).start()
+        return
+
+    # Z2 NIGHT SHIFT — start the queued shift at 22:00. The shift runs in its own
+    # daemon thread until deadline/budget; it reports NOTHING until morning (silent).
+    if task_description == "MIZUNE_SHIFT_START":
+        def _start_shift():
+            try:
+                from server.night_shift import start_shift
+                log_info(f"[SHIFT] cron start -> {start_shift(config)}")
+            except Exception as e:
+                log_info(f"[SHIFT] start error: {e}")
+        threading.Thread(target=_start_shift, daemon=True).start()
+        return
+
+    # Z2 NIGHT SHIFT — 07:40 proof-of-work. CODE reads the report from the DB (built from
+    # verified mission outcomes, Rule 8) and sends it. The LLM only VOICES it; if voicing
+    # fails, Master gets the raw report — data over silence (same contract as the briefing).
+    if task_description == "MIZUNE_SHIFT_REPORT":
+        def _deliver_shift():
+            try:
+                from server.night_shift import latest_report
+                report = latest_report()
+                # No RECENT finished shift. Say so plainly and stop — do not let the LLM
+                # voice anything here, and never fall through to an older report (that is
+                # exactly the fabrication the recency gate in latest_report() closed).
+                if not report:
+                    log_info("[SHIFT] no shift finished last night - sending the honest no-shift line.")
+                    _text = ("No night shift ran last night, Master - nothing was queued, "
+                             "so I have no work to report.")
+                    from server.commands import whatsapp_automation
+                    _sent = str(whatsapp_automation("Master", _text))
+                    log_info(f"[SHIFT] no-shift notice: {_sent[:120]}")
+                    ws_manager.broadcast_sync({"type": "speak", "text": _text, "emotion": "neutral"})
+                    return
+                text = ""
+                try:
+                    from server.ai import get_ai_response
+                    persona = (
+                        "You are Mizune, Master Rushi's warm AI companion. Below is the "
+                        "verified result of the overnight work shift you just finished. "
+                        "Retell it warmly in-persona in under 130 words. Report failures and "
+                        "unfinished items HONESTLY — do not pretend they succeeded. Keep the "
+                        "'verified N/M' honesty. Output ONLY the message text.")
+                    res, _ = get_ai_response(report, [], config, system_prompt_override=persona)
+                    text = str(res or "").strip()
+                except Exception as e:
+                    log_info(f"[SHIFT] voicing failed ({e}) — sending raw report.")
+                if len(text) < 30:
+                    text = report
+                from server.commands import whatsapp_automation
+                sent = str(whatsapp_automation("Master", text))
+                log_info(f"[SHIFT] delivery: {sent[:120]}")
+                if any(k in sent.lower() for k in ("error", "failed", "not connected")):
+                    time.sleep(120)
+                    sent = str(whatsapp_automation("Master", text))
+                    log_info(f"[SHIFT] retry delivery: {sent[:120]}")
+                ws_manager.broadcast_sync({"type": "speak", "text": text, "emotion": "neutral"})
+            except Exception as e:
+                log_info(f"[SHIFT] delivery thread error: {e}")
+        threading.Thread(target=_deliver_shift, daemon=True).start()
+        return
+
+    # PHASE B — 21:00 BUILD LOG. The day's real work + one LinkedIn draft Rushi edits and
+    # posts. She never posts anywhere (LinkedIn UA §8.2 bans automation; ~23% restriction rate).
+    #
+    # WHY IT REACHES OUT TO THE LAPTOP: the collector needs a git repo and an authenticated
+    # `gh`, and this VM has NEITHER (`/home/azureuser` is not a git repo at all, no gh binary).
+    # Running the collector here would send "0 commits, 0 PRs, nothing substantial today"
+    # every night forever — the exact blindness that was just fixed in build_log.py, only
+    # reintroduced by deployment instead of by code. So the LAPTOP collects (deterministic,
+    # no LLM) and the VM drafts + delivers, because the VM is the machine that is always up.
+    if task_description.startswith("MIZUNE_BUILD_LOG"):
+        # RETRY WINDOW. The 21:00 fire on 2026-07-28 found the laptop offline and correctly
+        # sent the honest "I couldn't build it" message — but the laptop holds the only git
+        # repo and the only gh, so an offline laptop means NO build log that night, and it is
+        # routinely asleep at 21:00 (10 online / 6 offline events in one log window). A
+        # nightly feature that silently depends on a flapping laptop being awake at one exact
+        # minute will mostly deliver apologies.
+        # So a failure books another attempt 30 minutes out instead of giving up, and the
+        # apology is sent ONLY after the window closes. Attempt count rides in the task
+        # description because the scheduler's contract is a plain string.
+        _bl_attempt = 1
+        _m_att = re.search(r"_RETRY_(\d+)$", task_description)
+        if _m_att:
+            _bl_attempt = int(_m_att.group(1))
+        _BL_MAX_ATTEMPTS = 5          # 21:00, 21:30, 22:00, 22:30, 23:00
+        # Daytime cache-filling runs: collect while the laptop is actually awake, deliver
+        # nothing. This is what makes the 21:00 report possible at all on a night when the
+        # laptop never wakes.
+        _bl_collect_only = task_description.endswith("_CACHE")
+        _BL_CACHE_PATH = os.path.join(".data", "build_log_cache.json")
+        _BL_CACHE_MAX_AGE_MIN = 20 * 60      # 20h: yesterday's numbers are not today's report
+
+        def _save_cached_digest(payload: dict) -> None:
+            try:
+                from server.config import mizune_now as _n
+                os.makedirs(os.path.dirname(_BL_CACHE_PATH), exist_ok=True)
+                with open(_BL_CACHE_PATH, "w", encoding="utf-8") as f:
+                    json.dump({"collected_at": _n().isoformat(), "payload": payload}, f)
+                log_info("[BUILDLOG] cached this collection for later fallback.")
+            except Exception as e:
+                # Never let caching break a delivery that is otherwise working.
+                log_info(f"[BUILDLOG] cache write failed: {e}")
+
+        def _load_cached_digest():
+            """Return (payload, age_minutes, human_when) or None when there is nothing usable.
+
+            Returns None rather than a stale payload past the age limit: a report labelled
+            'today' built from three-day-old numbers is worse than an honest apology, and it
+            is the exact false-freshness this project keeps getting bitten by.
+            """
+            try:
+                from server.config import mizune_now as _n
+                import datetime as _d
+                with open(_BL_CACHE_PATH, encoding="utf-8") as f:
+                    blob = json.load(f)
+                when = _d.datetime.fromisoformat(blob["collected_at"])
+                age = int((_n() - when).total_seconds() // 60)
+                if age < 0 or age > _BL_CACHE_MAX_AGE_MIN:
+                    log_info(f"[BUILDLOG] cache is {age}min old — too stale to send.")
+                    return None
+                return blob["payload"], age, when.strftime("%I:%M %p")
+            except FileNotFoundError:
+                return None
+            except Exception as e:
+                log_info(f"[BUILDLOG] cache read failed: {e}")
+                return None
+
+        def _vm_telemetry(days: int = 1) -> str:
+            """Mizune's OWN numbers, read on the machine she actually runs on.
+
+            MEASURED 2026-08-01 from a delivered digest: it said "0 mission(s) completed,
+            0 tool seal(s) logged" on a day full of both. The collector runs on the LAPTOP
+            because that is where git and gh live, and it read the LAPTOP's .data/ — but the
+            brain is HERE, so the seals are here. The laptop's copy was days stale and its
+            missions.db had been empty since July.
+            A zero meaning "wrong machine" is indistinguishable from a zero meaning "quiet
+            day". Each host now reports only what it can actually see.
+            Every source is independent: one dead query must not zero the others, and a
+            failure is STATED rather than silently returning 0 (that is the same swallowed
+            except that produced the original false zero).
+            """
+            # Imported HERE on purpose: `datetime` is NOT a module-level name in this file
+            # (every use is function-local), and this runs in a daemon thread where a
+            # NameError dies with no reply, no seal and no traceback — the same silent shape
+            # as the mid-import cron bug that lost scheduled tasks. py_compile cannot catch it.
+            import datetime as _dtm
+            import sqlite3
+            from server.config import mizune_now as _n
+            since = (_n() - _dtm.timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+            bits, problems = [], []
+
+            try:
+                c = sqlite3.connect(os.path.join(".data", "missions.db"))
+                done = list(c.execute(
+                    "SELECT COUNT(*) FROM missions WHERE status='done' AND updated_at >= ?",
+                    (since,)))[0][0]
+                total = list(c.execute(
+                    "SELECT COUNT(*) FROM missions WHERE updated_at >= ?", (since,)))[0][0]
+                bits.append(f"{done}/{total} mission(s) completed")
+                c.close()
+            except Exception as e:
+                problems.append(f"missions.db: {str(e)[:80]}")
+
+            try:
+                c = sqlite3.connect(os.path.join(".data", "mizune_memory.db"))
+                seals = list(c.execute(
+                    "SELECT COUNT(*) FROM history WHERE content LIKE '%[TOOL RESULTS]%' "
+                    "AND timestamp >= ?", (since,)))[0][0]
+                bits.append(f"{seals} tool seal(s) logged")
+                c.close()
+            except Exception as e:
+                problems.append(f"mizune_memory.db: {str(e)[:80]}")
+
+            out = "Mizune Telemetry (from the brain host): " + (", ".join(bits) or "no sources readable")
+            if problems:
+                out += "\n  ! telemetry collector problems: " + "; ".join(problems)
+            return out
+
+        def _deliver_build_log():
+            from server.commands import whatsapp_automation
+
+            def _send(msg: str) -> None:
+                sent = str(whatsapp_automation("Master", msg))
+                log_info(f"[BUILDLOG] delivery: {sent[:120]}")
+                if any(k in sent.lower() for k in ("error", "failed", "not connected")):
+                    time.sleep(120)          # bridge may be reconnecting — one retry
+                    log_info(f"[BUILDLOG] retry delivery: "
+                             f"{str(whatsapp_automation('Master', msg))[:120]}")
+
+            def _deliver_payload(payload: dict, header: str = "") -> None:
+                """Digest + one drafted post. Shared by the live and cached paths.
+
+                Factored out because the cached path needs byte-identical formatting: three
+                near-copies of "render the digest and draft" is precisely the shape that gets
+                fixed in one place out of three around here.
+                """
+                digest = str(payload.get("digest") or "").strip()
+                if not digest:
+                    _send("Master, tonight's build log came back empty — worth a look.")
+                    return
+                # LLM VOICES ONE COMMIT, CODE DELIVERS. draft_post uses
+                # system_prompt_override so tools are blocked, lints deterministically, and
+                # attaches the linter's problems rather than silently shipping a bad draft.
+                draft_block = ""
+                stories = payload.get("story_commits") or []
+                if stories:
+                    try:
+                        from scripts.content_engine import draft_post
+                        text, ok, problems = draft_post(stories[0], config,
+                                                        digest_context=digest)
+                        label = "DRAFT (lint clean)" if ok else "DRAFT (needs your edit)"
+                        draft_block = f"\n\n— {label} —\n{text}"
+                        if problems:
+                            log_info(f"[BUILDLOG] lint problems: {problems}")
+                    except Exception as e:
+                        log_info(f"[BUILDLOG] drafting failed ({e}) — sending digest only.")
+                        draft_block = ("\n\n(No draft tonight — the writer failed. The numbers "
+                                       "above are still real.)")
+                # The laptop cannot see Mizune's telemetry (she runs HERE), so it declines to
+                # report it and this host supplies the real figures.
+                try:
+                    _tel = "\n" + _vm_telemetry(days=1)
+                except Exception as e:
+                    log_info(f"[BUILDLOG] vm telemetry failed: {e}")
+                    _tel = "\n(Mizune telemetry unavailable this run.)"
+
+                # Data over silence, same contract as the briefing: if voicing dies, the
+                # deterministic digest still goes out.
+                _send(header + digest + _tel + draft_block)
+
+            try:
+                from server.device_registry import device_registry
+
+                def _laptop(action: str, args: dict, timeout: float) -> str:
+                    """send_command + an offline retry, using ONLY the arguments every
+                    deployed device_registry accepts.
+
+                    A `wait_for_device=` kwarg exists in the working tree but was never
+                    committed or deployed, so passing it raised
+                    `unexpected keyword argument 'wait_for_device'` and killed this whole
+                    branch on its first live run. The lesson generalises past that one typo:
+                    divergence has to be checked for every file the new code CALLS INTO, not
+                    only the files being copied. Retrying on the returned string depends on
+                    the oldest, most stable behaviour instead of a signature.
+
+                    The laptop flaps (276 online / 192 offline in one log) and device_agent
+                    reconnects every 10s, so ~60s of grace turns a spurious miss into a delay.
+                    """
+                    last = ""
+                    for attempt in range(3):
+                        last = str(device_registry.send_command(
+                            "laptop", action, args, timeout=timeout))
+                        if "not online" not in last.lower():
+                            return last
+                        if attempt < 2:
+                            log_info(f"[BUILDLOG] laptop offline, waiting for a reconnect "
+                                     f"cycle (attempt {attempt + 1}/3)...")
+                            time.sleep(30)
+                    return last
+
+                repo = config.get("laptop_repo_path",
+                                  r"C:\Users\rushi\OneDrive\Desktop\my Ai")
+                # No `&&`: this is one command, and build_log.py resolves its own ROOT_DIR
+                # from __file__, so the working directory is irrelevant.
+                cmd = f'"{repo}\\.venv\\Scripts\\python.exe" "{repo}\\server\\build_log.py" --days 1 --json'
+                # timeout > the agent's own 60s subprocess cap, so a slow `gh` surfaces as the
+                # agent's own error rather than as a mystery timeout here.
+                out = _laptop("run_command", {"command": cmd}, 90.0)
+                log_info(f"[BUILDLOG] collector said: {out[:200]}")
+
+                if "BUILD_LOG_OK" not in out and _bl_collect_only:
+                    # A cache-filling run is opportunistic BY DESIGN — the laptop being asleep
+                    # at noon is the normal case, not an incident. It must never retry and
+                    # never message him, or a background optimisation becomes daytime spam.
+                    log_info(f"[BUILDLOG] collect-only: laptop unavailable, skipping quietly. "
+                             f"{out[:120]}")
+                    return
+
+                if "BUILD_LOG_OK" not in out:
+                    # HONEST, and NOT silent. A missed night must be distinguishable from a
+                    # broken job — the keepalive that was 'alive but not healing' for two days
+                    # taught this exactly: silence has to mean broken, so say something.
+                    # But say it ONCE, at the end of the window — not on the first miss, when
+                    # the laptop is merely asleep and may well wake before midnight.
+                    if _bl_attempt < _BL_MAX_ATTEMPTS:
+                        # Imported HERE: neither name is module-level in this file, and this
+                        # runs inside a daemon thread where a NameError dies silently — the
+                        # same shape as the mid-import cron bug that lost scheduled tasks
+                        # without a trace.
+                        from server.config import mizune_now as _bl_now
+                        from datetime import timedelta as _bl_delta
+                        _next = _bl_now() + _bl_delta(minutes=30)
+                        global_cron_manager.add_one_time_task(
+                            f"MIZUNE_BUILD_LOG_RETRY_{_bl_attempt + 1}", _next.isoformat())
+                        log_info(f"[BUILDLOG] collector unavailable (attempt {_bl_attempt}/"
+                                 f"{_BL_MAX_ATTEMPTS}) — retrying at {_next.strftime('%H:%M')}, "
+                                 f"staying quiet until the window closes")
+                        return
+                    # WINDOW CLOSED. Before apologising, fall back to the freshest CACHED
+                    # payload. MEASURED 2026-07-30: three scheduled runs delivered and
+                    # `grep -c BUILD_LOG_OK` was 0 — not one 21:00 run has EVER collected,
+                    # because his laptop is asleep at 21:00 and the log shows it coming back
+                    # online only AFTER the 23:00 window closed. The honesty was working
+                    # perfectly and the feature was still useless: a nightly apology is not a
+                    # build log. So collection no longer has to happen at one exact minute.
+                    # Age is STATED, never assumed — the stale-file lesson from stepproof's
+                    # `file_newer_than`: yesterday's report passes "exists" and fails "fresh".
+                    _cached = _load_cached_digest()
+                    if _cached:
+                        _payload, _age_min, _when = _cached
+                        _hdr = (f"(Collected {_when} — {_age_min // 60}h{_age_min % 60:02d}m "
+                                f"before this report. Your laptop was offline all evening, so "
+                                f"this is the last good collection, not tonight's.)\n\n")
+                        _deliver_payload(_payload, header=_hdr)
+                        return
+                    _send("Master, I couldn't build tonight's build log — your laptop didn't "
+                          f"answer all evening (it has the git repo and gh, I don't). I tried "
+                          f"{_BL_MAX_ATTEMPTS} times over two hours, and I have no recent "
+                          f"cached collection to fall back on either.\nDetail: {out[:250]}")
+                    return
+
+                raw = _laptop("read_file",
+                              {"path": "desktop/my Ai/.data/build_log_latest.json",
+                               "max_chars": 20000}, 45.0)
+                # read_file prefixes/annotates its output, so recover the JSON object itself
+                # rather than assuming the whole string parses.
+                start, end = raw.find("{"), raw.rfind("}")
+                if start == -1 or end <= start:
+                    _send("Master, the laptop ran the build log but I couldn't read the "
+                          f"result file.\nDetail: {raw[:300]}")
+                    return
+                payload = json.loads(raw[start:end + 1])
+                digest = str(payload.get("digest") or "").strip()
+                if not digest:
+                    _send("Master, tonight's build log came back empty — worth a look.")
+                    return
+
+                # A GOOD COLLECTION IS RARE (his laptop is only awake for some of the day), so
+                # never throw one away — cache it for the nights the laptop is asleep.
+                _save_cached_digest(payload)
+
+                # COLLECT-ONLY runs exist purely to fill that cache while the laptop IS awake.
+                # They must never deliver, or he gets a build log at noon.
+                if _bl_collect_only:
+                    log_info("[BUILDLOG] collect-only run: cached, not delivering.")
+                    return
+
+                _deliver_payload(payload)
+            except Exception as e:
+                log_info(f"[BUILDLOG] delivery thread error: {e}")
+        threading.Thread(target=_deliver_build_log, daemon=True).start()
+        return
+
+    if task_description == "MIZUNE_NIGHTLY_REVIEW":
+        def _run_review():
+            try:
+                from server.self_review import run_nightly
+                res = run_nightly(config)
+                log_info(f"[NIGHTLY_REVIEW] Outcome: {res}")
+            except Exception as e:
+                log_info(f"[NIGHTLY_REVIEW] Delivery thread error: {e}")
+        threading.Thread(target=_run_review, daemon=True).start()
         return
 
     # Deterministic path: if the stored action is literal python (she schedules
     # `execute_python code="..."`), run it directly through the guarded tool
     # dispatcher. Re-emitting code through the LLM truncates it — models fumble
     # quotes-in-JSON — so scheduled code must never round-trip through the model.
+    # TWO stored shapes must both hit this path. The original fix only handled
+    # `execute_python code="..."`, but schedule_task now stores the JSON arg form
+    # `execute_python {"code": "..."}`. That form fell through to the LLM/SystemAgent
+    # branch, which "handled" it conversationally and never ran the code — the task
+    # was marked executed=1 while the file it was supposed to write never appeared
+    # (caught by the feature audit 2026-07-26: /tmp/sched_4811.txt missing).
+    if task_description.startswith("WA_SEND"):
+        m_wa = re.search(r'WA_SEND\s+target="([^"]+)"\s+message="([^"]+)"', task_description)
+        if m_wa:
+            target_contact = m_wa.group(1)
+            msg_body = m_wa.group(2)
+            from server.commands import whatsapp_automation
+            res = whatsapp_automation(target_contact, msg_body)
+            log_info(f"[SCHEDULER] Direct-executed WA_SEND to {target_contact!r}: {res}")
+            try:
+                memory.add_to_history("system", f"[TOOL RESULTS] message_whatsapp: {res[:150]}")
+            except Exception as _e:
+                log_info(f"[SCHEDULER] seal failed: {_e}")
+            return
+
+    _sched_code = None
     m = re.match(r'\s*execute_python\s+code="(.*)"\s*$', task_description, re.DOTALL)
-    if m and "whatsapp" not in task_description.lower():
+    if m:
+        _sched_code = m.group(1)
+    else:
+        m_json = re.match(r'\s*execute_python\s+(\{.*\})\s*$', task_description, re.DOTALL)
+        if m_json:
+            try:
+                _payload = json.loads(m_json.group(1))
+                if isinstance(_payload, dict) and isinstance(_payload.get("code"), str):
+                    _sched_code = _payload["code"]
+            except Exception as _e:
+                log_info(f"[SCHEDULER] stored execute_python JSON unparseable ({_e}); "
+                         f"falling through to the brain path.")
+
+    if _sched_code and "whatsapp" not in task_description.lower():
         from server.ai import execute_tool_call
-        result = execute_tool_call("execute_python", {"code": m.group(1)}, config)
+        result = execute_tool_call("execute_python", {"code": _sched_code}, config)
         log_info(f"[SCHEDULER] Direct-executed stored python: {str(result)[:150]}")
         # R.2: report the REAL outcome, not a blanket success.
         res_str = str(result)
@@ -127,7 +870,8 @@ def _scheduler_callback(task_description):
         _report_seal_failures(wm, ws_manager.broadcast_sync)
     threading.Thread(target=_run_and_report, daemon=True).start()
 
-global_cron_manager.start(task_callback=_scheduler_callback)
+# NOTE: global_cron_manager.start() is deliberately NOT called here — see the bottom of
+# this module. Starting it mid-import let a task fire before process_command existed.
 
 # Register the daily morning briefing (idempotent — checks for an existing row).
 # Lives here so BOTH entry points (local server.py, VM backend_main.py) get it.
@@ -137,6 +881,24 @@ try:
     ensure_briefing_scheduled(_lc(), global_cron_manager)
 except Exception as _e:
     log_info(f"[BRIEFING] Registration skipped: {_e}")
+
+# Resume missions that were mid-flight when she restarted (H2 mission engine).
+# Delayed a bit so providers/bridges finish booting before steps execute.
+try:
+    from server.missions import resume_active_missions as _ram
+    from server.config import load_config as _lc2
+    threading.Timer(45.0, _ram, args=(_lc2(),)).start()
+except Exception as _e:
+    log_info(f"[MISSION] Resume hook skipped: {_e}")
+
+# Z2: resume a night shift that was mid-flight at restart (persistence claim of Z2).
+# A bit after missions, and only touched if the module is present.
+try:
+    from server.night_shift import resume_running_shift as _rrs
+    from server.config import load_config as _lc3
+    threading.Timer(60.0, _rrs, args=(_lc3(),)).start()
+except Exception as _e:
+    log_info(f"[SHIFT] Resume hook skipped: {_e}")
 
 _processing_lock = threading.Lock()
 # Per-session locks so a slow WhatsApp reply doesn't drop the user's desktop input
@@ -153,6 +915,51 @@ def _get_session_lock(session_id: str) -> threading.Lock:
             _session_locks[session_id] = lock
         return lock
 
+def _format_orchestra_reply(res: dict) -> str:
+    """Render an orchestra verdict DETERMINISTICALLY, for the same reason mesh does.
+
+    Code owns the provenance line — which path was taken, how many advocates agreed,
+    what it cost. If a model voiced this it could narrate "the panel deliberated"
+    over a SETTLED single-call answer, which is precisely the overstatement the
+    orchestra exists to prevent.
+    """
+    if not res.get("ok"):
+        return ("I couldn't convene the tribunal, Master. "
+                f"({res.get('error', 'unknown error')})")
+    body = (res.get("answer") or "").strip()
+    case = str(res.get("case") or "").upper()
+    if case == "SETTLED":
+        # Be honest that nobody argued: this took one direct answer, not a debate.
+        return body + "\n\n— settled question, answered directly (no debate needed)"
+    who = "adopted and improved one advocate's answer" if case == "ADOPT" \
+        else "synthesised after a round of revisions"
+    return (body + f"\n\n⚖️ Alucard {who} · agreement {res.get('agreement', '?')} · "
+            f"round {res.get('rounds', '?')} · {res.get('calls', '?')} calls · "
+            f"{res.get('tokens', '?')} tokens")
+
+
+def _format_mesh_reply(res: dict) -> str:
+    """Render a mesh result DETERMINISTICALLY. Code owns the agreement label, the provider
+    list and the verifier name — if a model voiced this it could narrate 'I double-checked'
+    over a single-provider answer, which is the exact failure mesh exists to catch."""
+    body = (res.get("consolidated") or "").strip()
+    if not res.get("mesh"):
+        reason = res.get("reason") or "cross-check unavailable"
+        return (body or "I couldn't cross-check that right now, Master.") + \
+               f"\n\n— NOT cross-checked ({reason})"
+    used = ", ".join(res.get("providers_used") or [])
+    agreement = str(res.get("agreement") or "unknown").upper()
+    notes = (res.get("notes") or "").strip()
+    # Say so when the verifier also produced one of the answers — a model grading its own
+    # work is weaker evidence, and hiding that would overstate the check.
+    vtag = f"verifier: {res.get('verifier')}" + ("" if res.get("verifier_held_out") else " (also answered)")
+    lines = [body or "(no consolidated answer returned)", "",
+             f"— cross-checked by {used} · {vtag} · agreement: {agreement}"]
+    if agreement in ("MIXED", "CONFLICT") and notes:
+        lines.append(f"where they differ: {notes[:400]}")
+    return "\n".join(lines).strip()
+
+
 def process_command(text: str, config: dict, broadcast_sync_fn, session_id: str = 'main') -> str:
     """Wrapper to prevent ghost inputs from cloning Mizune's brain (per-session)."""
     lock = _get_session_lock(session_id)
@@ -160,7 +967,28 @@ def process_command(text: str, config: dict, broadcast_sync_fn, session_id: str 
         log_info(f"[PROCESSOR] Ignoring overlapping input '{text}' for session '{session_id}' (busy).")
         return None
     try:
-        return _process_command_internal(text, config, broadcast_sync_fn, session_id)
+        reply = _process_command_internal(text, config, broadcast_sync_fn, session_id)
+        # If a tribunal sat during this turn, stamp its receipt onto whatever she
+        # said. She gets to voice the verdict in her own words - Master asked for the
+        # answer to come from Mizune - but the agreement level, round and cost are
+        # appended HERE, by code, at the one choke point every reply passes through.
+        # Same reason the outcome seal lives in execute_tool_call(): a model asked to
+        # report its own numbers will eventually report flattering ones.
+        try:
+            from server.orchestra import take_provenance, take_verdict, relay_failed
+            prov = take_provenance()
+            verdict = take_verdict()
+            if prov:
+                # She is allowed to voice it, but not to lose it. Observed: handed a
+                # full verdict she answered "Done!" and dropped every word of it.
+                if relay_failed(reply, verdict):
+                    log_info("[ORCHESTRA] relay dropped the verdict - substituting it verbatim")
+                    reply = verdict
+                if reply and prov not in reply:
+                    reply = reply.rstrip() + "\n\n" + prov
+        except Exception:
+            pass          # a missing receipt must never cost Master the answer
+        return reply
     finally:
         lock.release()
 
@@ -169,6 +997,8 @@ from server.tracing import observe
 # capture_input=False: the `config` arg holds live API keys — never send it to TraceRoot.
 @observe(name="Mizune.ProcessCommand", type="span", capture_input=False)
 def _process_command_internal(text: str, config: dict, broadcast_sync_fn, session_id: str = 'main') -> str:
+    current_session_id.set(session_id)
+    current_user_text.set(text if isinstance(text, str) else "")
     # Initialize session and load emotion state
     platform = "whatsapp" if "whatsapp:" in session_id else "desktop"
     global_session_store.start_or_resume_session(session_id, platform=platform)
@@ -200,6 +1030,264 @@ def _process_command_internal(text: str, config: dict, broadcast_sync_fn, sessio
             lower_text = text.lower().strip()
             break
             
+    # ── MISSION fast-path: "mission: <goal>" is a GUARANTEED trigger for the
+    # H2 mission engine (the LLM otherwise sometimes handles small compound goals
+    # directly and skips the engine). Strips WhatsApp wrapper/context lines first.
+    _mission_m = re.search(r"(?:start a |begin a |new )?mission\s*[:\-]\s*(.+)", lower_text)
+    if _mission_m and "[mission" not in lower_text:
+        from server.missions import start_mission
+        # Recover the goal with original casing from the raw text
+        _goal_raw = text[text.lower().find(_mission_m.group(1)):].strip()
+        _goal_raw = _goal_raw.split("\n(SYSTEM:")[0].strip()
+        log_info(f"[MISSION] fast-path trigger: {_goal_raw[:80]}")
+        return start_mission(_goal_raw, session_id, config)
+
+    # ── NIGHT SHIFT fast-path (Z2): queuing an overnight shift MUST be deterministic —
+    # the model otherwise just chats ("I don't have any shift info") instead of calling
+    # the tool (observed live 2026-07-24). Read-only status/report also routed here.
+    #   "night shift status" / "shift report"  → status/report
+    #   "tonight: A. B. C" / "overnight work on X and Y" / "while I sleep, do X"
+    # "night shift"/"overnight"/"while I sleep" are unambiguous shift phrasing; bare
+    # "tonight" is NOT (it appears in ordinary chat) so it only counts alongside a work verb.
+    _WORK = r"work on|do|handle|tackle|research|finish|prepare|build|write|organi[sz]e|review|draft|plan"
+    _shift_phrase = re.search(r"\bnight\s*shift\b|\bovernight\b|\bwhile i (?:sleep|am asleep|'m asleep)\b", lower_text)
+    _tonight_work = re.search(r"\btonight\b[^\.]*\b(?:" + _WORK + r")\b", lower_text)
+    if (_shift_phrase or _tonight_work) and "[mission" not in lower_text and not text.startswith("[SYSTEM"):
+        # status / report first (read-only, no queue)
+        if re.search(r"\b(status|how(?:'s| is) (?:the|my)? ?shift)\b", lower_text) \
+                and not re.search(r"\b(" + _WORK + r"|queue)\b", lower_text):
+            from server.ai import execute_tool_call
+            log_info("[SHIFT] fast-path: status")
+            return execute_tool_call("night_shift", {"action": "status"}, config)
+        if re.search(r"\b(report|proof of work|what did you (?:do|get done))\b", lower_text):
+            from server.ai import execute_tool_call
+            log_info("[SHIFT] fast-path: report")
+            return execute_tool_call("night_shift", {"action": "report"}, config)
+        # queue: pull the task list after the trigger phrase
+        _q = re.search(
+            r"(?:night\s*shift|overnight|while i (?:sleep|am asleep|'m asleep)|tonight)\s*[:,\-]?\s*"
+            r"(?:you (?:can|should) )?(?:please )?(?:" + _WORK + r")?\s*[:,\-]?\s*(.+)",
+            text, re.IGNORECASE | re.DOTALL)
+        if _q:
+            _body = _q.group(1).split("\n(SYSTEM:")[0].strip()
+            # split into ordered tasks on newlines, semicolons, ' and ', ' then ', or ', '
+            parts = re.split(r"\s*(?:\n|;|,| and | then )\s*", _body)
+            tasks = [p.strip(" .") for p in parts if len(p.strip(" .")) > 3]
+            if tasks:
+                from server.ai import execute_tool_call
+                log_info(f"[SHIFT] fast-path: queue {len(tasks)} task(s)")
+                return execute_tool_call("night_shift",
+                                         {"action": "queue", "tasks": tasks}, config)
+
+    # ── LEARN fast-path: "learn this: <url/text>" / "/learn <x>" / "remember this: <x>"
+    # MUST be deterministic — the model happily answers ABOUT a link from its own
+    # knowledge and claims it learned, while the knowledge base stays empty
+    # (caught 2026-07-20: DB had 0 rows after she said "I've learned about X").
+    _learn_m = re.search(
+        r"(?:^|\b)(?:/learn|learn this|learn about this|remember this|save this to (?:your )?(?:knowledge|memory)|add this to (?:your )?knowledge)\s*[:\-]?\s*(.+)",
+        lower_text, re.DOTALL)
+    if _learn_m and "[mission" not in lower_text:
+        _src_lower = _learn_m.group(1).strip()
+        _src = text[text.lower().rfind(_src_lower[:40]):].strip() if _src_lower else ""
+        _src = _src.split("\n(SYSTEM:")[0].strip()
+        if _src:
+            from server.knowledge import learn as _learn_fn
+            log_info(f"[KNOWLEDGE] fast-path learn: {_src[:80]}")
+            return _learn_fn(_src, config)
+
+    # ── MESH fast-path (Z5): cross-model verification MUST be deterministic. The engine
+    # (server/mesh.py) has existed and worked since 2026-07-24 but NOTHING called it — the
+    # model never picks it on its own, so "verify this: X" got a single-provider answer that
+    # READ like it had been verified. Colon/dash required, so ordinary use of the words
+    # ("can you verify this for me?") does not trigger a 3-model fan-out.
+    _mesh_m = re.search(
+        r"(?:^|\b)(?:mesh|verify this|double[-\s]?check(?:\s+this)?|cross[-\s]?check(?:\s+this)?)"
+        r"\s*[:\-]\s*(.+)",
+        text, re.IGNORECASE | re.DOTALL)
+    if _mesh_m and "[mission" not in lower_text and not text.startswith("[SYSTEM"):
+        _mq = _mesh_m.group(1).split("\n(SYSTEM:")[0].strip()
+        if _mq:
+            from server.mesh import mesh_answer
+            log_info(f"[MESH] fast-path trigger: {_mq[:80]}")
+            return _format_mesh_reply(mesh_answer(_mq, config))
+
+    # ── ORCHESTRA fast-path (Z6): a full tribunal is expensive and slow, so asking
+    # for one must be an explicit act, never a guess. Same reasoning as mesh above:
+    # the model will not reach for a 15-second 11-call deliberation on its own, and
+    # if it could it would do it at the wrong moments. Colon/dash required so
+    # ordinary sentences containing the word "debate" do not convene four advocates.
+    _orc_m = re.search(
+        r"(?:^|\b)(?:orchestra|tribunal|debate this|deliberate)"
+        r"\s*[:\-]\s*(.+)",
+        text, re.IGNORECASE | re.DOTALL)
+    if _orc_m and "[mission" not in lower_text and not text.startswith("[SYSTEM"):
+        _oq = _orc_m.group(1).split("\n(SYSTEM:")[0].strip()
+        if _oq:
+            from server.orchestra import orchestra_answer
+            log_info(f"[ORCHESTRA] fast-path trigger: {_oq[:80]}")
+            return _format_orchestra_reply(orchestra_answer(_oq, config))
+
+    # ── WHATSAPP SEND fast-path: an explicit send order is CODE's job, not the model's.
+    # Two independent failures made this unusable, and both bypass the model entirely now:
+    #   1. She narrated instead of acting — "done!", "I'll send it now", "Here's the
+    #      command:" — with ZERO message_whatsapp calls behind any of them (4 in a row,
+    #      2026-07-27).
+    #   2. REFUSAL CONTAGION. Her own earlier refusals sit in the chronicle, so the next
+    #      send request gets refused by imitation regardless of content — "Bakayarooo"
+    #      (anime for "idiot") was declined seconds after a genuinely refused request.
+    #      Same shape as the fabricated scheduling confirmation: the model copies the
+    #      nearest matching turn instead of judging this one.
+    # Requires an explicit recipient AND an explicit body separator, so ordinary chat
+    # about messaging someone does not fire it.
+    # Parsed in steps rather than one regex: a single pattern greedily swallowed the filler
+    # and produced who='a whatsapp message to Pranay'. Splitting on the body separator and
+    # then taking the text after the LAST "to" is both correct and readable.
+    # STRIP THE PLATFORM WRAPPER FIRST. Inbound WhatsApp arrives as
+    #   "[MESSAGE FROM MASTER RUSHI (via WhatsApp)]: <what he typed>\n(SYSTEM: ...)"
+    # and the wrapper itself contains the word MESSAGE and a colon. Parsing the raw string
+    # matched those, so the recipient came out as 'FROM MASTER RUSHI (via WhatsApp)]'
+    # (reported live 2026-07-27). My unit tests used bare text and never saw the shape that
+    # actually reaches this code — the real input format IS part of the contract.
+    # ── SCHEDULED WHATSAPP SEND fast-path (Task 8.3):
+    if ("in " in lower_text or "after " in lower_text or "times" in lower_text) and \
+            any(w in lower_text for w in ["say", "send", "message", "tell"]):
+        _sched_res = _handle_scheduled_whatsapp_send(text, config)
+        if _sched_res:
+            return _sched_res
+
+    # ── WHATSAPP SEND fast-path (Task 8.1 group-aware + Task Pack 7 wrapper-strip):
+    _wa_text = re.sub(r"^\s*\[[^\]]*\]\s*:\s*", "", text)
+    _wa_text = _wa_text.split("\n(SYSTEM:")[0].strip()
+
+    from server.platforms.whatsapp.core import is_third_party_turn as _itp_tp
+    _third_party = _itp_tp(text)
+
+    # ── SLASH COMMANDS (/usage, /insights, /model, /status, /help).
+    # Wired HERE on purpose: process_command is the single door for the WebSocket/desktop path
+    # AND for inbound WhatsApp, so one implementation serves both and cannot drift between
+    # them. handle_slash strips the WhatsApp wrapper itself and returns None for anything it
+    # does not recognise, so ordinary chat is never swallowed.
+    # MASTER ONLY — these expose his providers, his message counts and his schedule, and
+    # /model would let a stranger in a group chat repoint his brain.
+    if not _third_party and not text.startswith("[SYSTEM"):
+        try:
+            from server.slash_commands import handle_slash
+            _slash = handle_slash(text, config)
+            if _slash:
+                log_info(f"[SLASH] handled: {text[:60]!r}")
+                return _slash
+        except Exception as _e:
+            log_info(f"[SLASH] dispatch failed, falling through: {_e}")
+
+    # ── "WHAT MODEL ARE YOU USING?" — answered from CONFIG, never by the model.
+    # Rushi asked her this repeatedly and got nothing back. A model cannot reliably introspect
+    # which model it is: it has no access to the router's decision, so it either declines or
+    # invents a plausible name — and an invented answer here is worse than silence, because it
+    # is unfalsifiable in chat and he would act on it. Same rule as everywhere else: ground
+    # truth comes from CODE. Read-only, so no Master-only gate is needed.
+    if re.search(r"\b(?:what|which|whats|what's)\b[^?]*\b(?:model|brain|llm|provider)\b"
+                 r"|\bmodel\s+are\s+you\b|\bwhich\s+brain\b|\bwhat\s+are\s+you\s+running\s+on\b",
+                 lower_text) and not text.startswith("[SYSTEM"):
+        try:
+            from server.model_catalog import list_models
+            _cat = list_models(config)
+            _cur = next((m for m in _cat if m.get("is_current")), None)
+            if _cur:
+                _rel = _cur.get("tool_reliability") or "unmeasured"
+                _others = [f"{m['provider']} ({m.get('tool_reliability') or '?'})"
+                           for m in _cat if not m.get("is_current") and m.get("available")]
+                _msg = (f"[EMOTION: neutral] Right now I'm running on "
+                        f"**{_cur['provider']} · {_cur['model']}**, Master — tool reliability "
+                        f"{_rel}.")
+                if _others:
+                    _msg += " Also available: " + ", ".join(_others[:5]) + "."
+                log_info(f"[MODEL] fast-path: reported {_cur['provider']}/{_cur['model']}")
+                return _msg
+        except Exception as _e:
+            log_info(f"[MODEL] fast-path failed, falling through to the model: {_e}")
+
+    # ── MUSIC fast-path: play/pause/skip is CODE's job (measured — play_music is the 3rd
+    # most-used side-effecting tool in the seals at 16 calls and had no pre-LLM guarantee).
+    # MASTER ONLY: these drive HIS phone and laptop, so a third party in a group chat must
+    # never be able to start music on his devices.
+    # Sits BEFORE the reminder path only for readability; the two parsers cannot both match
+    # (one requires "remind", the other "play"/"pause"/"skip").
+    if not _third_party and not text.startswith("[SYSTEM") and "[mission" not in lower_text:
+        _mtool, _margs = _parse_music_command(text)
+        if _mtool:
+            from server.ai import execute_tool_call
+            log_info(f"[MUSIC] fast-path: {_mtool} {_margs}")
+            _mres = str(execute_tool_call(_mtool, _margs, config))
+            try:
+                memory.add_to_history("system", f"[TOOL RESULTS] {_mtool}: {_mres[:150]}")
+            except Exception as _e:
+                log_info(f"[MUSIC] seal failed: {_e}")
+            return _mres
+
+    # ── REMINDER fast-path: booking a reminder is CODE's job (measured, see
+    # _parse_reminder_command — mistral called schedule_task on only 69% of these).
+    # Sits AFTER the scheduled-WhatsApp-send path so "in 5 min say hi to Owais" stays a SEND,
+    # and it is keyword-gated on "remind" so it cannot capture that phrasing anyway.
+    # MASTER ONLY: a third party must never be able to schedule work on his system.
+    if not _third_party and not text.startswith("[SYSTEM"):
+        _rem_delay, _rem_what = _parse_reminder_command(text)
+        if _rem_delay and _rem_what:
+            from server.config import mizune_now
+            import datetime as _dt
+            _trigger = mizune_now() + _dt.timedelta(minutes=_rem_delay)
+            # Origin decides DELIVERY, and both shapes are deterministic where they can be.
+            # A WhatsApp-origin reminder is stored as WA_SEND, which _scheduler_callback
+            # direct-executes without the model touching it. A desktop/voice reminder keeps
+            # the spoken wakeup path.
+            _via_wa = "(via WhatsApp)" in text or "[WHATSAPP MESSAGE FROM" in text
+            if _via_wa:
+                _safe = _rem_what.replace('"', "'")
+                _action = f'WA_SEND target="Master" message="Reminder, Master: {_safe}"'
+            else:
+                _action = f"Speak out loud: Master, reminder — {_rem_what}"
+            global_cron_manager.add_one_time_task(_action, _trigger.isoformat())
+            log_info(f"[REMINDER] fast-path booked +{_rem_delay}min "
+                     f"({_trigger.strftime('%I:%M %p')}): {_rem_what[:60]!r} via="
+                     f"{'whatsapp' if _via_wa else 'voice'}")
+            # Seal it like any other tool result, so the audit and the lie-detector see a
+            # real scheduling event rather than an unexplained gap.
+            try:
+                memory.add_to_history("system", f"[TOOL RESULTS] schedule_task: booked "
+                                                f"{_trigger.isoformat()} — {_rem_what[:100]}")
+            except Exception as _e:
+                log_info(f"[REMINDER] seal failed: {_e}")
+            return (f"[EMOTION: happy] Got it, Master — I'll remind you to {_rem_what} at "
+                    f"{_trigger.strftime('%I:%M %p')}.")
+
+    if not _third_party and "[mission" not in lower_text and not text.startswith("[SYSTEM"):
+        _who, _body = _parse_whatsapp_send_command(_wa_text)
+        if _who and _body:
+            _looks_like_wrapper = any(c in _who for c in "[]()") or len(_who) > 30 or "master" in _who.lower()
+            if not _looks_like_wrapper and _who.lower() not in (
+                    "a", "an", "the", "him", "her", "them", "whatsapp",
+                    "message", "whatsapp message", "msg", "text", "someone"):
+                
+                # Task 8.1 Group-Aware Routing:
+                # If request arrived in a group chat (session_id has 'whatsapp:group:') and does NOT
+                # explicitly specify DM/privately, route to the ORIGIN GROUP JID!
+                _has_dm_explicit = any(w in _wa_text.lower() for w in ["dm", "in dm", "privately", "in private", "directly", "private message"])
+                _sess = current_session_id.get() or session_id
+                _target_dest = _who
+                if _sess and "whatsapp:group:" in _sess and not _has_dm_explicit:
+                    _grp_jid = _sess.split("whatsapp:group:", 1)[1].strip()
+                    if "@g.us" in _grp_jid:
+                        log_info(f"[WHATSAPP] Fast-path routing to origin group {_grp_jid} for recipient {_who!r}")
+                        _target_dest = _grp_jid
+
+                from server.commands import whatsapp_automation
+                log_info(f"[WHATSAPP] fast-path send → {_target_dest!r}: {_body[:60]!r}")
+                _res = str(whatsapp_automation(_target_dest, _body))
+                try:
+                    memory.add_to_history("system", f"[TOOL RESULTS] message_whatsapp: {_res[:150]}")
+                except Exception as _e:
+                    log_info(f"[WHATSAPP] seal failed: {_e}")
+                return _res
+
     # ── CRAZY COMMANDS ──
     if lower_text == "/nuke_cache":
         log_info("[COMMAND] Executing /nuke_cache...")
@@ -884,57 +1972,32 @@ You are looking at Master through your webcam camera RIGHT NOW. Describe what yo
         return "I'm sorry Master, all my AI connections are down right now. Please check your API keys or internet connection!"
 
 def process_mobile_vision(image_bytes: bytes, config: dict) -> str:
-    """Process image captured from mobile app using Llama 3.2 Vision on Groq (fallback to Gemini)."""
+    """Process image captured from mobile app using describe_image (Gemini REST API)."""
     import base64
-    from openai import OpenAI
+    from .ai import save_latest_image, describe_image
     
     log_info("[MOBILE VISION] Processing shared image/photo...")
     prompt = "Master just showed you this image through the mobile app. Look closely and tell Master what you see. Be excited, natural, and brief (2-3 sentences). Use cute anime expressions."
     
-    groq_key = config.get("groq_api_key", "")
-    if groq_key:
-        try:
-            b64_img = base64.b64encode(image_bytes).decode("utf-8")
-            groq_client = OpenAI(api_key=groq_key, base_url="https://api.groq.com/openai/v1")
-            
-            # Using Meta's Open Source Vision model via Groq!
-            resp = groq_client.chat.completions.create(
-                model="llama-3.2-11b-vision-preview",
-                messages=[{"role": "user", "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"}}
-                ]}],
-                max_tokens=250
-            )
-            result = (resp.choices[0].message.content or "").strip()
-            if result:
-                log_info("[MOBILE VISION] Groq Llama 3.2 Vision success!")
-                # Strip reasoning tokens if any
-                import re
-                result = re.sub(r"<think>.*?</think>", "", result, flags=re.IGNORECASE | re.DOTALL).strip()
-                return result
-        except Exception as e:
-            log_info(f"[MOBILE VISION] Groq vision failed, falling back to Gemini: {e}")
-
-    # Fallback to Gemini
-    api_key = config.get("gemini_api_key", "")
-    if api_key:
-        try:
-            from google import genai
-            from google.genai import types
-            client = genai.Client(api_key=api_key)
-            response = client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=[
-                    types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
-                    types.Part.from_text(text=prompt)
-                ]
-            )
-            result = (response.text or "").strip()
-            if result:
-                log_info("[MOBILE VISION] Gemini fallback success!")
-                return result
-        except Exception as e:
-            log_info(f"[MOBILE VISION] Gemini failed: {e}")
-            
+    try:
+        b64_img = base64.b64encode(image_bytes).decode("utf-8")
+        save_latest_image(b64_img)
+        res = describe_image(b64_img, prompt, config)
+        if res:
+            return res
+    except Exception as e:
+        log_info(f"[MOBILE VISION] Processing failed: {e}")
+        
     return "I tried to look at the picture, Master, but my eyes are a bit blurry right now! Please check your API keys."
+
+
+# ── Start the scheduler LAST, once every name in this module exists ──────────────
+# This used to run at line ~245, i.e. PARTWAY THROUGH the import. The cron thread
+# starts immediately, so any task already due fired while the module was still being
+# defined and hit:
+#     NameError: name 'process_command' is not defined   (in _run_and_report)
+# It dies in a daemon thread, so nothing surfaces to Master — the task is simply lost.
+# Caught 2026-07-27 while testing provider routing. The window is narrow (boot only)
+# but that is exactly when overdue tasks — a missed briefing, a night-shift report —
+# are most likely to fire. Keep this call at the END of the module.
+global_cron_manager.start(task_callback=_scheduler_callback)

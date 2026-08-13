@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<meta name="theme-color" content="#0b0e14">
+<meta name="color-scheme" content="dark">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Mizune</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ── STATUS STRIP ───────────────────────────────────────────────────────── -->
+<header id="strip">
+  <div class="strip-row">
+    <span id="conn-dot" class="dot state-down"></span>
+    <span id="conn-text" class="conn-text">Starting up</span>
+    <button id="btn-settings" class="icon-btn" aria-label="Settings">&#9881;</button>
+  </div>
+  <div class="strip-row strip-vitals">
+    <span class="vital"><b>brain</b> <span id="v-brain">--</span></span>
+    <span class="vital"><b>devices</b> <span id="v-devices">--</span></span>
+    <span class="vital"><b>providers</b> <span id="v-providers">--</span></span>
+  </div>
+  <div id="vitals-reason" class="reason" hidden></div>
+</header>
+
+<!-- ── TRANSCRIPT ─────────────────────────────────────────────────────────── -->
+<main id="log" aria-live="polite"></main>
+
+<!-- ── COMPOSER ───────────────────────────────────────────────────────────── -->
+<footer id="composer">
+  <div id="activity" class="activity" hidden></div>
+  <div class="quick-row" id="quick-row">
+    <button class="quick" data-cmd="/usage">/usage</button>
+    <button class="quick" data-cmd="/status">/status</button>
+    <button class="quick" data-cmd="/insights">/insights</button>
+    <button class="quick" data-cmd="/model">/model</button>
+  </div>
+  <div class="input-row">
+    <textarea id="input" rows="1" placeholder="Message Mizune" autocomplete="off"
+              autocapitalize="sentences" enterkeyhint="send"></textarea>
+    <button id="send" class="send-btn" aria-label="Send">&#10148;</button>
+  </div>
+</footer>
+
+<!-- ── SETTINGS SHEET ─────────────────────────────────────────────────────── -->
+<div id="sheet-backdrop" class="backdrop" hidden></div>
+<section id="sheet" class="sheet" hidden aria-label="Settings">
+  <div class="sheet-grip"></div>
+  <h2>Settings</h2>
+
+  <label class="field">
+    <span>Server host<em>host:port of the Mizune VM</em></span>
+    <input id="f-host" type="text" inputmode="url" autocomplete="off"
+           autocapitalize="none" spellcheck="false" placeholder="40.123.215.32:8001">
+  </label>
+
+  <label class="field">
+    <span>Access token<em>stored on this device only, sent as ?key= and X-Mizune-Key</em></span>
+    <input id="f-token" type="password" autocomplete="off" autocapitalize="none"
+           spellcheck="false" placeholder="paste dashboard_api_key">
+  </label>
+
+  <label class="checkline">
+    <input id="f-showtoken" type="checkbox"> <span>Show token</span>
+  </label>
+  <label class="checkline">
+    <input id="f-voice" type="checkbox"> <span>Play her voice (downloads ~250 KB per reply)</span>
+  </label>
+
+  <div id="sheet-result" class="reason" hidden></div>
+
+  <div class="sheet-actions">
+    <button id="f-test" class="btn ghost">Test token</button>
+    <button id="f-clear" class="btn ghost danger">Clear token</button>
+    <button id="f-save" class="btn primary">Save &amp; reconnect</button>
+  </div>
+  <p class="fine" id="build-line"></p>
+</section>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -96,3 +96,15 @@ local.properties
 build/
 app/build/
 
+
+# Vosk offline wake-word model (local asset, ~45MB — bundled into APK at build, not committed)
+mizune-android/app/src/main/assets/vosk-model-en/
+
+# Picovoice custom keyword (Rushi generates; local asset, not committed)
+mizune-android/app/src/main/assets/baka_mizune.ppn
+
+# Z3.1 SOVEREIGN self-export archives + restores (contain her memory DBs — personal data,
+# regenerable via scripts/mizune_export.py; never commit)
+mizune_self*.tar.gz
+*.mizune_self.tar.gz
+mizune_restore*/

@@ -10,7 +10,7 @@ import threading
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Depends, HTTPException, status
-from fastapi.responses import JSONResponse, Response, StreamingResponse, FileResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse, FileResponse, RedirectResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
 from fastapi.staticfiles import StaticFiles
@@ -171,9 +171,80 @@ def on_wake_trigger(pre_text=None):
         ws_manager.broadcast_sync({"type": "status", "text": "Idle. Say wake word."})
 
 # ─── Routes ─────────────────────────────────────────────────────────────
+@app.get("/api/self_review")
+async def api_self_review():
+    """Her nightly findings — consumed by the dashboard's Dreaming section."""
+    from server.self_review import latest_findings
+    return JSONResponse({"reviews": latest_findings(3)})
+
+
 @app.get("/health")
 async def health_check():
     return {"status": "ok", "mode": mizune_manager.current_mode}
+
+
+@app.get("/api/devices")
+async def api_devices():
+    """Read-only device-fleet TRUTH: exactly which nodes are registered right now.
+
+    Exists because the feature audit was scoring device reporting on Mizune's PROSE —
+    the word "online" appearing anywhere in her reply counted as a pass, so an offline
+    laptop she narrated as connected would have read as success. A device that is not
+    in this dict is offline; there is nothing to interpret.
+    """
+    from server.device_registry import device_registry
+    devices = device_registry.list_devices()
+    return {"devices": devices, "online": sorted(devices.keys()), "count": len(devices)}
+
+# Google OAuth connect flow (Phase G). No api_key dependency: the browser and
+# Google's redirect hit these directly, and the flow only runs on localhost.
+GOOGLE_REDIRECT_URI = "http://localhost:8001/connect/google/callback"
+
+# Voice Match (Google-Assistant-style): enroll Master's voice 3x, then the app
+# verifies each wake-word utterance so only Master can command her by voice.
+@app.post("/api/voice/enroll")
+async def voice_enroll(request: Request):
+    from server import voice_match
+    try:
+        return JSONResponse(voice_match.enroll(await request.body()))
+    except Exception as e:
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=400)
+
+@app.post("/api/voice/verify")
+async def voice_verify(request: Request):
+    from server import voice_match
+    try:
+        return JSONResponse(voice_match.verify(await request.body()))
+    except Exception as e:
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=400)
+
+@app.get("/api/voice/status")
+async def voice_status():
+    from server import voice_match
+    return JSONResponse(voice_match.status())
+
+@app.post("/api/voice/reset")
+async def voice_reset():
+    from server import voice_match
+    return JSONResponse(voice_match.reset())
+
+@app.get("/connect/google")
+async def connect_google():
+    from server.integrations import integrations
+    auth_url = integrations.get_auth_url("google", GOOGLE_REDIRECT_URI)
+    if not auth_url.startswith("http"):
+        return JSONResponse({"status": "error", "message": auth_url}, status_code=500)
+    return RedirectResponse(auth_url)
+
+@app.get("/connect/google/callback")
+async def connect_google_callback(request: Request):
+    from server.integrations import integrations
+    ok = integrations.fetch_token("google", str(request.url), GOOGLE_REDIRECT_URI)
+    if not ok:
+        return HTMLResponse("<h2>❌ Google connection failed — check server logs and retry /connect/google</h2>", status_code=500)
+    token = integrations.load_token("google") or {}
+    warn = "" if token.get("refresh_token") else "<p>⚠️ No refresh_token granted — revoke access at myaccount.google.com/permissions and retry.</p>"
+    return HTMLResponse(f"<h2>✅ Google connected, Master!</h2>{warn}<p>You can close this tab.</p>")
 
 @app.post("/chat")
 async def chat_endpoint(request: Request, api_key: str = Depends(get_api_key)):
@@ -363,7 +434,13 @@ async def websocket_endpoint(websocket: WebSocket):
                                         "payload": {"valence": v, "arousal": a}
                                     })
                                     
-                                    ws_manager.broadcast_sync({"type": "speak", "text": res})
+                                    # "tts": True promises her REAL Japanese voice is coming, so the
+                                    # client waits for it instead of racing a timer. Without this the
+                                    # dashboard guessed 1800ms while edge-tts measured 1.25-2.42s on
+                                    # the VM, so the English browser voice won and got cut off
+                                    # mid-word when the Japanese finally landed.
+                                    ws_manager.broadcast_sync({"type": "speak", "text": res, "tts": True})
+                                    spoke = False
                                     try:
                                         from server.tts import generate_tts
                                         from server.audio import play_audio_bytes
@@ -377,6 +454,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                                 "format": "mp3",
                                                 "b64": base64.b64encode(audio_bytes).decode("utf-8"),
                                             })
+                                            spoke = True
                                             # Also play locally (only audible when running on a machine
                                             # with speakers; harmless no-op/err on the headless VM).
                                             try:
@@ -385,6 +463,11 @@ async def websocket_endpoint(websocket: WebSocket):
                                                 pass
                                     except Exception as e:
                                         log_info(f"[WS] TTS generation error: {e}")
+                                    if not spoke:
+                                        # The promise failed. Release the client NOW rather than
+                                        # leaving it silent until its safety timer expires.
+                                        log_info("[WS] TTS produced no audio - releasing client to browser voice.")
+                                        ws_manager.broadcast_sync({"type": "audio_failed"})
                             except Exception as e:
                                 import traceback
                                 traceback.print_exc()
@@ -501,6 +584,19 @@ async def websocket_endpoint(websocket: WebSocket):
                 elif msg.get("type") == "device_result":
                     from server.device_registry import device_registry
                     device_registry.handle_result(msg.get("request_id", ""), msg.get("result"))
+                elif msg.get("type") == "device_task_done":
+                    # A delegated background task (laptop run_task/claude_task) finished —
+                    # report the HONEST outcome to Master everywhere he might be.
+                    label = str(msg.get("label", "task"))[:80]
+                    result = str(msg.get("result", "finished."))[:400]
+                    report = f"Master, the laptop task '{label}' {result}"
+                    log_info(f"[TASKS] device_task_done: {label} -> {result[:120]}")
+                    ws_manager.broadcast_sync({"type": "speak", "text": report, "emotion": "neutral"})
+                    try:
+                        from server.commands import whatsapp_automation
+                        await asyncio.to_thread(whatsapp_automation, "Master", report)
+                    except Exception as e:
+                        log_info(f"[TASKS] WhatsApp relay failed: {e}")
             except Exception as e:
                 log_info(f"[WS] Error processing message: {e}")
     except WebSocketDisconnect:

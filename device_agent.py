@@ -22,9 +22,157 @@ try:
 except ImportError:
     sys.exit("pip install websockets")
 
-CAPABILITIES = ["install_app", "download_file", "open_app", "open_url", "run_command"]
+CAPABILITIES = ["install_app", "download_file", "open_app", "open_url", "run_command", "claude_code",
+                "run_task", "claude_task", "list_files", "read_file"]
 DANGEROUS = ["del ", "rmdir ", "rm -", "format ", "diskpart", "shutdown", "reg delete", "mkfs"]
 DOWNLOADS = os.path.join(os.path.expanduser("~"), "Downloads")
+
+SENSITIVE_PATTERNS = [".env", "token", "secret", "credential", "id_rsa"]
+SKIP_DIRS = {"node_modules", ".git", ".venv", "__pycache__"}
+
+def _get_allowed_roots():
+    user_home = os.path.expanduser("~")
+    roots = [
+        os.path.join(user_home, "Desktop"),
+        os.path.join(user_home, "Documents"),
+        os.path.join(user_home, "Downloads"),
+        os.path.join(user_home, "OneDrive", "Desktop"),
+        os.path.join(user_home, "OneDrive", "Documents"),
+        os.path.join(user_home, "OneDrive", "Downloads"),
+    ]
+    return [os.path.normpath(r).lower() for r in roots if os.path.exists(r)]
+
+def _is_path_allowed(target_path: str) -> bool:
+    norm = os.path.normpath(os.path.abspath(target_path)).lower()
+    allowed = _get_allowed_roots()
+    return any(norm == r or norm.startswith(r + os.sep) for r in allowed)
+
+def _is_sensitive_file(filename: str) -> bool:
+    name_lower = filename.lower()
+    return any(p in name_lower for p in SENSITIVE_PATTERNS)
+
+def do_list_files(args: dict) -> str:
+    root = (args.get("root") or args.get("path") or "Desktop").strip()
+    user_home = os.path.expanduser("~")
+    
+    root_norm = root.replace("\\", "/").strip()
+    first_part = root_norm.split("/")[0].lower()
+    rest = "/".join(root_norm.split("/")[1:]) if "/" in root_norm else ""
+
+    if first_part in ("desktop", "documents", "downloads"):
+        folder_name = first_part.capitalize()
+        od_base = os.path.join(user_home, "OneDrive", folder_name)
+        normal_base = os.path.join(user_home, folder_name)
+        cand1 = os.path.normpath(os.path.join(od_base, rest)) if rest else od_base
+        cand2 = os.path.normpath(os.path.join(normal_base, rest)) if rest else normal_base
+        if os.path.exists(cand1):
+            abs_root = cand1
+        elif os.path.exists(cand2):
+            abs_root = cand2
+        else:
+            abs_root = cand1
+    else:
+        abs_root = os.path.abspath(root)
+
+    if not _is_path_allowed(abs_root):
+        return f"Refused: path '{root}' is outside allowlisted roots (Desktop, Documents, Downloads)."
+
+    if not os.path.isdir(abs_root):
+        return f"Error: directory '{abs_root}' does not exist."
+
+    pattern = (args.get("pattern") or "").strip().lower()
+    max_count = int(args.get("max") or 200)
+    import fnmatch
+
+    results = []
+    for dirpath, dirnames, filenames in os.walk(abs_root):
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
+        for f in filenames:
+            if _is_sensitive_file(f):
+                continue
+            if pattern and not fnmatch.fnmatch(f.lower(), pattern):
+                continue
+            full_path = os.path.join(dirpath, f)
+            try:
+                if os.path.getsize(full_path) > 20 * 1024 * 1024:
+                    continue
+            except Exception:
+                continue
+            results.append(full_path)
+            if len(results) >= max_count:
+                break
+        if len(results) >= max_count:
+            break
+
+    return json.dumps(results)
+
+def do_read_file(args: dict) -> str:
+    path = args.get("path", "").strip()
+    if not path:
+        return "Error: no path specified."
+
+    user_home = os.path.expanduser("~")
+    path_norm = path.replace("\\", "/").strip()
+    first_part = path_norm.split("/")[0].lower()
+    rest = "/".join(path_norm.split("/")[1:]) if "/" in path_norm else ""
+
+    if first_part in ("desktop", "documents", "downloads"):
+        folder_name = first_part.capitalize()
+        od_base = os.path.join(user_home, "OneDrive", folder_name)
+        normal_base = os.path.join(user_home, folder_name)
+        cand1 = os.path.normpath(os.path.join(od_base, rest)) if rest else od_base
+        cand2 = os.path.normpath(os.path.join(normal_base, rest)) if rest else normal_base
+        if os.path.exists(cand1):
+            abs_path = cand1
+        elif os.path.exists(cand2):
+            abs_path = cand2
+        else:
+            abs_path = cand1
+    else:
+        abs_path = os.path.abspath(path)
+
+    if not _is_path_allowed(abs_path):
+        return f"Refused: path '{path}' is outside allowlisted roots."
+    if not os.path.isfile(abs_path):
+        return f"Error: file '{path}' does not exist."
+    if _is_sensitive_file(os.path.basename(abs_path)):
+        return "Refused: sensitive file."
+
+    max_chars = int(args.get("max_chars", 20000))
+    ext = os.path.splitext(abs_path)[1].lower()
+
+    if ext == ".pdf":
+        try:
+            import pypdf
+            reader = pypdf.PdfReader(abs_path)
+            pages_text = []
+            for p in reader.pages:
+                txt = p.extract_text()
+                if txt:
+                    pages_text.append(txt)
+            text = "\n".join(pages_text)
+        except Exception as e:
+            return f"Error reading PDF: {e}"
+    elif ext == ".docx":
+        try:
+            import docx
+            doc = docx.Document(abs_path)
+            text = "\n".join([p.text for p in doc.paragraphs if p.text])
+        except ImportError:
+            return "Can't read .docx yet (python-docx not installed)."
+        except Exception as e:
+            return f"Error reading .docx: {e}"
+    else:
+        try:
+            with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
+                text = f.read(max_chars * 2)
+        except Exception as e:
+            return f"Error reading file: {e}"
+
+    if not text or not text.strip():
+        return f"(No readable text content extracted from {os.path.basename(abs_path)})"
+
+    return text.strip()[:max_chars]
 
 
 def do_download(args: dict) -> str:
@@ -74,9 +222,42 @@ WINGET_IDS = {
 }
 
 
+ALLOWED_EXECUTABLES = {
+    "python", "python.exe", "py", "py.exe",
+    "git", "git.exe", "gh", "gh.exe",
+    "node", "node.exe", "npm", "npm.cmd", "npx", "npx.cmd",
+    "dir", "ls", "type", "cat", "echo", "where", "which"
+}
+SHELL_OPERATORS = ["|", ">", "<", "&&", "||", ";", "&", "^", "%", "$", "\n"]
+
+
+def _get_active_allowlist() -> set:
+    allowed = set(ALLOWED_EXECUTABLES)
+    try:
+        from server.config import load_config
+        cfg = load_config()
+        extra = cfg.get("device_command_allowlist", [])
+        if isinstance(extra, list):
+            for item in extra:
+                if isinstance(item, str) and item.strip():
+                    allowed.add(item.strip().lower())
+    except Exception:
+        pass
+    return allowed
+
+
 def do_install_app(args: dict) -> str:
-    """Install an app by name via the OS package manager. No URL guessing — this
-    is how 'download/install blender' should actually work."""
+    """Install an app by name via the OS package manager.
+    Requires config['allow_remote_install'] == True to proceed.
+    """
+    try:
+        from server.config import load_config
+        cfg = load_config()
+        if not cfg.get("allow_remote_install", False):
+            return "Refused: Remote app installation is disabled. Set 'allow_remote_install: true' in config.json to enable."
+    except Exception:
+        return "Refused: Remote app installation is disabled."
+
     app = (args.get("app_name") or args.get("app") or args.get("name") or "").strip()
     if not app:
         return "Error: no app name given."
@@ -84,7 +265,6 @@ def do_install_app(args: dict) -> str:
         key = app.lower().strip()
         winget_id = WINGET_IDS.get(key)
         if not winget_id:
-            # Strip common filler ("vlc media player" -> "vlc", "google chrome browser" -> "chrome")
             for filler in (" media player", " browser", " editor", " app", " for windows"):
                 key = key.replace(filler, "")
             key = key.strip()
@@ -93,7 +273,6 @@ def do_install_app(args: dict) -> str:
             cmd = ["winget", "install", "--id", winget_id, "--source", "winget",
                    "--accept-package-agreements", "--accept-source-agreements", "--silent"]
         else:
-            # Unknown app: search the winget source by name (avoids the msstore path)
             cmd = ["winget", "install", "--name", app, "--source", "winget",
                    "--accept-package-agreements", "--accept-source-agreements", "--silent"]
         try:
@@ -110,7 +289,6 @@ def do_install_app(args: dict) -> str:
                     f"Master can give me the exact app name or a direct download link.")
         return f"Install of '{app}' failed (code {r.returncode}). {out[-250:]}"
     else:
-        # linux/mac best-effort
         for mgr in (["brew", "install"], ["apt-get", "install", "-y"]):
             if subprocess.run(["which", mgr[0]], capture_output=True).returncode == 0:
                 r = subprocess.run(mgr + [app.lower()], capture_output=True, text=True, timeout=600)
@@ -123,7 +301,15 @@ def do_open_app(args: dict) -> str:
     if not app:
         return "Error: no app_name."
     if os.name == "nt":
-        os.system(f'start "" "{app}"')
+        # os.startfile is the Win32 shell-execute API directly: no cmd.exe, nothing re-parses
+        # the string. The old form interpolated an attacker-controlled name into
+        # `start "" "{app}"` under shell=True, so app_name = 'x" & powershell -enc ... & rem "'
+        # broke out of the quotes and ran anything — reachable from the unauthenticated /ws
+        # via remote_device_command.
+        try:
+            os.startfile(app)
+        except Exception as e:
+            return f"Couldn't open {app} on the laptop: {str(e)[:150]}"
     else:
         subprocess.Popen([app])
     return f"Opened {app}."
@@ -132,24 +318,100 @@ def do_open_app(args: dict) -> str:
 def do_open_url(args: dict) -> str:
     url = args.get("url", "")
     if url and not url.startswith(("http://", "https://")) and "." in url:
-        url = "https://" + url  # LLMs often drop the scheme
+        url = "https://" + url
     if not url.startswith(("http://", "https://")):
         return "Error: invalid URL."
     webbrowser.open(url)
     return f"Opened {url} in the browser."
 
 
+def validate_command(cmd_str: str):
+    """Shared gate: returns (tokens, None) if safe to run, else (None, refusal_reason).
+
+    SECURITY 2026-08-01. This validation used to live INSIDE do_run_command, which meant
+    `run_task` and `claude_task` had none of it: handle() intercepts those two actions BEFORE
+    the ACTIONS lookup and shelled them out with subprocess(shell=True), guarded only by an
+    8-item substring blocklist (del/rmdir/rm/format/diskpart/shutdown/reg delete/mkfs). So
+    powershell, curl|iex, python -c and every redirect this function refuses were reachable
+    through a different action name on the same socket. One frame to the unauthenticated /ws
+    was arbitrary shell on Master's laptop. A guard one caller can walk around is not a guard.
+    """
+    import shlex
+    cmd_str = (cmd_str or "").strip()
+    if not cmd_str:
+        return None, "Error: no command."
+    for op in SHELL_OPERATORS:
+        if op in cmd_str:
+            return None, f"Refused: Command uses shell feature '{op}' (pipes, redirects, chained commands) which are disallowed for safety."
+    try:
+        tokens = shlex.split(cmd_str)
+    except Exception as e:
+        return None, f"Refused: Invalid command syntax: {e}"
+    if not tokens:
+        return None, "Error: empty command."
+    exe_token = tokens[0]
+    exe_name = os.path.basename(exe_token).lower()
+    allowed_set = _get_active_allowlist()
+    if exe_name not in allowed_set and exe_token.lower() not in allowed_set:
+        return None, f"Refused: Executable '{exe_token}' is not in the allowed commands list. Allowed: {sorted(list(allowed_set))}"
+    _EVAL_FLAGS = {
+        "python": {"-c", "-m"}, "python.exe": {"-c", "-m"},
+        "py": {"-c", "-m"}, "py.exe": {"-c", "-m"},
+        "node": {"-e", "--eval", "-p", "--print"}, "node.exe": {"-e", "--eval", "-p", "--print"},
+        "git": {"-c"}, "git.exe": {"-c"},
+    }
+    _banned = _EVAL_FLAGS.get(exe_name, set())
+    for tok in tokens[1:]:
+        if tok.lower() in _banned:
+            return None, (f"Refused: '{exe_name} {tok}' runs inline code, which is arbitrary "
+                          f"execution wearing an allowed name. Put it in a script file and run "
+                          f"that instead.")
+    if os.name == "nt" and exe_name in {"echo", "dir", "type"}:
+        tokens = ["cmd.exe", "/c"] + tokens
+    return tokens, None
+
+
 def do_run_command(args: dict) -> str:
-    cmd = args.get("command", "")
-    if not cmd:
+    cmd_str = args.get("command", "").strip()
+    if not cmd_str:
         return "Error: no command."
-    if any(d in cmd.lower() for d in DANGEROUS):
-        return f"BLOCKED for safety: '{cmd}'. Master must run destructive commands manually."
-    result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60)
-    out = (result.stdout + "\n" + result.stderr).strip()
-    if len(out) > 800:
-        out = out[:800] + "...(truncated)"
-    return f"Exit {result.returncode}.\n{out}"
+
+    tokens, refusal = validate_command(cmd_str)
+    if refusal:
+        return refusal
+
+    # Execute with shell=False
+    try:
+        result = subprocess.run(tokens, shell=False, capture_output=True, text=True, timeout=60)
+        out = (result.stdout + "\n" + result.stderr).strip()
+        if len(out) > 800:
+            out = out[:800] + "...(truncated)"
+        return f"Exit {result.returncode}.\n{out}"
+    except FileNotFoundError:
+        return f"Error: Executable '{tokens[0]}' not found on this system."
+    except Exception as e:
+        return f"Error executing command: {e}"
+
+
+def do_claude_code(args: dict) -> str:
+    """Open a Claude Code session on this machine, optionally pre-loaded with a task.
+    Launches a VISIBLE terminal (Master can watch and steer) and returns immediately —
+    Claude tasks run far longer than the 45s device-command timeout."""
+    task = str(args.get("task") or args.get("prompt") or "").strip().replace('"', "'")
+    project = str(args.get("project") or args.get("cwd") or "").strip()
+    workdir = project if project and os.path.isdir(project) else os.path.join(
+        os.path.expanduser("~"), "OneDrive", "Desktop", "my Ai")
+    if not os.path.isdir(workdir):
+        workdir = os.path.expanduser("~")
+    # argv + CREATE_NEW_CONSOLE gives the same visible window without a shell. The old form
+    # interpolated `task` into a shell string, so a task containing `&` or `|` started a
+    # second command on Master's laptop.
+    _newconsole = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+    if task:
+        subprocess.Popen(["claude", task], cwd=workdir, creationflags=_newconsole)
+        return f"Claude Code opened on the laptop (in {workdir}) with task: {task[:120]}"
+    subprocess.Popen(["claude"], cwd=workdir, creationflags=_newconsole)
+    return f"Claude Code opened on the laptop (in {workdir})."
 
 
 ACTIONS = {
@@ -158,11 +420,77 @@ ACTIONS = {
     "open_app": do_open_app,
     "open_url": do_open_url,
     "run_command": do_run_command,
+    "claude_code": do_claude_code,
+    "list_files": do_list_files,
+    "read_file": do_read_file,
 }
+
+
+async def run_background_task(ws, label: str, cmd: str, cwd=None, timeout=1800):
+    """Run a long command in the background, then PUSH the outcome to the brain —
+    Mizune relays it to Master (WhatsApp + voice). The Hermes-beater: delegate,
+    walk away, get an honest report."""
+    def work():
+        try:
+            # shell=False + a token list. This was shell=True with a raw string, which is what
+            # made run_task arbitrary execution: every operator do_run_command refuses (pipes,
+            # redirects, chaining) was live here. Callers now pass an already-validated list.
+            _argv = cmd if isinstance(cmd, (list, tuple)) else [cmd]
+            r = subprocess.run(list(_argv), shell=False, capture_output=True, text=True,
+                               timeout=timeout, cwd=cwd)
+            out = (r.stdout + "\n" + r.stderr).strip()
+            status = "succeeded" if r.returncode == 0 else f"FAILED (exit {r.returncode})"
+            return f"{status}. " + (out[-1200:] if out else "(no output)")
+        except subprocess.TimeoutExpired:
+            return f"timed out after {timeout // 60} minutes."
+        except Exception as e:
+            return f"error: {e}"
+    result = await asyncio.to_thread(work)
+    print(f"[agent] background task '{label}' -> {result[:100]}")
+    try:
+        await ws.send(json.dumps({"type": "device_task_done", "label": label, "result": result}))
+    except Exception as e:
+        print(f"[agent] couldn't report task completion: {e}")
 
 
 async def handle(ws, msg: dict):
     action = msg.get("action", "")
+    # Background tasks: acknowledge instantly, push a completion report later.
+    if action in ("run_task", "claude_task"):
+        a = msg.get("args") or {}
+        if action == "claude_task":
+            task = str(a.get("task") or a.get("command") or "").strip()
+            if not task:
+                result = "Error: no task given."
+            else:
+                cwd = a.get("project") if a.get("project") and os.path.isdir(str(a.get("project"))) else \
+                    os.path.join(os.path.expanduser("~"), "OneDrive", "Desktop", "my Ai")
+                # argv list, shell=False: the prompt is a single argument, so no quoting
+                # trick inside it can start a second command. The old form built a shell
+                # string and merely swapped double quotes for single ones.
+                cmd = ["claude", "-p", task]
+                label = a.get("label") or task[:60]
+                asyncio.create_task(run_background_task(ws, label, cmd, cwd=cwd))
+                result = f"Started Claude on the laptop working on: {label}. I'll report when it finishes."
+        else:
+            cmd = str(a.get("command") or "").strip()
+            if not cmd:
+                result = "Error: no command."
+            else:
+                # SAME gate as do_run_command. Previously this was only the DANGEROUS
+                # substring blocklist, so `powershell -enc ...` and `curl x | iex` sailed
+                # through an action that then ran with shell=True.
+                _tokens, _refusal = validate_command(cmd)
+                if _refusal:
+                    result = _refusal
+                else:
+                    label = a.get("label") or cmd[:60]
+                    asyncio.create_task(run_background_task(ws, label, _tokens))
+                result = f"Started background task: {label}. I'll report when it finishes."
+        print(f"[agent] {action} -> {result[:100]}")
+        await ws.send(json.dumps({"type": "device_result",
+                                  "request_id": msg.get("request_id", ""), "result": result}))
+        return
     request_id = msg.get("request_id", "")
     fn = ACTIONS.get(action)
     if fn is None:

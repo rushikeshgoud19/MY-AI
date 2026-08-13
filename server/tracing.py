@@ -9,8 +9,29 @@ import os
 
 try:
     import traceroot as _traceroot
-    from traceroot import observe, update_current_span
+    from traceroot import observe
+    from traceroot import update_current_span as _update_current_span_real
     HAS_TRACEROOT = True
+
+    def update_current_span(*args, **kwargs):
+        """Safe wrapper around the real SDK's KEYWORD-ONLY update_current_span.
+
+        Telemetry must NEVER break a feature. Two real bugs came from this:
+        callers passed a POSITIONAL dict (update_current_span({...})) but the SDK
+        signature is `(*, name=None, input=None, metadata=None, ...)`, raising
+        'takes 0 positional arguments but 1 was given' and aborting SystemAgent /
+        Vision / task-planner / action-executor mid-run (seen 26x in VM traces
+        2026-07-24). So: map a stray positional dict → metadata, drop other
+        positionals, and swallow ANY SDK error — a span update can never be
+        allowed to crash the caller."""
+        try:
+            if args:
+                if len(args) == 1 and isinstance(args[0], dict):
+                    kwargs.setdefault("metadata", args[0])
+                args = ()
+            return _update_current_span_real(**kwargs)
+        except Exception:
+            return None
 except Exception:
     _traceroot = None
     HAS_TRACEROOT = False

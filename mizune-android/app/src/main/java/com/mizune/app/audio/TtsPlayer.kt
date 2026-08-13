@@ -35,8 +35,32 @@ class TtsPlayer(private val context: Context) {
         })
     }
 
+    /** Play server-streamed TTS audio directly (base64 MP3 from the /ws 'audio' event). */
+    fun playBase64(base64Mp3: String, onPlaybackEnded: () -> Unit = {}) {
+        onPlaybackEndedCallback = onPlaybackEnded
+        Thread {
+            try {
+                val bytes = android.util.Base64.decode(base64Mp3, android.util.Base64.DEFAULT)
+                val tempFile = java.io.File(context.cacheDir, "tts_chunk_${java.util.UUID.randomUUID()}.mp3")
+                tempFile.writeBytes(bytes)
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    player.clearMediaItems()          // latest reply preempts anything queued
+                    player.addMediaItem(MediaItem.fromUri(Uri.fromFile(tempFile)))
+                    player.prepare()
+                    player.play()
+                }
+            } catch (e: Exception) {
+                Log.e("TtsPlayer", "Error playing streamed audio", e)
+                android.os.Handler(android.os.Looper.getMainLooper()).post { onPlaybackEndedCallback?.invoke() }
+            }
+        }.start()
+    }
+
     fun playTts(text: String, serverUrl: String, onPlaybackEnded: () -> Unit) {
-        val baseUrl = serverUrl.trimEnd('/')
+        // Guard: ws:// URLs are invalid for OkHttp HTTP calls (silent failure = no voice).
+        var baseUrl = serverUrl.trimEnd('/')
+        if (baseUrl.startsWith("ws://", ignoreCase = true)) baseUrl = baseUrl.replaceFirst("ws://", "http://", ignoreCase = true)
+        if (baseUrl.startsWith("wss://", ignoreCase = true)) baseUrl = baseUrl.replaceFirst("wss://", "https://", ignoreCase = true)
         val ttsUrl = "$baseUrl/tts"
         onPlaybackEndedCallback = onPlaybackEnded
         

@@ -1,0 +1,77 @@
+# MAP — Make the tribunal's answers correct, and prove it
+
+`wayfinder:map` · local-markdown tracker · tickets in `./tickets/` (prefix `a`)
+
+Follow-on from [Stop the tribunal inventing facts](orchestra-grounding.md), which
+reached its destination: the panel no longer states figures it cannot source, and
+says "unverified" instead of inventing. Being honest about what it does not know
+is not the same as being right about what it does.
+
+## Destination
+
+The tribunal's factual answers are CORRECT, and correctness is MEASURED rather
+than judged by whoever is reading. Reached when a scored eval of questions with
+known answers runs on demand, and the grounding pipeline has been improved against
+that score rather than against impressions.
+
+## Notes
+
+- Same domain as the previous map: `server/orchestra.py`,
+  `server/orchestra_tools.py`. Read the module docstrings first; they carry
+  measured results.
+- **Measurement comes first and blocks everything.** The previous effort improved
+  real things but graded them by reading verdicts and forming an opinion, and it
+  twice found that a remembered number was stale (triage "8/9" measured 13/15).
+  An accuracy change that cannot be scored is a change nobody can defend.
+- Verify against the real pipeline: `python scripts/run_orchestra.py "<q>"` and the
+  NDJSON events. Bench harnesses belong in the session scratchpad, but their
+  NUMBERS belong in the ticket.
+- Execution rides in this map, as before: tickets that are small and provable get
+  implemented and verified in the session that decides them.
+- Cost discipline is a standing constraint. The settled path is 2 calls / ~500
+  tokens and a contested debate ~11 calls / ~6k. Any accuracy gain that multiplies
+  that has to say so out loud and justify it.
+
+## Decisions so far
+
+- [Build a scored accuracy eval](tickets/a1-build-the-eval.md) —
+  `scripts/orchestra_eval.py`, 15 cases, regex-only grading (a model grader would
+  put this map's own failure mode inside the measuring instrument), scoring
+  CORRECTNESS and PROCESS separately. **Baseline 15/16.** Building it found that
+  an eval of checkable facts routes entirely to the SETTLED path and never touches
+  the debate — which is how the settled-path hole below was discovered.
+- [Volatile facts take the ungrounded settled path](tickets/a8-settled-path-ungrounded.md) —
+  triage now routes three ways, not two. A settled question that is also VOLATILE
+  (`_VOLATILE_RE`: "right now", "latest", "price", "free tier"…) grounds first and
+  answers with ONE call: 3 calls, not 2 ungrounded and not 11. Grounding was
+  hoisted into `fetch_grounding()` so both routes share it, and the solo answer now
+  gets the same arithmetic and citation checks as an advocate's — a failed check
+  falls through to the panel. The invented "$0.25 per million tokens" became
+  "could not verify a current figure, check [Pricing]". **Eval 15/15.**
+- [Grounding reads search snippets, never the page](tickets/a2-read-pages-not-snippets.md) —
+  `fetch_page` + `_best_window` open the hits and take the window densest in the
+  question's terms; bounded read, bounded time, any failure keeps the snippet. All
+  three hits are fetched and the budget filled BEST-FIRST, because search rank
+  ranked a valuation article above the page titled "Pricing". Eval 15/15, no
+  regressions. It did NOT fix the price probe: the block now holds three real
+  pricing tables and none of them is Mistral's, so refusing is correct. **The
+  limit moved from reading to retrieval.**
+
+## Not yet specified
+
+- Whether the panel should be able to run ONE follow-up search when it concludes a
+  figure is unknown, rather than settling for the ignorance it just admitted.
+  Depends on what the eval says the actual failure rate of first-search is.
+- Provenance: `gather_grounding` returns source TITLES only, so a verdict in the
+  journal cannot be re-checked against what it was built from months later. Sharp
+  enough to fix, not yet clear whether it is an accuracy problem or a UI one.
+- Whether accuracy differs enough by question TYPE — pure lookup, comparison,
+  prediction, advice — to need different machinery per type. Suspected from the
+  probe results but unmeasured, and the eval will say.
+
+## Out of scope
+
+- Changing the judge model, or re-running the 2026-08-02 judge benchmark. Judge
+  selection is its own effort and its measured basis still stands.
+- The Agentic OS console and the decision journal UI. They consume verdicts; they
+  do not make them more correct.

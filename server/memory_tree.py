@@ -104,6 +104,21 @@ class MemoryTreeDB:
                 )
             ''')
 
+            # ENTITIES — hotness tracking for entity_extractor.py. This table was
+            # NEVER created (extractor failed with "no such table: entities" on every
+            # call, silently caught → the whole hot-topic feature was dead). Caught in
+            # the 2026-07-20 audit.
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS entities (
+                    id TEXT PRIMARY KEY,
+                    name TEXT,
+                    type TEXT,
+                    hotness_score REAL DEFAULT 0.0,
+                    last_seen REAL,
+                    first_seen REAL
+                )
+            ''')
+
             # JOBS
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS jobs (

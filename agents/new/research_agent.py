@@ -17,26 +17,31 @@ class ResearchAgent:
         if num_results is None:
             num_results = self.max_results
 
+        # MEASURED 2026-08-03: this used `duckduckgo.com/html/`, which now returns
+        # HTTP 200 with NO result markup at all. Every call succeeded and returned an
+        # empty list, so the failure was invisible - "success": True with nothing in it.
+        # The orchestra's grounding layer already solved this properly, so route
+        # through it rather than keeping a second, worse copy of web search here.
         try:
-            # Use DuckDuckGo API (no key required)
-            encoded_query = urllib.parse.quote(query)
-            url = f"https://duckduckgo.com/html/?q={encoded_query}&b={num_results}"
+            from server.orchestra_tools import marginalia_search, ddg_search
 
-            req = urllib.request.Request(url, headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-            })
+            rows = marginalia_search(query, n=num_results)
+            backend = "marginalia"
+            if not rows:
+                rows = ddg_search(query, n=num_results)
+                backend = "duckduckgo"
 
-            with urllib.request.urlopen(req, timeout=10) as response:
-                html = response.read().decode('utf-8')
-
-            # Simple parsing - extract search result titles and snippets
-            results = self._parse_search_results(html, num_results)
-
+            results = [{"title": r["title"], "url": r.get("url", ""),
+                        "snippet": r.get("extract", "")} for r in rows[:num_results]]
             return {
-                "success": True,
+                # An empty result set is NOT success. Reporting it as such is what let
+                # this sit broken for months.
+                "success": bool(results),
                 "query": query,
+                "backend": backend if results else "none",
                 "results": results,
-                "count": len(results)
+                "count": len(results),
+                "error": "" if results else "no results from any search backend"
             }
         except Exception as e:
             return {

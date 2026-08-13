@@ -3,4 +3,5 @@
     <string name="shortcut_voice_chat">Voice Chat</string>
     <string name="shortcut_vision_mode">Vision Mode</string>
     <string name="shortcut_quick_note">Quick Note</string>
+    <string name="accessibility_description">Lets Mizune open apps, tap, type and scroll on your phone so she can carry out tasks you ask for (like opening apps, playing music, or filling forms).</string>
 </resources>

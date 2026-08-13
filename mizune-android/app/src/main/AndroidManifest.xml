@@ -9,7 +9,15 @@
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- Required (Android 14+) for the always-on service to read the mic for the wake word. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Grants background Activity-launch: lets Mizune open apps/URLs while the app
+         is in the background (Android 10+ blocks this without the overlay privilege). -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- Query installed apps so "open Brave / Spotify" can resolve to a package. -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
+        tools:ignore="QueryAllPackagesPermission" />
 
     <application
         android:allowBackup="true"
@@ -25,7 +33,21 @@
             android:name=".service.MizuneService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="dataSync|microphone" />
+
+        <!-- Mizune's hands: enables reliable app-launch + tap/type/scroll on any OEM. -->
+        <service
+            android:name=".service.MizuneAccessibilityService"
+            android:enabled="true"
+            android:exported="false"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/mizune_accessibility_config" />
+        </service>
 
         <receiver
             android:name=".widget.MizuneWidgetReceiver"

@@ -203,9 +203,19 @@ class MizuneWhatsAppBridge {
     }
   }
 
+  // Resolve "me"/empty to Master's OWN number (self-chat) using the logged-in account.
+  resolveJid(jid) {
+    if ((!jid || jid === 'me' || jid === 'self') && this.sock && this.sock.user) {
+      const num = this.sock.user.id.split(':')[0].split('@')[0];
+      return `${num}@s.whatsapp.net`;
+    }
+    return jid;
+  }
+
   async handlePythonCommand(cmd) {
     console.log(`[Bridge] Received IPC command: ${JSON.stringify(cmd)}`);
     try {
+        if (cmd.to_jid) cmd.to_jid = this.resolveJid(cmd.to_jid);
         if (cmd.type === 'send_message') {
           await this.sock.sendMessage(cmd.to_jid, {
             text: cmd.text,

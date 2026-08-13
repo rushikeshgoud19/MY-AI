@@ -162,7 +162,7 @@ Return ONLY valid JSON:
           - "find:<target>": Find a specific element on screen
           - "verify:<action>": Compare before/after screenshots
         """
-        update_current_span({"vision_task": task_input})
+        update_current_span(metadata={"vision_task": task_input})
         if task_input.startswith("find:"):
             target = task_input[5:].strip()
             return await self.find_element(target)

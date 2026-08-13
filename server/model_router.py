@@ -49,7 +49,9 @@ class ModelRouter:
         
         if is_task:
             configured = self.config.get("ai_model")
-            if configured in ["nvidia", "openai", "anthropic", "gemini"]:
+            # "groq" was MISSING here, so setting ai_model=groq silently fell through
+            # to openrouter for every task request (2026-07-20 parallel-tools work).
+            if configured in ["nvidia", "openai", "anthropic", "gemini", "groq", "openrouter", "cerebras", "mistral"]:
                 return configured
             if self.config.get("openrouter_api_key"):
                 return "openrouter"
