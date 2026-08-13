@@ -14,6 +14,11 @@ val localProps = Properties().apply {
 }
 val picovoiceKey: String = localProps.getProperty("picovoice.key", "")
 
+// Backend address from local.properties too — a hardcoded public IP in a public repo
+// is a live address anyone reading the source can reach. Falls back to the emulator's
+// host loopback so a fresh clone still builds and runs against a local server.
+val defaultServerUrl: String = localProps.getProperty("mizune.serverUrl", "ws://10.0.2.2:8001")
+
 android {
     namespace = "com.mizune.app"
     compileSdk = 34
@@ -33,6 +38,7 @@ android {
             useSupportLibrary = true
         }
         buildConfigField("String", "PICOVOICE_KEY", "\"$picovoiceKey\"")
+        buildConfigField("String", "DEFAULT_SERVER_URL", "\"$defaultServerUrl\"")
     }
 
     buildTypes {

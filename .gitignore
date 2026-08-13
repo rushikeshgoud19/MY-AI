@@ -42,7 +42,9 @@ legacy/server_old.py
 package-lock.json
 tts_cache/
 dataset/
-data/
+# Anchored: a bare `data/` matches ANY directory named data at any depth, which
+# silently excluded the Android app's com/mizune/app/data package from the repo.
+/data/
 data_collector/
 *.db
 src-tauri/target/
