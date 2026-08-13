@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Metadata for the stub RecognitionService. Android requires this resource to exist for
+  the component to be a valid recognition service; without it the assistant registration
+  in voice_interaction_service.xml is rejected.
+
+  No settingsActivity: there is nothing to configure, because Mizune never routes speech
+  through this API (see MizuneRecognitionService).
+-->
+<recognition-service xmlns:android="http://schemas.android.com/apk/res/android" />

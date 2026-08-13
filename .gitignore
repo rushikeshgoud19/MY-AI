@@ -108,3 +108,29 @@ mizune-android/app/src/main/assets/baka_mizune.ppn
 mizune_self*.tar.gz
 *.mizune_self.tar.gz
 mizune_restore*/
+
+# --- Config backups -------------------------------------------------------
+# config.json is ignored above, but every .bak of it carries the SAME live keys.
+config.json.*
+biometric_config.json.*
+*.bak
+*.bak_*
+
+# --- Local operational scratch (not part of the project) ------------------
+check_*.ps1
+check_*.sh
+deploy_b*.sh
+deploy_task*.ps1
+deploy_task*.sh
+deploy_knowledge.*
+trigger_nightly.*
+test_nightly_run.*
+agent_task.bat
+mizune_os_fix.txt
+.watchdog_restart_ts
+.scratch/
+scratch/
+
+# --- Vendored / external tools --------------------------------------------
+openWakeWord/
+Agent-Reach/

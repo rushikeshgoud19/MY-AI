@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The assistant contract. All three components must be this app's own, or Android
+  rejects the registration and Mizune never appears in the assistant picker.
+
+  supportsAssist=true is what puts her on the long-press-power / long-press-home
+  gesture. Voice activation stays FALSE on purpose: Mizune runs her own always-on
+  wake word ("Baka Mizune") inside the foreground service, and letting the system
+  drive a second hotword path would fight it for the microphone.
+-->
+<voice-interaction-service
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:sessionService="com.mizune.app.service.MizuneVoiceInteractionSessionService"
+    android:recognitionService="com.mizune.app.service.MizuneRecognitionService"
+    android:supportsAssist="true"
+    android:supportsLaunchVoiceAssistFromKeyguard="true"
+    android:supportsLocalInteraction="true" />
