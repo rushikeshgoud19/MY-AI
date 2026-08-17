@@ -2476,24 +2476,52 @@ def _groq_response(text: str, history: list, system_prompt: str, config: dict,
         # into cerebras and tripping ITS per-minute limit (10 cerebras 429s). One silent
         # parse failure was burning two providers per request.
         # So: recover the intent instead of discarding it.
-        if not text_response.strip():
-            recovered = _recover_text_mode_tools(raw_response, config)
-            if recovered:
-                log_info(f"[AI] {_provider}: recovered {len(recovered)} text-mode tool call(s) "
-                         f"from a reply that cleaned to empty.")
-                results = [execute_tool_call(n, a, config) for n, a in recovered]
-                executed_tools.extend({"name": n, "args": a} for n, a in recovered)
-                text_response = " ".join(str(r) for r in results if r) or "Done, Master!"
-            else:
-                # Nothing parseable. RAISE so the cascade tries the next provider.
-                # Do NOT return a friendly fallback here: a non-empty string looks like
-                # success and STOPS the cascade, so the user gets "I'm tangled" instead of
-                # the correct answer another provider would have given. (Caught in the smoke
-                # gate 2026-07-26 — the calendar check started returning the fallback.)
-                # Empty-reply -> failover is a FEATURE; only tool recovery should short-circuit it.
-                log_info(f"[AI] {_provider}: reply cleaned to empty, no tool call parsed; "
-                         f"failing over. Raw head: {raw_response[:120]!r}")
-                raise ValueError(f"Empty response from {_provider} (unparseable content)")
+        # THE GATE USED TO BE `if not text_response.strip()`, and that is why this path
+        # had never once fired in production despite being correct under test.
+        #
+        # Measured, 2026-08-16, a real request that was never answered — "do a proper
+        # background check of the company autter":
+        #
+        #   raw     ...I'll use the web_search tool. Here's the command: {"tool": "web_search", ...}
+        #   cleaned ...I'll use the web_search tool. Here's the command:
+        #
+        # `_clean_final_text` strips from the first `{"tool":` to end-of-string, so a reply
+        # with ANY chatty preamble before the JSON cleans to something NON-empty. The gate
+        # saw text, skipped recovery, and the tool call was deleted in silence. Master got
+        # a promise — three times, across three follow-ups asking whether it was done —
+        # and no search ever ran. The identical request answered correctly the moment the
+        # router happened to pick a provider that emits native tool calls.
+        #
+        # Recovery must therefore be triggered by FINDING A TOOL CALL, not by the reply
+        # cleaning to empty. `_recover_text_mode_tools` only returns names present in
+        # TOOLS_SCHEMA and caps at 3, so widening the gate cannot dispatch something
+        # hallucinated.
+        # Guarded by `not executed_tools`: if the function API already carried this turn's
+        # calls, text that merely LOOKS like a tool call is prose — her explaining a tool
+        # to Master, say — and re-dispatching it would be a second, unasked-for side
+        # effect. Recovery is for turns where nothing ran, which is exactly the failure.
+        recovered = [] if executed_tools else _recover_text_mode_tools(raw_response, config)
+        if recovered:
+            log_info(f"[AI] {_provider}: recovered {len(recovered)} text-mode tool call(s) "
+                     f"({', '.join(n for n, _ in recovered)}) from a reply the function "
+                     f"API did not carry.")
+            results = [execute_tool_call(n, a, config) for n, a in recovered]
+            executed_tools.extend({"name": n, "args": a} for n, a in recovered)
+            # The preamble is a PROMISE to call the tool ("I'll use the web_search
+            # tool. Here's the command:"). The tool has now actually run, so the promise
+            # is noise at best and a lie at worst — the results replace it.
+            text_response = " ".join(str(r) for r in results if r) or "Done, Master!"
+        elif not text_response.strip():
+            # Nothing parseable AND nothing left to say. RAISE so the cascade tries the
+            # next provider. Do NOT return a friendly fallback here: a non-empty string
+            # looks like success and STOPS the cascade, so the user gets "I'm tangled"
+            # instead of the correct answer another provider would have given. (Caught in
+            # the smoke gate 2026-07-26 — the calendar check started returning the
+            # fallback.) Empty-reply -> failover is a FEATURE; only tool recovery should
+            # short-circuit it.
+            log_info(f"[AI] {_provider}: reply cleaned to empty, no tool call parsed; "
+                     f"failing over. Raw head: {raw_response[:120]!r}")
+            raise ValueError(f"Empty response from {_provider} (unparseable content)")
 
         if executed_tools:
             from .trajectory_logger import trajectory_logger
