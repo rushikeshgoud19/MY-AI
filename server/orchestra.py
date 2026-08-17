@@ -243,8 +243,15 @@ class _KeyPool:
 
 def _call(pool: "_KeyPool", model: str, system: str, user: str,
           temperature: float = 0.3, max_tokens: int = 900,
-          attempts: int = 3) -> Dict[str, Any]:
-    """One chat completion. Returns {ok, text, tokens, error}. Never raises."""
+          attempts: int = 3, url: str = MISTRAL_URL) -> Dict[str, Any]:
+    """One chat completion. Returns {ok, text, tokens, error}. Never raises.
+
+    `url` is a parameter rather than a constant because Cerebras and NVIDIA speak the
+    same OpenAI-compatible shape this function already builds — same `messages`, same
+    `choices[0].message.content`, same `finish_reason`. Pointing it elsewhere reuses code
+    that has been through a soak instead of growing a second, less-tested copy of it.
+    Default is unchanged, so every existing Mistral call behaves exactly as before.
+    """
     last_err = "no key available"
     for _ in range(attempts):
         key = pool.take()
@@ -259,7 +266,7 @@ def _call(pool: "_KeyPool", model: str, system: str, user: str,
             "max_tokens": max_tokens,
         }).encode()
         req = urllib.request.Request(
-            MISTRAL_URL, data=body,
+            url, data=body,
             headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"})
         try:
             with urllib.request.urlopen(req, timeout=90) as r:
@@ -319,6 +326,100 @@ class MistralAdapter:
     def complete(self, model: str, system: str, user: str,
                  temperature: float = 0.3, max_tokens: int = 900) -> Dict[str, Any]:
         return _call(self._pool, model, system, user, temperature, max_tokens)
+
+
+#: OpenAI-compatible fallbacks, in preference order. Both speak the exact request shape
+#: `_call` already builds, so the fallback path is the same tested code with a different
+#: URL. NVIDIA leads because it has three keys — the pool can rotate one that 429s, which
+#: is the same property that makes Mistral usable. Cerebras is a single key (see the
+#: module docstring), so it is the last resort rather than the first.
+FALLBACK_PROVIDERS = [
+    {"name": "nvidia", "key_cfg": "nvidia_api_key", "model_cfg": "nvidia_model",
+     "url": "https://integrate.api.nvidia.com/v1/chat/completions",
+     "default_model": "meta/llama-3.1-70b-instruct"},
+    {"name": "cerebras", "key_cfg": "cerebras_api_key", "model_cfg": "cerebras_model",
+     "url": "https://api.cerebras.ai/v1/chat/completions",
+     "default_model": "gpt-oss-120b"},
+]
+
+
+class OpenAICompatAdapter:
+    """An `orchestra.llm` provider for any OpenAI-shaped chat endpoint.
+
+    It ignores the requested model and substitutes its own, because the panel's model
+    names (`ministral-8b-latest`, `magistral-small-latest`, …) exist only at Mistral.
+    That substitution has a real cost and it is not hidden: see [FallbackChain].
+    """
+
+    def __init__(self, name: str, url: str, keys: List[str], model: str):
+        self.name = name
+        self._url = url
+        self._pool = _KeyPool(keys)
+        self._model = model
+
+    def complete(self, model: str, system: str, user: str,
+                 temperature: float = 0.3, max_tokens: int = 900) -> Dict[str, Any]:
+        return _call(self._pool, self._model, system, user, temperature, max_tokens,
+                     url=self._url)
+
+
+class FallbackChain:
+    """Try each adapter in order. The first that answers wins.
+
+    WHY THIS EXISTS: every advocate, judge and synthesis call went to Mistral through one
+    key pool. When those four keys cap, the debate engine is not degraded — it is down,
+    and `orchestra_answer` returns an error with no argument in it. The seam was declared
+    first precisely so this could be hung off it without touching the debate logic.
+
+    WHAT IT COSTS, stated rather than buried: the panel's premise is FOUR DIFFERENT MODELS
+    giving four different failure modes. A fallback provider has one model, so in fallback
+    mode the orchestra is four *stances* on one model — genuinely weaker deliberation, not
+    an equivalent substitute. That is worth having instead of an outage, and worth knowing
+    about instead of silently pretending the debate was normal, which is why `served_by`
+    is recorded and surfaced.
+
+    A fallback is also NOT a load balancer. Mistral is tried first every time; the others
+    exist for the hours when it is capped, and burning a scarcer budget routinely would
+    make the token constraint worse, not better.
+    """
+
+    def __init__(self, adapters: List[Any]):
+        if not adapters:
+            raise ValueError("FallbackChain needs at least one adapter")
+        self._adapters = adapters
+        self._lock = threading.Lock()
+        #: Providers that actually answered during this process, in first-use order.
+        self.served_by: List[str] = []
+
+    @property
+    def primary(self) -> str:
+        return getattr(self._adapters[0], "name", "?")
+
+    def _note(self, name: str) -> None:
+        with self._lock:
+            if name not in self.served_by:
+                self.served_by.append(name)
+
+    def complete(self, model: str, system: str, user: str,
+                 temperature: float = 0.3, max_tokens: int = 900) -> Dict[str, Any]:
+        last = {"ok": False, "text": "", "truncated": False, "tokens": 0,
+                "error": "no adapter"}
+        for i, ad in enumerate(self._adapters):
+            r = ad.complete(model, system, user, temperature, max_tokens)
+            if r.get("ok"):
+                name = getattr(ad, "name", "?")
+                self._note(name)
+                if i:
+                    # Loud, once per provider: a debate that quietly ran on the backup is
+                    # indistinguishable from a healthy one, and that is exactly the kind
+                    # of silent degradation this codebase keeps getting bitten by.
+                    log_info(f"[ORCHESTRA] {self.primary} unavailable "
+                             f"({last.get('error')}) — served by {name}")
+                r["served_by"] = name
+                return r
+            last = r
+        last["served_by"] = ""
+        return last
 
 
 class _SearchGrounding:
@@ -393,10 +494,28 @@ def register_llm_seam(config: dict) -> bool:
     """
     if HARNESS.has(SEAM_LLM):
         return True                       # someone registered a different adapter: theirs wins
+
+    adapters: List[Any] = []
     keys = _keys(config)
-    if not keys:
+    if keys:
+        adapters.append(MistralAdapter(keys))
+
+    # Backups, in preference order. Each is skipped silently when its key is absent —
+    # a provider with no key is a configuration fact, not a wiring error.
+    for spec in FALLBACK_PROVIDERS:
+        raw = config.get(spec["key_cfg"])
+        fkeys = [k for k in (raw if isinstance(raw, list) else [raw]) if k]
+        if not fkeys:
+            continue
+        adapters.append(OpenAICompatAdapter(
+            spec["name"], spec["url"], fkeys,
+            config.get(spec["model_cfg"]) or spec["default_model"]))
+
+    if not adapters:
         return False
-    HARNESS.provide(SEAM_LLM, MistralAdapter(keys), source="orchestra.mistral")
+    chain = FallbackChain(adapters)
+    HARNESS.provide(SEAM_LLM, chain,
+                    source="orchestra." + "+".join(a.name for a in adapters))
     return True
 
 
@@ -687,7 +806,7 @@ def orchestra_answer(question: str, config: dict,
     panel = [dict(p) for p in (panel or DEFAULT_PANEL)]
     judge_model = judge or config.get("orchestra_judge") or DEFAULT_JUDGE
     keys = _keys(config)
-    stats = {"calls": 0, "tokens": 0, "truncated": 0}
+    stats = {"calls": 0, "tokens": 0, "truncated": 0, "served_by": []}
     transcript: List[Dict[str, Any]] = []
 
     def emit(kind, **kw):
@@ -709,6 +828,12 @@ def orchestra_answer(question: str, config: dict,
         r = llm.complete(model, system, user, temp, mx)
         stats["calls"] += 1
         stats["tokens"] += r.get("tokens", 0)
+        # Which provider actually answered. A debate served by the backup runs on ONE
+        # model wearing four stances instead of four models, which is materially weaker
+        # deliberation — so it is recorded rather than left to look like a normal run.
+        served = r.get("served_by")
+        if served and served not in stats["served_by"]:
+            stats["served_by"].append(served)
         return r
 
     # Hoisted out of the debate path so the SETTLED path can ground too. Returns
@@ -1097,9 +1222,14 @@ def stash_provenance(res: Dict[str, Any]) -> None:
         return
     who = "adopted and improved one advocate's answer" if case == "ADOPT" \
         else "synthesised after a round of revisions"
+    # A debate served by a backup provider ran on ONE model wearing four stances, not
+    # four different models. That is materially weaker deliberation, so the receipt says
+    # so — a degraded run must not read exactly like a healthy one.
+    served = [p for p in (res.get("served_by") or []) if p and p != "mistral"]
+    degraded = f" · ran on {'+'.join(served)} (Mistral unavailable)" if served else ""
     _pending.line = (f"⚖️ Alucard {who} · agreement {res.get('agreement', '?')} · "
                      f"round {res.get('rounds', '?')} · {res.get('calls', '?')} calls · "
-                     f"{res.get('tokens', '?')} tokens")
+                     f"{res.get('tokens', '?')} tokens{degraded}")
 
 
 def take_provenance() -> Optional[str]:
