@@ -1,3 +1,14 @@
+"""DEAD CODE — nothing imports this module. Do not diagnose from it.
+
+`server.py:25` imports `start_proactive_agent` from `server.subconscious`, not from
+here. The live background agent is `SubconsciousEngine`, which is far more gated than
+the loop below: it only wakes the LLM when a situation report is non-empty, it has a
+novelty cooldown, and it stays quiet overnight.
+
+This file has now caused the same wrong diagnosis twice — "proactive.py wakes her every
+15 minutes" was recorded as a CONFIRMED root cause, from reading a file that does not
+run. Kept only so that grep for it lands on this warning; delete it when convenient.
+"""
 import time
 import logging
 import threading

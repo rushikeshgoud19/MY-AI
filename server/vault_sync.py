@@ -114,6 +114,12 @@ class VaultSync:
         """Export contacts from cortex.db to Knowledge/People"""
         db_path = "cortex.db"
         if not os.path.exists(db_path): return
+        # `conn = None` + `finally` rather than a `with`: these connections were
+        # never released on ANY path, and _export_gmail returns early mid-try when
+        # its table is missing, so it abandoned one every single run. A process
+        # meant to stay up for weeks cannot leak file descriptors and sqlite locks
+        # per export.
+        conn = None
         try:
             import sqlite3
             conn = sqlite3.connect(db_path)
@@ -130,10 +136,15 @@ class VaultSync:
                     f.write(md)
         except Exception as e:
             log_info(f"Failed to export contacts: {e}")
+        finally:
+            if conn is not None:
+                try: conn.close()
+                except Exception: pass
 
     def _export_whatsapp(self):
         """Export WhatsApp messages grouped by chat."""
         if not os.path.exists("cortex.db"): return
+        cdb = None
         try:
             import sqlite3
             cdb = sqlite3.connect("cortex.db")
@@ -183,10 +194,15 @@ class VaultSync:
                 f.write(hub_content)
         except Exception as e:
             log_info(f"[VAULT SYNC] WhatsApp export failed: {e}")
+        finally:
+            if cdb is not None:
+                try: cdb.close()
+                except Exception: pass
 
     def _export_gmail(self):
         """Export Gmail messages grouped by sender."""
         if not os.path.exists("cortex.db"): return
+        cdb = None
         try:
             import sqlite3
             cdb = sqlite3.connect("cortex.db")
@@ -224,6 +240,10 @@ class VaultSync:
                 f.write(hub_content)
         except Exception as e:
             log_info(f"[VAULT SYNC] Gmail export failed: {e}")
+        finally:
+            if cdb is not None:
+                try: cdb.close()
+                except Exception: pass
 
     def _export_episodic(self):
         """Export raw episodic memories (conversation logs) into Daily notes."""
@@ -267,6 +287,7 @@ class VaultSync:
         # Legacy history fallback
         for legacy_db in [".data/mizune_memory.db", "data_collector/mizune_memory.db"]:
             if os.path.exists(legacy_db):
+                ldb = None
                 try:
                     import sqlite3
                     ldb = sqlite3.connect(legacy_db)
@@ -285,6 +306,10 @@ class VaultSync:
                                 _add_line(date_str, time_str, prefix, content)
                 except Exception as e:
                     log_info(f"[VAULT SYNC] Legacy history export failed for {legacy_db}: {e}")
+                finally:
+                    if ldb is not None:
+                        try: ldb.close()
+                        except Exception: pass
             
         for date_str, lines in daily_logs.items():
             filepath = os.path.join(self.vault_path, "Daily", f"{date_str}.md")

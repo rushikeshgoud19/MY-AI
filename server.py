@@ -19,7 +19,7 @@ import uvicorn
 # Import Refactored Modules
 from server.config import load_config, CONFIG_PATH, log_info
 from server.agents import mizune_manager
-from server.websocket import ws_manager
+from server.websocket import ws_manager, set_turn_origin
 from server.audio import listen_to_microphone, listen_for_wake_word
 from server.processor import process_command, _processing_lock
 from server.subconscious import start_proactive_agent
@@ -75,6 +75,19 @@ async def lifespan(app: FastAPI):
             daemon=True
         ).start()
     
+    # The capability graph, logged once at boot. This is the line that would have caught
+    # `peek_due_soon` on day one instead of three months later: a declared seam with no
+    # provider prints `!!` next to its name. Non-strict on purpose — the log is the alarm,
+    # and the `require` at the real call site is the enforcement.
+    try:
+        from server.harness import HARNESS
+        from server.orchestra import register_llm_seam   # importing declares its seams
+        if not register_llm_seam(CFG):
+            log_info("[HARNESS] orchestra.llm has no keys — debates will fail loudly")
+        HARNESS.check()
+    except Exception as e:
+        log_info(f"[HARNESS] seam check skipped: {e}")
+
     # 3. Start background processes
     from server.security import validate_api_keys
     validate_api_keys(CFG)
@@ -181,6 +194,43 @@ async def api_self_review():
 @app.get("/health")
 async def health_check():
     return {"status": "ok", "mode": mizune_manager.current_mode}
+
+
+async def _reply_with_voice(text: str, emotion: str = "neutral"):
+    """Send one reply to Master — text AND her real voice — on every path.
+
+    Exists because TTS was written INSIDE the chat handler, so every other handler that
+    reached Master was mute by omission. The camera was the visible casualty: vision
+    replies broadcast 'speak' and no 'audio', so she could describe a photo in text but
+    never say it. Any new handler that calls this cannot repeat that mistake.
+
+    Mirrors the chat path's contract exactly: 'tts': True promises audio is coming so the
+    client waits instead of racing a timer, and 'audio_failed' releases it if the promise
+    breaks — otherwise the phone sits silent until its own safety timeout.
+    """
+    ws_manager.broadcast_sync({"type": "speak", "text": text, "emotion": emotion, "tts": True})
+    spoke = False
+    try:
+        from server.tts import generate_tts
+        from server.audio import play_audio_bytes
+        audio_bytes = await generate_tts(text, CFG)
+        if audio_bytes:
+            import base64
+            ws_manager.broadcast_sync({
+                "type": "audio",
+                "format": "mp3",
+                "b64": base64.b64encode(audio_bytes).decode("utf-8"),
+            })
+            spoke = True
+            try:
+                await asyncio.to_thread(play_audio_bytes, audio_bytes)
+            except Exception:
+                pass
+    except Exception as e:
+        log_info(f"[WS] TTS generation error: {e}")
+    if not spoke:
+        log_info("[WS] TTS produced no audio - releasing client.")
+        ws_manager.broadcast_sync({"type": "audio_failed"})
 
 
 @app.get("/api/devices")
@@ -406,6 +456,12 @@ async def websocket_endpoint(websocket: WebSocket):
             data = await websocket.receive_text()
             try:
                 msg = json.loads(data)
+                # Everything this message causes belongs to THIS client. Set once, here,
+                # at the only point where a client turn begins: `create_task` and
+                # `to_thread` both copy the current context, so every frame produced
+                # downstream — status, speak, audio, task_list — is stamped with it
+                # without touching a single broadcast call. See server/websocket.py.
+                set_turn_origin(ws_manager.client_id(websocket))
                 if msg.get("type") == "chat":
                     text = msg.get("text", "").strip()
                     if text:
@@ -430,44 +486,27 @@ async def websocket_endpoint(websocket: WebSocket):
                                     
                                     # Send Biometrics to Dashboard so Slime Avatar reacts
                                     ws_manager.broadcast_sync({
-                                        "type": "state_update", 
+                                        "type": "state_update",
                                         "payload": {"valence": v, "arousal": a}
                                     })
-                                    
-                                    # "tts": True promises her REAL Japanese voice is coming, so the
-                                    # client waits for it instead of racing a timer. Without this the
-                                    # dashboard guessed 1800ms while edge-tts measured 1.25-2.42s on
-                                    # the VM, so the English browser voice won and got cut off
-                                    # mid-word when the Japanese finally landed.
-                                    ws_manager.broadcast_sync({"type": "speak", "text": res, "tts": True})
-                                    spoke = False
-                                    try:
-                                        from server.tts import generate_tts
-                                        from server.audio import play_audio_bytes
-                                        audio_bytes = await generate_tts(res, CFG)
-                                        if audio_bytes:
-                                            # Send Mizune's REAL edge-tts voice to the browser so it
-                                            # plays her actual voice instead of the robotic browser one.
-                                            import base64
-                                            ws_manager.broadcast_sync({
-                                                "type": "audio",
-                                                "format": "mp3",
-                                                "b64": base64.b64encode(audio_bytes).decode("utf-8"),
-                                            })
-                                            spoke = True
-                                            # Also play locally (only audible when running on a machine
-                                            # with speakers; harmless no-op/err on the headless VM).
-                                            try:
-                                                await asyncio.to_thread(play_audio_bytes, audio_bytes)
-                                            except Exception:
-                                                pass
-                                    except Exception as e:
-                                        log_info(f"[WS] TTS generation error: {e}")
-                                    if not spoke:
-                                        # The promise failed. Release the client NOW rather than
-                                        # leaving it silent until its safety timer expires.
-                                        log_info("[WS] TTS produced no audio - releasing client to browser voice.")
-                                        ws_manager.broadcast_sync({"type": "audio_failed"})
+
+                                    # ONE reply path. This branch used to carry its own
+                                    # copy of the speak/TTS/audio_failed sequence, which
+                                    # is what made "the vision reply has no voice"
+                                    # possible in the first place — a contract that
+                                    # lives in a handler is a contract the next handler
+                                    # can forget. Two consequences of the copy, both
+                                    # fixed by deleting it:
+                                    #
+                                    #  - it omitted `emotion` from the speak frame, and
+                                    #    the phone reads her expression from exactly
+                                    #    that field. Every chat reply rendered CALM on
+                                    #    the slime while the dashboard got the real
+                                    #    feeling over state_update.
+                                    #  - anything added to the reply contract (the
+                                    #    `origin` stamp, say) had to be remembered
+                                    #    twice.
+                                    await _reply_with_voice(res, emotion=emo_str)
                             except Exception as e:
                                 import traceback
                                 traceback.print_exc()
@@ -551,6 +590,36 @@ async def websocket_endpoint(websocket: WebSocket):
                     else:
                         ws_manager.broadcast_sync({"type": "speak", "text": f"Executing command: {cmd}"})
                         ws_manager.broadcast_sync({"type": "status", "text": "Idle"})
+
+                elif msg.get("type") == "mobile_vision":
+                    # The phone's camera. This handler did not exist in server.py at all —
+                    # the message fell through the whole if/elif chain in silence, so vision
+                    # simply vanished here while working on the VM's copy. And the copy that
+                    # DID handle it never generated TTS, which is why Master could read her
+                    # reaction to a photo but never hear it.
+                    #
+                    # Speaking is part of replying, not a property of the chat handler:
+                    # every path that reaches Master goes through _reply_with_voice below.
+                    base64_image = msg.get("image_b64", "")
+                    if base64_image:
+                        ws_manager.broadcast_sync({"type": "status", "text": "Looking at image..."})
+
+                        async def handle_vision(img_data):
+                            import base64 as _b64
+                            try:
+                                img_bytes = _b64.b64decode(img_data)
+                                from server.processor import process_mobile_vision
+                                res = await asyncio.to_thread(process_mobile_vision, img_bytes, CFG)
+                                if res:
+                                    await _reply_with_voice(res, emotion="surprised")
+                                ws_manager.broadcast_sync({"type": "status", "text": "Idle"})
+                            except Exception as e:
+                                log_info(f"[WS] Mobile vision error: {e}")
+                                # Say so out loud rather than leaving the phone spinning:
+                                # the app clears its thinking state on Idle/Error.
+                                ws_manager.broadcast_sync({"type": "status", "text": "Vision Error"})
+
+                        asyncio.create_task(handle_vision(base64_image))
 
                 elif msg.get("type") == "trigger_listen":
                     import server.audio as sa

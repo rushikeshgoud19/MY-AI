@@ -213,14 +213,23 @@ class MemorySystem:
                 "mizune_memory.db"
             )
             if os.path.exists(telemetry_db_path):
+                # close() in `finally`: it used to sit inside the try, AFTER the
+                # execute. The except right below exists precisely because that
+                # execute fails when the legacy table is missing or renamed — so
+                # on the one path that was expected to fail, the connection was
+                # never released. This runs on every memory fetch.
+                conn = None
                 try:
                     conn = sqlite3.connect(telemetry_db_path)
                     cursor = conn.cursor()
                     cursor.execute("SELECT timestamp, role, content, emotion, context_mode FROM conversation_log ORDER BY timestamp DESC")
                     conversation_log = cursor.fetchall()
-                    conn.close()
                 except Exception as e:
                     log_info(f"[MEMORY] Error fetching conversation log: {e}")
+                finally:
+                    if conn is not None:
+                        try: conn.close()
+                        except Exception: pass
 
             # 4. Fetch root conversation archive (mizune_conversations.db)
             root_conversations = []
@@ -229,14 +238,23 @@ class MemorySystem:
                 "mizune_conversations.db"
             )
             if os.path.exists(root_db_path):
+                # close() in `finally`: it used to sit inside the try, AFTER the
+                # execute. The except right below exists precisely because that
+                # execute fails when the legacy table is missing or renamed — so
+                # on the one path that was expected to fail, the connection was
+                # never released. This runs on every memory fetch.
+                conn = None
                 try:
                     conn = sqlite3.connect(root_db_path)
                     cursor = conn.cursor()
                     cursor.execute("SELECT timestamp, role, text, emotion, mode FROM conversations ORDER BY timestamp DESC")
                     root_conversations = cursor.fetchall()
-                    conn.close()
                 except Exception as e:
                     log_info(f"[MEMORY] Error fetching root conversations: {e}")
+                finally:
+                    if conn is not None:
+                        try: conn.close()
+                        except Exception: pass
 
             # 5. Fetch semantic memories (ChromaDB)
             docs = []

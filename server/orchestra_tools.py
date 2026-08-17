@@ -295,13 +295,25 @@ def _best_window(text: str, terms: List[str], width: int) -> str:
     return text[best_i:best_i + width]
 
 
+#: Marginalia answers in about a second when it is healthy (see the backend notes at
+#: the top of this module). The retry below used a 30s budget per attempt, so a stalled
+#: call cost 61 seconds of dead wait before the chain gave up — and it is the FIRST
+#: backend, ahead of ddg, so nothing else even started meanwhile. Measured on the VM
+#: 2026-08-09: `marginalia failed twice: The read operation timed out` inside a debate
+#: that took 75 seconds in total. Degrading gracefully is the right design; spending a
+#: minute to do it is not degrading, it is stalling. 8s is already 8x the healthy
+#: response, and the retry gets less because a backend that missed 8s is unwell.
+_MARGINALIA_TIMEOUT = (8, 5)
+
+
 def marginalia_search(query: str, n: int = 5) -> List[Dict[str, str]]:
     # It is a small public service and occasionally just takes too long. One retry,
     # because losing the PRIMARY backend to a single slow response drops the whole
     # chain to nothing - observed exactly that on a query that works fine on retry.
     for attempt in (1, 2):
         try:
-            d = json.loads(_get(MARGINALIA_API + urllib.parse.quote(query), timeout=30))
+            d = json.loads(_get(MARGINALIA_API + urllib.parse.quote(query),
+                                timeout=_MARGINALIA_TIMEOUT[attempt - 1]))
             out = []
             for r in (d.get("results") or [])[:max(1, n)]:
                 title = str(r.get("title") or "").strip()

@@ -90,50 +90,56 @@ class CronManager:
     def _check_and_execute_tasks(self):
         from server.config import mizune_now, mizune_tz
         now = mizune_now()
+        # try/finally: the two SELECTs below sit OUTSIDE the per-task try blocks, so a
+        # schema change or a locked DB propagated out of here with the connection still
+        # open. _background_loop swallows the exception and runs again in 60 seconds —
+        # forever — so a single recurring failure leaked a connection a minute.
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
+        try:
 
-        # Check one-time tasks
-        cursor.execute('SELECT id, description, trigger_time FROM one_time_tasks WHERE executed = 0')
-        one_time_tasks = cursor.fetchall()
-        for task_id, description, trigger_time_str in one_time_tasks:
-            try:
-                trigger_time = self._as_aware(datetime.datetime.fromisoformat(trigger_time_str))
-                if now >= trigger_time:
-                    logger.info(f"Executing scheduled one-time task: {description}")
-                    if self.task_callback:
-                        # Send task to callback asynchronously to avoid blocking the scheduler
-                        threading.Thread(target=self.task_callback, args=(description,)).start()
+            # Check one-time tasks
+            cursor.execute('SELECT id, description, trigger_time FROM one_time_tasks WHERE executed = 0')
+            one_time_tasks = cursor.fetchall()
+            for task_id, description, trigger_time_str in one_time_tasks:
+                try:
+                    trigger_time = self._as_aware(datetime.datetime.fromisoformat(trigger_time_str))
+                    if now >= trigger_time:
+                        logger.info(f"Executing scheduled one-time task: {description}")
+                        if self.task_callback:
+                            # Send task to callback asynchronously to avoid blocking the scheduler
+                            threading.Thread(target=self.task_callback, args=(description,)).start()
                     
-                    # Mark as executed
-                    cursor.execute('UPDATE one_time_tasks SET executed = 1 WHERE id = ?', (task_id,))
-            except Exception as e:
-                logger.error(f"Failed to parse or execute task {task_id}: {e}")
+                        # Mark as executed
+                        cursor.execute('UPDATE one_time_tasks SET executed = 1 WHERE id = ?', (task_id,))
+                except Exception as e:
+                    logger.error(f"Failed to parse or execute task {task_id}: {e}")
 
-        # Check recurring tasks
-        cursor.execute('SELECT id, description, cron_expression, last_executed FROM recurring_tasks')
-        recurring_tasks = cursor.fetchall()
-        for task_id, description, cron_expression, last_executed_str in recurring_tasks:
-            try:
-                base_time = self._as_aware(datetime.datetime.fromisoformat(last_executed_str)) if last_executed_str else now - datetime.timedelta(minutes=2)
-                # Evaluate cron in Master's timezone so "0 8 * * *" means 8 AM IST, not UTC.
-                base_time = base_time.astimezone(mizune_tz())
-                cron = croniter(cron_expression, base_time)
-                next_trigger = cron.get_next(datetime.datetime)
+            # Check recurring tasks
+            cursor.execute('SELECT id, description, cron_expression, last_executed FROM recurring_tasks')
+            recurring_tasks = cursor.fetchall()
+            for task_id, description, cron_expression, last_executed_str in recurring_tasks:
+                try:
+                    base_time = self._as_aware(datetime.datetime.fromisoformat(last_executed_str)) if last_executed_str else now - datetime.timedelta(minutes=2)
+                    # Evaluate cron in Master's timezone so "0 8 * * *" means 8 AM IST, not UTC.
+                    base_time = base_time.astimezone(mizune_tz())
+                    cron = croniter(cron_expression, base_time)
+                    next_trigger = cron.get_next(datetime.datetime)
                 
-                # If the next trigger time is in the past (up to now), execute it!
-                if now >= next_trigger:
-                     logger.info(f"Executing scheduled recurring task: {description}")
-                     if self.task_callback:
-                         threading.Thread(target=self.task_callback, args=(description,)).start()
+                    # If the next trigger time is in the past (up to now), execute it!
+                    if now >= next_trigger:
+                         logger.info(f"Executing scheduled recurring task: {description}")
+                         if self.task_callback:
+                             threading.Thread(target=self.task_callback, args=(description,)).start()
                      
-                     # Update last executed time
-                     cursor.execute('UPDATE recurring_tasks SET last_executed = ? WHERE id = ?', (now.isoformat(), task_id))
-            except Exception as e:
-                logger.error(f"Failed to process recurring task {task_id}: {e}")
+                         # Update last executed time
+                         cursor.execute('UPDATE recurring_tasks SET last_executed = ? WHERE id = ?', (now.isoformat(), task_id))
+                except Exception as e:
+                    logger.error(f"Failed to process recurring task {task_id}: {e}")
 
-        conn.commit()
-        conn.close()
+            conn.commit()
+        finally:
+            conn.close()
 
     def start(self, task_callback=None):
         """Starts the background scheduler thread."""

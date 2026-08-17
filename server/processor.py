@@ -1709,12 +1709,36 @@ You are looking at Master through your webcam camera RIGHT NOW. Describe what yo
             clean_res = original_res
             tool_calls = []
         
-        if "[SLEEP]" in clean_res.upper() or "[SKIP]" in clean_res.upper() or clean_res.strip().lower() in ["skip", "skip.", '"skip"']:
-            log_info("[PROACTIVE] Mizune decided to skip/sleep.")
-            clean_res = re.sub(r"\[SLEEP\]", "", clean_res, flags=re.IGNORECASE).strip()
-            clean_res = re.sub(r"\[SKIP\]", "", clean_res, flags=re.IGNORECASE).strip()
-            if not clean_res or clean_res.lower() in ["skip", "skip.", '"skip"']:
-                return None
+        # ── Background-tick verdicts ────────────────────────────────────────────
+        # The subconscious prompt (server/subconscious.py) asks for one of [SKIP],
+        # [ACT] or [ESCALATE]. Those are VERDICTS, not prefixes, and they were being
+        # treated as text:
+        #
+        #  - [SKIP]/[SLEEP] only suppressed the reply when NOTHING was left after
+        #    stripping the tag. Models are chatty — "[SKIP] Nothing urgent, Master."
+        #    is the common shape — so the leftover prose was non-empty, fell straight
+        #    through, and got spoken. Her explicit decision to stay quiet was the thing
+        #    that made her talk. This is a first-order cause of "she speaks unprompted".
+        #  - [ACT] and [ESCALATE] were never stripped at all, so replies reached Master
+        #    with the literal control tag on the front and TTS read it out.
+        #
+        # A verdict is decided by its presence, not by what trails it. ESCALATE wins a
+        # contradiction: choosing to interrupt is the deliberate act, and being wrongly
+        # audible once beats swallowing something urgent.
+        upper_res = clean_res.upper()
+        wants_escalate = "[ESCALATE]" in upper_res
+        wants_quiet = (
+            "[SLEEP]" in upper_res
+            or "[SKIP]" in upper_res
+            or clean_res.strip().lower() in ["skip", "skip.", '"skip"']
+        )
+        if wants_quiet and not wants_escalate:
+            log_info(f"[PROACTIVE] Mizune decided to skip/sleep. Dropped: {clean_res[:120]!r}")
+            return None
+        clean_res = re.sub(r"\[(SLEEP|SKIP|ACT|ESCALATE)\]", "", clean_res,
+                           flags=re.IGNORECASE).strip()
+        if not clean_res:
+            return None
 
         # Check explicit tags
         detected_emotion = "neutral"

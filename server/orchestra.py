@@ -45,9 +45,11 @@ import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable, Dict, List, Optional
+from contextlib import closing
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .config import log_info
+from .harness import HARNESS
 from .tracing import observe, update_current_span
 from .orchestra_tools import calc, gather_grounding
 
@@ -128,7 +130,11 @@ def _db():
 
 def save_debate(rec: Dict[str, Any]) -> Optional[int]:
     try:
-        with _db_lock, _db() as con:
+        # `with con:` is sqlite3's TRANSACTION context manager, not a closing one —
+        # it commits or rolls back and leaves the connection open. Every debate
+        # leaked one. `closing(...)` first, then the connection itself, keeps the
+        # transaction semantics and actually releases the handle.
+        with _db_lock, closing(_db()) as con, con:
             cur = con.execute(
                 "INSERT INTO debates(started,finished,question,verdict,agreement,rounds,"
                 "calls,tokens,case_taken,judge,transcript) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
@@ -144,7 +150,11 @@ def save_debate(rec: Dict[str, Any]) -> Optional[int]:
 
 def recent_debates(limit: int = 20) -> List[Dict[str, Any]]:
     try:
-        with _db_lock, _db() as con:
+        # `with con:` is sqlite3's TRANSACTION context manager, not a closing one —
+        # it commits or rolls back and leaves the connection open. Every debate
+        # leaked one. `closing(...)` first, then the connection itself, keeps the
+        # transaction semantics and actually releases the handle.
+        with _db_lock, closing(_db()) as con, con:
             con.row_factory = sqlite3.Row
             rows = con.execute(
                 "SELECT id,started,finished,question,verdict,agreement,rounds,calls,"
@@ -157,6 +167,44 @@ def recent_debates(limit: int = 20) -> List[Dict[str, Any]]:
 
 
 # --------------------------------------------------------------------------- client
+# --------------------------------------------------------------------------- seams
+#
+# The orchestra's capabilities, declared before anything can consume them. See
+# server/harness.py for why a consumer is not allowed to outrun its provider.
+#
+# These four were chosen because each is a place the orchestra could plausibly be pointed
+# somewhere else, and today cannot be:
+#
+#  * llm        — every advocate, judge and synthesis call goes to Mistral, through one
+#                 hardcoded URL and one key pool. When those four keys are capped the
+#                 whole debate engine is down, and there is no seam to hang a fallback on.
+#                 This is the single point of failure the FEATURE_MATRIX blames for the
+#                 scheduler's flaky rows, appearing again here.
+#  * grounding  — already has four backends inside `gather_grounding`, with no way to
+#                 swap the set or test the debate without a network.
+#  * store      — one sqlite file; a debate is worth keeping even when it is not.
+#  * invariants — arithmetic and citation checks are hardcoded into the judge branch.
+#                 The harness calls these "package-owned invariants" and keeps them in a
+#                 registry precisely so new ones can be added without editing the judge.
+SEAM_LLM = "orchestra.llm"
+SEAM_GROUNDING = "orchestra.grounding"
+SEAM_STORE = "orchestra.store"
+SEAM_INVARIANTS = "orchestra.invariants"
+
+HARNESS.declare(
+    SEAM_LLM, "Chat completion for advocates, judge and synthesis",
+    methods=("complete",), declared_by="orchestra")
+HARNESS.declare(
+    SEAM_GROUNDING, "Evidence retrieval for a debate question",
+    methods=("gather",), declared_by="orchestra")
+HARNESS.declare(
+    SEAM_STORE, "Durable debate record",
+    methods=("save", "recent"), declared_by="orchestra")
+HARNESS.declare(
+    SEAM_INVARIANTS, "Model-free defect checks run on every advocate answer",
+    methods=("check",), declared_by="orchestra")
+
+
 def _keys(config: dict) -> List[str]:
     raw = config.get("mistral_api_key")
     keys = raw if isinstance(raw, list) else [raw]
@@ -238,6 +286,129 @@ def _call(pool: "_KeyPool", model: str, system: str, user: str,
             last_err = f"{type(e).__name__}: {e}"
             continue
     return {"ok": False, "text": "", "truncated": False, "tokens": 0, "error": last_err}
+
+
+# --------------------------------------------------------------- seam providers
+#
+# Every provider below wraps code that already existed and calls it verbatim. That is
+# deliberate: the debate engine works, and a seam is supposed to change WHERE a capability
+# can be swapped, not WHAT it currently does. If a debate behaves differently after this
+# commit, the wiring is wrong, not the design.
+
+
+class MistralAdapter:
+    """The `orchestra.llm` provider: Mistral chat completions over a rotating key pool.
+
+    ONE BEHAVIOURAL CHANGE, stated because everything else here is a pure rewiring:
+    `orchestra_answer` used to build a fresh `_KeyPool` per debate, so a key parked for a
+    429 was un-parked the moment the next debate started. The adapter is registered once
+    per process, so the pool — and its cooldowns — now persist across debates. That is
+    the better behaviour (a rate limit does not reset because a new question arrived), but
+    it is a change, not a no-op.
+
+    Consequence to know about: the key list is captured at registration. A config reload
+    that changes `mistral_api_key` will not be picked up until something re-registers the
+    seam.
+    """
+
+    name = "mistral"
+
+    def __init__(self, keys: List[str]):
+        self._pool = _KeyPool(keys)
+
+    def complete(self, model: str, system: str, user: str,
+                 temperature: float = 0.3, max_tokens: int = 900) -> Dict[str, Any]:
+        return _call(self._pool, model, system, user, temperature, max_tokens)
+
+
+class _SearchGrounding:
+    """The `orchestra.grounding` provider: the existing multi-backend search chain."""
+
+    name = "search"
+
+    def gather(self, question: str, query: str, api_key: str = "") -> Dict[str, Any]:
+        return gather_grounding(question, query, api_key=api_key)
+
+
+class _SqliteDebateStore:
+    """The `orchestra.store` provider: the sqlite debate log in .data/orchestra.db."""
+
+    name = "sqlite"
+
+    def save(self, rec: Dict[str, Any]) -> Optional[int]:
+        return save_debate(rec)
+
+    def recent(self, limit: int = 20) -> List[Dict[str, Any]]:
+        return recent_debates(limit)
+
+
+class _DefaultInvariants:
+    """The `orchestra.invariants` provider: arithmetic and citation checks.
+
+    Registered as a list so a new check is an append here rather than another branch
+    inside the judge. Each entry returns a defect string or a falsy value.
+    """
+
+    name = "arithmetic+citations"
+
+    def __init__(self) -> None:
+        self.checks: List[Tuple[str, Callable[[str, str], str]]] = [
+            ("ARITHMETIC", lambda txt, ground: _check_arithmetic(txt)),
+            ("FABRICATED", lambda txt, ground: _check_citations(txt, ground)),
+        ]
+
+    def check(self, text: str, ground_text: str) -> List[str]:
+        """Every defect found in one answer. Order is stable, for stable defect strings."""
+        found = []
+        for _label, fn in self.checks:
+            try:
+                d = fn(text, ground_text)
+            except Exception as e:                 # a broken check must not kill a debate
+                log_info(f"[ORCHESTRA] invariant {_label} raised: {e}")
+                continue
+            if d:
+                found.append(d)
+        return found
+
+
+# Grounding, store and invariants have no configuration, so they are wired at import.
+# The LLM adapter needs the config's API keys, so it is wired per call in
+# `orchestra_answer` — see `_llm_for`.
+HARNESS.provide(SEAM_GROUNDING, _SearchGrounding(), source="orchestra.search")
+HARNESS.provide(SEAM_STORE, _SqliteDebateStore(), source="orchestra.sqlite")
+HARNESS.provide(SEAM_INVARIANTS, _DefaultInvariants(), source="orchestra.default")
+
+
+def register_llm_seam(config: dict) -> bool:
+    """Wire the default Mistral adapter. Call at startup, where config lives.
+
+    Providers belong at the composition root, not inside business logic. The first
+    version of this registered lazily on the first debate, and the boot-time seam check
+    duly printed `!! orchestra.llm <- NOBODY` on every single start — an alarm that always
+    fires is one nobody reads, which is the exact failure this codebase already learned
+    from a judge that reported agreement HIGH 17 times out of 18.
+
+    Returns False when there are no keys to build an adapter from, so the graph shows the
+    seam genuinely unwired instead of pretending.
+    """
+    if HARNESS.has(SEAM_LLM):
+        return True                       # someone registered a different adapter: theirs wins
+    keys = _keys(config)
+    if not keys:
+        return False
+    HARNESS.provide(SEAM_LLM, MistralAdapter(keys), source="orchestra.mistral")
+    return True
+
+
+def _llm_for(config: dict):
+    """Resolve the LLM seam for a debate, wiring the default if startup did not.
+
+    The fallback keeps scripts and tests working without a full server boot. An adapter
+    someone else already registered — a replay adapter, or a different provider for when
+    Mistral is capped — always wins, which is the entire point of the seam.
+    """
+    register_llm_seam(config)
+    return HARNESS.require(SEAM_LLM, consumer="orchestra_answer")
 
 
 # --------------------------------------------------------------------------- prompts
@@ -532,10 +703,10 @@ def orchestra_answer(question: str, config: dict,
     if len(keys) < 1:
         return {"ok": False, "error": "no mistral_api_key configured", "transcript": transcript}
 
-    pool = _KeyPool(keys)
+    llm = _llm_for(config)
 
     def run(model, system, user, temp=0.3, mx=900):
-        r = _call(pool, model, system, user, temp, mx)
+        r = llm.complete(model, system, user, temp, mx)
         stats["calls"] += 1
         stats["tokens"] += r.get("tokens", 0)
         return r
@@ -547,8 +718,9 @@ def orchestra_answer(question: str, config: dict,
         if not grounding:
             return "", ""
         gq = run("ministral-8b-latest", _QUERY_SYS, question, temp=0.0, mx=24)
-        g = gather_grounding(question, gq["text"] if gq["ok"] else "",
-                             api_key=config.get("firecrawl_api_key", ""))
+        g = HARNESS.require(SEAM_GROUNDING, consumer="orchestra.fetch_grounding").gather(
+            question, gq["text"] if gq["ok"] else "",
+            api_key=config.get("firecrawl_api_key", ""))
         emit("grounding", ok=bool(g.get("ok")), query=g.get("query", ""),
              sources=g.get("sources", []), chars=len(g.get("text", "")),
              backend=g.get("backend", "none"), credits=g.get("credits", 0),
@@ -705,9 +877,19 @@ def orchestra_answer(question: str, config: dict,
     # receiving the judge's findings, so a checked-wrong figure now reaches R2 AND
     # the final answer instead of being silently re-asserted.
     arith_bad, cite_bad = [], []
+    # The judge's OWN scores, before any fact-check cap. Agreement is a measurement of
+    # how much the PANEL disagrees, and the cap below is a penalty on one answer — two
+    # different things that were sharing one dict. A single unverifiable citation took
+    # 9,9,9,9 to 9,9,9,5, pushed the spread to 4.0 past ADOPT_SPREAD, and reported the
+    # panel as split when three advocates agreed exactly. Measured on the VM 2026-08-09:
+    # agreement=LOW on both debates, the second one saying in its own answer "no
+    # verified source confirms these rates" — the citation check firing. With grounding
+    # thin, that fires often, so EVERY debate was taking the expensive R2 path (11 calls)
+    # and the cheap ADOPT path was unreachable for reasons unrelated to consensus.
+    judge_scores: Dict[str, float] = dict(scores)
+    invariants = HARNESS.require(SEAM_INVARIANTS, consumer="orchestra.judge")
     for i, txt in answers.items():
-        found = [d for d in (_check_arithmetic(txt),
-                             _check_citations(txt, ground_text)) if d]
+        found = invariants.check(txt, ground_text)
         if not found:
             continue
         if found[0].startswith("ARITHMETIC"):
@@ -731,9 +913,12 @@ def orchestra_answer(question: str, config: dict,
     if not scores:
         best_id, best_score, spread = None, 0.0, 10.0
     else:
+        # Winner comes from the CAPPED scores — an answer with broken arithmetic or a
+        # fabricated citation must not win. Spread comes from the judge's raw scores —
+        # see judge_scores above for why mixing the two mislabels the panel.
         best_id = max(scores, key=lambda k: scores[k])
         best_score = scores[best_id]
-        spread = max(scores.values()) - min(scores.values())
+        spread = max(judge_scores.values()) - min(judge_scores.values())
 
     # Agreement is now MEASURED from the score spread rather than asserted by the
     # judge. The soak had it constant at HIGH 17/18 while changing nothing, which
@@ -844,7 +1029,7 @@ def _finish(question, answer, agreement, rounds, stats, case, judge, started, tr
            "verdict": answer, "agreement": agreement, "rounds": rounds,
            "calls": stats["calls"], "tokens": stats["tokens"], "case": case,
            "judge": judge, "transcript": transcript}
-    rec["id"] = save_debate(rec)
+    rec["id"] = HARNESS.require(SEAM_STORE, consumer="orchestra._finish").save(rec)
     # Push the shape of the debate onto the trace span so TraceRoot shows WHY a
     # debate was expensive (which path it took), not merely that it was.
     try:

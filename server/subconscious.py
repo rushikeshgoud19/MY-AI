@@ -59,18 +59,34 @@ class SubconsciousEngine:
             from .memory_tree import memory_tree_db
             pending = memory_tree_db.get_queue_depth()
             if pending > 25:
-                items.append(f"System State: {pending} memory chunks pending consolidation (backlog).")
+                # Bucketed, NOT the raw count. The novelty gate in _tick hashes these
+                # strings to decide "same situation as last time, stay quiet" — and the
+                # raw depth changes between almost every tick, so the hash never matched
+                # and the cooldown never once suppressed anything. She re-reported the
+                # same backlog every 15 minutes forever, which is most of "she speaks
+                # unprompted". A backlog is the situation; its exact depth is not.
+                bucket = "large" if pending > 200 else "moderate" if pending > 75 else "small"
+                items.append(
+                    f"System State: {bucket} backlog of memory chunks pending consolidation."
+                )
         except Exception:
             pass
 
-        # Scheduled tasks due soon
-        try:
+        # Scheduled tasks due soon — NOT WIRED.
+        #
+        # `CronManager` (server/scheduler.py) has no `peek_due_soon`, so the getattr
+        # fallback fired on every tick and `due` was always []. This branch has never
+        # once contributed an item; the memory backlog above is the only thing that has
+        # ever populated a situation report. Left visible rather than deleted because
+        # the intent is sound, but implementing it now would give her a NEW reason to
+        # wake the LLM while "she speaks unprompted" is still the open complaint — so it
+        # is a deliberate choice, not an oversight.
+        if not hasattr(self, "_warned_no_peek"):
+            self._warned_no_peek = True
             from .processor import global_cron_manager
-            due = getattr(global_cron_manager, "peek_due_soon", lambda: [])()
-            if due:
-                items.append(f"Upcoming scheduled tasks: {due}")
-        except Exception:
-            pass
+            if not hasattr(global_cron_manager, "peek_due_soon"):
+                log_info("[SUBCONSCIOUS] CronManager has no peek_due_soon() — "
+                         "scheduled-task awareness is inert by design (see comment).")
 
         return items
 
