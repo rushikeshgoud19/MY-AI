@@ -2047,7 +2047,22 @@ def _get_ai_response_body(text: str, history: list, config: dict, system_prompt_
     # Order = fast+generous first. Cerebras (~1M tok/day) and Mistral (~1B tok/month)
     # sit high because gemini's free tier is only 20 requests/DAY — too small to be early
     # (that exhaustion is what produced "my brain is a little tangled" on 2026-07-23).
-    CASCADE = ["groq", "cerebras", "mistral", "gemini", "openrouter", "nvidia"]
+    # Order is the FALLBACK order after the router's primary fails, so it should lead
+    # with providers that can actually serve a full turn.
+    #
+    # groq moved to the back, 2026-08-17, on measurement rather than preference. Her
+    # prompt has a STATIC floor of ~7,415 tokens before a single word of history —
+    # tool schemas 4,674, generated capability lines 806, persona 1,935 — and observed
+    # requests cluster at 9,297-9,386. Groq's free tier caps every tool-capable model at
+    # 8,000 TPM, so a real turn 413s every time; the only groq model with headroom
+    # (groq/compound, 70k) refuses tool calling outright. Leaving it first meant one
+    # guaranteed-failed call per turn, which is precisely what cerebras was doing before
+    # its key was retired.
+    #
+    # It stays in the list because SMALL calls still fit and still succeed there —
+    # intent classification runs under a system_prompt_override with no tools attached,
+    # and that is well under the cap.
+    CASCADE = ["mistral", "openrouter", "nvidia", "gemini", "groq", "cerebras"]
 
     def _has_key(provider):
         # ollama/local need no key; everyone else must have one configured

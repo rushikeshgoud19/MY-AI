@@ -36,16 +36,26 @@ class ModelRouter:
         
         is_task = intent in ("coding", "autonomous", "research", "task") or any(kw in text_lower for kw in task_keywords)
 
-        # WhatsApp ALWAYS goes to a fast cloud provider — including task/tool requests.
-        # Primary = Groq (fastest + cheapest, sub-second llama-3.3-70b). The cascade in
-        # get_ai_response falls back Groq -> Gemini -> OpenRouter -> NVIDIA if it's down.
+        # WhatsApp goes to a provider that can actually SERVE a full turn.
+        #
+        # This branch used to hard-return "groq" for every WhatsApp message, on the
+        # reasoning that groq was "fastest + cheapest, sub-second llama-3.3-70b". Both
+        # halves of that expired: Groq decommissioned llama-3.3-70b-versatile (404
+        # model_not_found), and every tool-capable model left on its free tier caps at
+        # 8,000 TPM — against a prompt whose STATIC floor is ~7,415 tokens and which is
+        # observed at 9,297-9,386. So the fastest provider was also the one guaranteed to
+        # 413, on the single path Master actually messages her from.
+        #
+        # This is the first half of why the 2026-08-16 "background check on Autter"
+        # request was never answered: it arrived over WhatsApp, was pinned here to groq,
+        # and what came back was a promise with no search behind it.
+        #
+        # Preference order is now by measured capacity, not by reputation for speed.
         if hints.get("platform") == "whatsapp":
-            if self.config.get("groq_api_key"):
-                return "groq"
-            if self.config.get("gemini_api_key"):
-                return "gemini"
-            configured = self.config.get("ai_model")
-            return configured
+            for provider in ("mistral", "nvidia", "gemini", "openrouter", "groq"):
+                if self.config.get(f"{provider}_api_key"):
+                    return provider
+            return self.config.get("ai_model")
         
         if is_task:
             configured = self.config.get("ai_model")
