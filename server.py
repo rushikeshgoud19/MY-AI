@@ -291,7 +291,21 @@ async def api_crons():
         log_info(f"[API] /api/crons failed: {e}")
         return JSONResponse({"one_time": [], "recurring": [], "error": str(e)[:200]},
                             status_code=200)
-    return JSONResponse({"one_time": one, "recurring": recurring,
+    # `crons` is the shape the console renders — it reads d.crons || d.jobs || d.items
+    # and expects name / schedule / last_run per row. one_time and recurring are kept
+    # alongside it for anything that wants the raw split. A payload the only consumer
+    # cannot read is the same defect as no endpoint at all, which is what this pair was
+    # built to fix.
+    crons = []
+    for t in recurring:
+        crons.append({"name": t["description"], "schedule": t["cron"],
+                      "last_run": t["last_executed"], "enabled": True})
+    for t in one:
+        crons.append({"name": t["description"], "schedule": "once",
+                      "next_run": None if t["executed"] else t["at"],
+                      "last_run": t["at"] if t["executed"] else None,
+                      "last_ok": True if t["executed"] else None})
+    return JSONResponse({"crons": crons, "one_time": one, "recurring": recurring,
                          "pending": sum(1 for t in one if not t["executed"]),
                          "recurring_count": len(recurring)})
 
