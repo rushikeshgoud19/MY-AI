@@ -233,6 +233,69 @@ async def _reply_with_voice(text: str, emotion: str = "neutral"):
         ws_manager.broadcast_sync({"type": "audio_failed"})
 
 
+@app.get("/api/seals")
+async def api_seals(limit: int = 40):
+    """Her tool-result seals — the evidence trail behind what she claims she did.
+
+    The console has polled this every 20 seconds since it was written and got 404 every
+    time, rendering a permanent "seal feed unavailable" card. The data was always there:
+    a seal is a history row with role='system' whose content opens with [TOOL RESULTS].
+    A panel that asks for something the server never offered is worse than no panel — it
+    reads as breakage rather than as an unbuilt feature.
+    """
+    import sqlite3
+    from contextlib import closing
+    out = []
+    try:
+        limit = max(1, min(int(limit), 200))
+        with closing(sqlite3.connect(".data/mizune_memory.db")) as con:
+            rows = con.execute(
+                "SELECT timestamp, content FROM history WHERE role = 'system' "
+                "AND content LIKE '[TOOL RESULTS]%' ORDER BY id DESC LIMIT ?",
+                (limit,)).fetchall()
+        for ts, content in rows:
+            body = (content or "")[len("[TOOL RESULTS]"):].strip()
+            tool = body.split(":", 1)[0].strip() if ":" in body[:60] else ""
+            out.append({"at": ts, "tool": tool,
+                        "result": (body.split(":", 1)[1].strip() if tool else body)[:600]})
+    except Exception as e:
+        log_info(f"[API] /api/seals failed: {e}")
+        return JSONResponse({"seals": [], "error": str(e)[:200]}, status_code=200)
+    return JSONResponse({"seals": out, "count": len(out)})
+
+
+@app.get("/api/crons")
+async def api_crons():
+    """Everything the scheduler is actually holding — one-time and recurring.
+
+    Same story as /api/seals: polled every 60s, 404 every time. Reads
+    data/schedules.db directly rather than through CronManager so a read can never
+    disturb the running scheduler thread.
+    """
+    import sqlite3
+    from contextlib import closing
+    one, recurring = [], []
+    try:
+        with closing(sqlite3.connect("data/schedules.db")) as con:
+            for i, desc, trig, done in con.execute(
+                    "SELECT id, description, trigger_time, executed FROM one_time_tasks "
+                    "ORDER BY id DESC LIMIT 60").fetchall():
+                one.append({"id": i, "description": desc, "at": trig,
+                            "executed": bool(done)})
+            for i, desc, expr, last in con.execute(
+                    "SELECT id, description, cron_expression, last_executed FROM "
+                    "recurring_tasks ORDER BY id DESC LIMIT 60").fetchall():
+                recurring.append({"id": i, "description": desc, "cron": expr,
+                                  "last_executed": last})
+    except Exception as e:
+        log_info(f"[API] /api/crons failed: {e}")
+        return JSONResponse({"one_time": [], "recurring": [], "error": str(e)[:200]},
+                            status_code=200)
+    return JSONResponse({"one_time": one, "recurring": recurring,
+                         "pending": sum(1 for t in one if not t["executed"]),
+                         "recurring_count": len(recurring)})
+
+
 @app.get("/api/devices")
 async def api_devices():
     """Read-only device-fleet TRUTH: exactly which nodes are registered right now.
