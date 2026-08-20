@@ -1705,7 +1705,16 @@ You are looking at Master through your webcam camera RIGHT NOW. Describe what yo
             clean_res = original_res
         except Exception as e:
             log_info(f"[AI] Complete model failure: {e}")
-            original_res = f"I'm sorry Master, my brain is having trouble connecting to the servers right now. ({e})"
+            # The exception text is for the LOG, not for Master. It used to be appended
+            # verbatim, so when every provider failed he was shown raw internals —
+            # observed 2026-08-17: 'Capability refusal from mistral (no tools ran): "I'm
+            # sorry, but I don't have the necessary tools..."' pasted straight into her
+            # reply, nested quotes and all. He cannot act on that, and it reads like she
+            # is broken in a way she is not.
+            log_info(f"[AI] all providers failed for this turn: {e}")
+            original_res = ("I'm sorry Master, I couldn't reach any of my models just now "
+                            "— every provider is rate-limited or out of quota. Try again "
+                            "in a minute.")
             clean_res = original_res
             tool_calls = []
         
