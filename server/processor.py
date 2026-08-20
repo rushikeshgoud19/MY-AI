@@ -988,6 +988,20 @@ def process_command(text: str, config: dict, broadcast_sync_fn, session_id: str 
                     reply = reply.rstrip() + "\n\n" + prov
         except Exception:
             pass          # a missing receipt must never cost Master the answer
+
+        # Strip control tags at the ONE choke point, for the same reason the receipt is
+        # stamped here: every reply passes through, and no individual caller can be
+        # trusted to remember.
+        #
+        # The model path strips [EMOTION: x] after generating, but the ~8 fast-paths in
+        # this file return their text directly and never reach that code — so anything
+        # code answered instantly leaked the raw tag to Master. Observed 2026-08-20:
+        # "remind me to call mom at 6pm" came back as
+        #     "[EMOTION: happy] Got it, Master - I'll remind you to call mom at 06:00 PM."
+        # The fast-paths are the replies she gives FASTEST and most often, so the tag was
+        # most visible exactly where she should look sharpest.
+        if reply:
+            reply = re.sub(r"\[EMOTION:\s*[^\]]*\]\s*", "", reply).strip()
         return reply
     finally:
         lock.release()
@@ -1110,6 +1124,51 @@ def _process_command_internal(text: str, config: dict, broadcast_sync_fn, sessio
             from server.mesh import mesh_answer
             log_info(f"[MESH] fast-path trigger: {_mq[:80]}")
             return _format_mesh_reply(mesh_answer(_mq, config))
+
+    # ── CAPABILITIES fast-path: code answers "what can you do", not the model.
+    #
+    # Measured 2026-08-20: asked "what can you do", she replied "I'm sorry, Master, but
+    # I can't browse the web or access real-time information" — while holding web_search,
+    # and while her own generated capability list sat in the prompt saying so. It is the
+    # most basic question anyone asks an assistant and it produced a refusal.
+    #
+    # The cause is structural, not a bad model. _capability_lines() is immediately
+    # followed by a "You CANNOT:" block and three paragraphs of honesty instructions, all
+    # of which prime refusal language. Asked point-blank what she can do, the nearest
+    # matching text is the part telling her to say she can't.
+    #
+    # The truth is already derived from the live schema, so a model call adds nothing here
+    # except an opportunity to get it wrong. This is the same reasoning as the WhatsApp
+    # send fast-path above: when code knows the answer exactly, code should answer.
+    # Costs zero tokens and cannot refuse.
+    if re.match(r"^\s*(what|which)\s+(can|do)\s+you\s+(do|know how to do)\b"
+                r"|^\s*what\s+are\s+your\s+(capabilities|abilities|tools|skills)\b"
+                r"|^\s*(list|show)\s+(me\s+)?(your\s+)?(capabilities|abilities|tools)\b",
+                lower_text) and "[mission" not in lower_text:
+        from server.ai import _active_tools_schema
+        names = []
+        for t in _active_tools_schema(config):
+            fn = t.get("function") or {}
+            n = fn.get("name")
+            if n:
+                first = (fn.get("description") or "").strip().split(". ")[0].split("\n")[0]
+                names.append((n, first[:95]))
+        from server.device_registry import device_registry
+        devices = device_registry.list_devices()
+        lines = [f"Here's everything I can actually do right now, Master — "
+                 f"{len(names)} tools, straight from what's wired up, not a brochure:", ""]
+        lines += [f"• **{n}** — {d}" for n, d in names]
+        if devices:
+            lines.append("")
+            lines.append("Devices online: " + ", ".join(
+                f"**{k}** ({len(v.get('capabilities') or [])} actions)"
+                for k, v in devices.items()) + ".")
+        else:
+            lines.append("")
+            lines.append("No remote devices are online right now, so anything that needs "
+                         "your phone or laptop will wait until one reconnects.")
+        log_info(f"[CAPABILITIES] fast-path: listed {len(names)} tools")
+        return "\n".join(lines)
 
     # ── ORCHESTRA fast-path (Z6): a full tribunal is expensive and slow, so asking
     # for one must be an explicit act, never a guess. Same reasoning as mesh above:

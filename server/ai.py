@@ -2106,8 +2106,15 @@ def _get_ai_response_body(text: str, history: list, config: dict, system_prompt_
             if (not system_prompt_override and tools_res is not None
                     and not tools_res and len(text_res) < 400):
                 _low = text_res.lower()
+                # "i can't/cannot" was missing and it is the phrasing that actually
+                # shipped: "I'm sorry, Master, but I can't browse the web or access
+                # real-time information" — said while holding web_search, so the cascade
+                # accepted a refusal it should have retried past. Paired with a
+                # capability word, so ordinary speech ("I can't wait, Master!") is
+                # untouched.
                 if (("i don't have" in _low or "i do not have" in _low
                      or "i'm unable to" in _low or "i am unable to" in _low
+                     or "i can't " in _low or "i cannot " in _low
                      or "i currently don't have" in _low)
                         and any(w in _low for w in ("capability", "capabilities", "tools",
                                                     "access to", "access files",
