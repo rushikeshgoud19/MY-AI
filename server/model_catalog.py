@@ -29,7 +29,8 @@ PROVIDER_SPECS = {
     "groq": {
         "key_name": "groq_api_key",
         "model_cfg": "groq_model",
-        "default_model": "llama-3.3-70b-versatile",
+        # Groq decommissioned llama-3.3-70b-versatile (404 model_not_found, live 2026-08-17).
+        "default_model": "openai/gpt-oss-120b",
         "models_url": "https://api.groq.com/openai/v1/models",
     },
     "cerebras": {

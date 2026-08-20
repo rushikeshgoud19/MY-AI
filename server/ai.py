@@ -1969,6 +1969,47 @@ def _get_ai_response_body(text: str, history: list, config: dict, system_prompt_
     except Exception as e:
         log_info(f"[AI] Error fetching memory: {e}")
 
+    # KNOWLEDGE RECALL — the other half of "remember this".
+    #
+    # Measured 2026-08-17: told "remember this exactly: my audit marker is AUDIT36908",
+    # she stored it — the fast-path routes "remember this" to knowledge.learn() — and then
+    # answered "what is my audit marker?" with "12345". A fabricated answer, not a miss.
+    #
+    # The cause is a store/recall mismatch, not a memory failure. The marker was in
+    # .data/knowledge.db and nowhere else; the automatic injection above reads
+    # memory.recall_longterm(), which is ChromaDB long-term memory. Two stores, and only
+    # one of them was ever consulted when building the prompt. The knowledge store was
+    # reachable only if the model chose to call recall_knowledge — and on that turn it
+    # called nothing at all and invented a number instead.
+    #
+    # Fixed on the READ side deliberately: everything already learned becomes reachable,
+    # not merely what is stored from here on.
+    #
+    # Kept cheap, because the token budget is the binding constraint: one lookup, capped,
+    # injected only on a real hit. knowledge.recall returns a "don't have anything on X"
+    # sentence when it misses, and pasting that into the prompt as though it were context
+    # would be worse than injecting nothing. Third-party turns are excluded — the
+    # knowledge base is Master's.
+    # `system_prompt_override` marks an INTERNAL utility call — intent classification,
+    # summarisation, distillation. Measured immediately after shipping this: 900 chars of
+    # Master's knowledge were being pasted into "Classify the user's intent into exactly
+    # one of..." on every single turn. That is the binding constraint (tokens) spent on a
+    # prompt that cannot use it, and it risks skewing the classifier with irrelevant
+    # context. Injection belongs on turns where Master is actually being answered.
+    try:
+        from .platforms.whatsapp.core import is_third_party_turn as _itp3
+        if not system_prompt_override and not _itp3(text):
+            from .knowledge import recall as _k_recall
+            _k = (_k_recall(text) or "").strip()
+            if _k.startswith("Here's what I know about"):
+                system_prompt += (
+                    "\n\n[LEARNED KNOWLEDGE (Master taught you this. Use it if it answers "
+                    "his question; if it does not, say you do not know rather than "
+                    "guessing)]:\n" + _k[:900])
+                log_info("[KNOWLEDGE] injected %d chars for: %r" % (len(_k[:900]), text[:50]))
+    except Exception as e:
+        log_info(f"[AI] knowledge injection skipped: {e}")
+
     # Primary routing with a resilient, cost-ordered fallback cascade.
     # Cloud cascade (cheap+fast first, heavyweight NVIDIA 70B as last-resort backstop):
     #   groq -> gemini -> openrouter -> nvidia
@@ -2022,6 +2063,37 @@ def _get_ai_response_body(text: str, history: list, config: dict, system_prompt_
             text_res, tools_res = res
             if not text_res.strip() and not tools_res:
                 raise ValueError(f"Empty response from {provider}")
+            # ...and treat a CAPABILITY REFUSAL as a failure too. Measured 2026-08-17,
+            # with cerebras out of quota (402) and groq's free-tier TPM at 8,000 against a
+            # ~9,350-token prompt (413): the cascade reached a provider that answered
+            # "I don't have the capability to browse the web", and because that string is
+            # non-empty it counted as SUCCESS and stopped. nvidia and openrouter sit later
+            # in the same cascade and were both verified, minutes earlier, to return a
+            # native web_search call for this exact request. She had working providers and
+            # never reached them.
+            #
+            # The file already warns about this shape one function below — "a non-empty
+            # string looks like success and STOPS the cascade, so the user gets 'I'm
+            # tangled' instead of the correct answer another provider would have given".
+            # A refusal is that same defect wearing a politer sentence.
+            #
+            # Deliberately narrow, because a false positive costs a whole extra provider
+            # call against the binding constraint: the reply must be SHORT, must have
+            # executed NO tools, and must match a first-person inability about a capability
+            # she demonstrably has.
+            if tools_res is not None and not tools_res and len(text_res) < 400:
+                _low = text_res.lower()
+                if (("i don't have" in _low or "i do not have" in _low
+                     or "i'm unable to" in _low or "i am unable to" in _low
+                     or "i currently don't have" in _low)
+                        and any(w in _low for w in ("capability", "capabilities", "tools",
+                                                    "access to", "access files",
+                                                    "ability to browse", "browse the web",
+                                                    "real-time", "execute python",
+                                                    "execute code"))):
+                    raise ValueError(
+                        f"Capability refusal from {provider} (no tools ran): "
+                        f"{text_res.strip()[:90]!r}")
         elif isinstance(res, str):
             if not res.strip():
                 raise ValueError(f"Empty response from {provider}")
@@ -2285,8 +2357,19 @@ def _groq_keys(config) -> list:
 _OPENAI_COMPAT = {
     "groq": {
         "base_url": "https://api.groq.com/openai/v1", "keys": "groq_api_key",
-        "model_cfg": "groq_model", "model": "llama-3.3-70b-versatile",
-        "timeout": 10.0, "max_tokens": 256, "headers": None,
+        # llama-3.3-70b-versatile was DECOMMISSIONED by Groq. Measured live 2026-08-17:
+        # every groq turn returned `404 - The model 'llama-3.3-70b-versatile' ...`, so
+        # the primary provider in the cascade was failing outright on every request.
+        # Groq's current chat models are gpt-oss-120b/20b, qwen3.6-27b and the compound
+        # pair; gpt-oss-120b is the SAME family Cerebras already runs, and that is the
+        # provider observed emitting native tool calls correctly.
+        "model_cfg": "groq_model", "model": "openai/gpt-oss-120b",
+        # 256 was sized for llama-3.3. gpt-oss emits a `reasoning` field that eats the
+        # budget before `content` is written — the cerebras entry below has carried that
+        # note all along — so keeping 256 with this model would have returned empty
+        # content on every call and cascaded for nothing. Timeout follows for the same
+        # reason: a 120B with a reasoning pass does not answer in 10s.
+        "timeout": 20.0, "max_tokens": 2048, "headers": None,
     },
     "cerebras": {
         "base_url": "https://api.cerebras.ai/v1", "keys": "cerebras_api_key",
@@ -2363,7 +2446,19 @@ def _groq_response(text: str, history: list, system_prompt: str, config: dict,
                     return res
                 except Exception as ex:
                     last_err = ex
-                    if "rate_limit" in str(ex).lower() or "429" in str(ex):
+                    _es = str(ex).lower()
+                    # A 413 "request too large" is a PROPERTY OF THE REQUEST, not of the
+                    # key: every key on the account shares the same per-minute token
+                    # limit, so rotating cannot help. Measured 2026-08-17 — her prompt is
+                    # ~9,349 tokens against groq's free-tier TPM of 8,000, and the loop
+                    # dutifully retried all four key slots before giving up, spending four
+                    # doomed requests and RPM budget on every single turn. Stop
+                    # immediately and let the cascade move to a provider that can take it.
+                    if "413" in _es or "request too large" in _es or "reduce your message" in _es:
+                        log_info(f"[AI] {_provider}: request too large for its per-minute "
+                                 f"token limit — rotating keys cannot help, failing over now.")
+                        raise
+                    if "rate_limit" in _es or "429" in str(ex):
                         log_info(f"[AI] {_provider} key {idx+1}/{len(_keys)} capped, trying next…")
                         continue
                     raise
