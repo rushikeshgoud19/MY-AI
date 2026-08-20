@@ -603,7 +603,7 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "search_memory",
-            "description": "Search your conversation history (SQLite) for past discussions, facts, or context if the user asks you if you remember something from earlier.",
+            "description": "Search everything Master has told you before - past conversations, stored memories, and his knowledge base. USE THIS for any question about a fact he gave you, including 'what is my X', 'what did I tell you', 'do you remember'. Never answer such a question from your own guess.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -2096,7 +2096,15 @@ def _get_ai_response_body(text: str, history: list, config: dict, system_prompt_
             # call against the binding constraint: the reply must be SHORT, must have
             # executed NO tools, and must match a first-person inability about a capability
             # she demonstrably has.
-            if tools_res is not None and not tools_res and len(text_res) < 400:
+            # NOT for background utility calls. `system_prompt_override` marks a call
+            # made with NO tools attached — knowledge.learn()'s distillation step,
+            # intent classification, summarisation. On those, "I don't have the
+            # necessary tools" is a TRUE statement about that request, not a defect,
+            # and treating it as one broke learning outright: observed within minutes
+            # of shipping this, `[KNOWLEDGE] learn failed: Capability refusal from
+            # mistral (no tools ran)` — so nothing new could be stored at all.
+            if (not system_prompt_override and tools_res is not None
+                    and not tools_res and len(text_res) < 400):
                 _low = text_res.lower()
                 if (("i don't have" in _low or "i do not have" in _low
                      or "i'm unable to" in _low or "i am unable to" in _low
@@ -2106,6 +2114,13 @@ def _get_ai_response_body(text: str, history: list, config: dict, system_prompt_
                                                     "ability to browse", "browse the web",
                                                     "real-time", "execute python",
                                                     "execute code"))):
+                    # Keep it as a LAST RESORT before rejecting. Trying to do better
+                    # must never end up worse: if no other provider succeeds, a mediocre
+                    # answer still beats "I couldn't reach any of my models". Observed
+                    # 2026-08-17 — "I don't have the tools needed to confirm your audit
+                    # marker" is a harmless refusal on a turn that needed no tool at all,
+                    # and rejecting it outright turned a poor reply into no reply.
+                    _refusals.append((provider, text_res))
                     raise ValueError(
                         f"Capability refusal from {provider} (no tools ran): "
                         f"{text_res.strip()[:90]!r}")
@@ -2150,6 +2165,9 @@ def _get_ai_response_body(text: str, history: list, config: dict, system_prompt_
         log_info(f"[AI] Deprioritising rate-limited provider(s): {cooling}")
 
     last_err = None
+    #: Refusals seen this turn, kept so a total cascade failure can still answer.
+    _refusals: list = []
+
     for idx, provider in enumerate(attempt_order):
         try:
             if idx > 0:
@@ -2178,6 +2196,15 @@ def _get_ai_response_body(text: str, history: list, config: dict, system_prompt_
     # Log the real error, speak an in-character line instead.
     if last_err:
         log_info(f"[AI] All providers failed. Last error: {last_err}")
+    # A refusal we rejected on the way through is still better than nothing. The
+    # refusal check exists to REACH a provider that can do the job — when none can, it
+    # must not also throw away the only reply that was produced. Trying to do better
+    # should never end up worse than not trying.
+    if _refusals:
+        provider, text_res = _refusals[0]
+        log_info(f"[AI] Cascade exhausted — falling back to {provider}'s refusal rather "
+                 f"than the generic tangled line.")
+        return (text_res, [])
     return ("Maa, Master, my brain is a little tangled right now~ Give me a moment and ask me again, okay?", [])
 
 def _cerebras_response(text, history, system_prompt, config, ws_broadcast_func=None):

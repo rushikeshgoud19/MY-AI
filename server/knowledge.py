@@ -171,6 +171,17 @@ def learn(source: str, config: dict, body_override: str = None) -> str:
         return f"I couldn't learn that, Master: {e}"
 
 
+import re as _re
+
+#: Words that carry no retrieval signal. Kept small on purpose — over-filtering
+#: throws away the very term the question is about.
+_STOPWORDS = {"what", "when", "where", "which", "who", "why", "how", "the", "and",
+              "for", "you", "your", "my", "mine", "me", "is", "are", "was", "were",
+              "do", "does", "did", "tell", "just", "with", "about", "reply", "code",
+              "give", "get", "please", "can", "could", "would", "that", "this",
+              "have", "has", "had", "from", "into", "any", "all"}
+
+
 def recall(query: str, config: dict = None) -> str:
     query = (query or "").strip()
     con = _db()
@@ -204,11 +215,32 @@ def recall(query: str, config: dict = None) -> str:
             log_info(f"[KNOWLEDGE] Chroma recall failed: {e}")
 
     if not rows:
-        like = f"%{query.lower()}%"
-        rows = con.execute(
-            "SELECT title, summary, source FROM knowledge WHERE "
-            "LOWER(title) LIKE ? OR LOWER(tags) LIKE ? OR LOWER(body) LIKE ? "
-            "ORDER BY id DESC LIMIT 3", (like, like, like)).fetchall()
+        # KEYWORD fallback, not whole-question LIKE.
+        #
+        # This used to be `like = f"%{query.lower()}%"` — the ENTIRE user question as one
+        # pattern. "What is my audit marker? Reply with just the code." is a 50-character
+        # string that appears verbatim in no title, tag or body, so the fallback could
+        # never fire for a natural-language question; it only worked when the phrasing
+        # happened to be a literal substring of the stored text. Measured 2026-08-17: 0
+        # matches for that question against a knowledge base holding 5 rows that contain
+        # the marker. The data was there the whole time and the search could not reach it,
+        # so she answered from her own head and invented a value.
+        #
+        # Match on the significant words instead, and rank by how many of them a row
+        # contains, so a row mentioning several query terms beats one mentioning any.
+        words = [w for w in _re.findall(r"[a-z0-9_]{3,}", query.lower())
+                 if w not in _STOPWORDS][:8]
+        if words:
+            score = " + ".join(
+                "(CASE WHEN LOWER(title) LIKE ? OR LOWER(tags) LIKE ? "
+                "OR LOWER(body) LIKE ? THEN 1 ELSE 0 END)" for _ in words)
+            params = []
+            for w in words:
+                params += [f"%{w}%"] * 3
+            rows = con.execute(
+                f"SELECT title, summary, source, ({score}) AS hits FROM knowledge "
+                f"WHERE hits > 0 ORDER BY hits DESC, id DESC LIMIT 3", params).fetchall()
+            rows = [(t, s_, src) for t, s_, src, _h in rows]
     
     con.close()
     if not rows:
