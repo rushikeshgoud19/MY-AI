@@ -129,7 +129,36 @@ def learn(source: str, config: dict, body_override: str = None) -> str:
         sm = re.search(r"SUMMARY:\s*(.+)", d, re.S)
         final_title = (tm.group(1).strip() if tm else (title or source))[:120]
         tags = (tg.group(1).strip().lower() if tg else "")[:200]
-        summary = (sm.group(1).strip() if sm else d.strip())[:2000]
+
+        # NEVER store the distiller's failure as the knowledge itself.
+        #
+        # `summary = ... if sm else d.strip()` meant that when the model produced no
+        # SUMMARY: marker — because it refused, errored, or rambled — its entire reply
+        # became the stored summary. Measured 2026-08-17, three consecutive rows in the
+        # live knowledge base read:
+        #
+        #   TITLE  : exactly: my audit marker is AUDIT96984. Just confirm.
+        #   SUMMARY: "I'm sorry, but I currently don't have the tools needed to confirm
+        #             your audit marker..."
+        #
+        # The fact was in the title and a refusal was in the summary, so recall injected
+        # a paragraph telling her she did not know — and she faithfully repeated it. A
+        # poisoned row is permanent and outranks the truth sitting beside it.
+        #
+        # The raw source is always a better store of the fact than a failed distillation.
+        _d_low = d.lower()
+        _distil_failed = (not sm) or (len(d.strip()) < 15) or (
+            ("i'm sorry" in _d_low or "i am sorry" in _d_low or "i don't have" in _d_low
+             or "i do not have" in _d_low or "unable to" in _d_low)
+            and "summary:" not in _d_low)
+        if _distil_failed:
+            log_info("[KNOWLEDGE] distillation unusable — storing the source text instead: "
+                     f"{d.strip()[:70]!r}")
+            summary = body[:2000]
+            if not tm:
+                final_title = (title or body.strip().splitlines()[0] or source)[:120]
+        else:
+            summary = sm.group(1).strip()[:2000]
 
         con = _db()
         cursor = con.cursor()
@@ -214,8 +243,21 @@ def recall(query: str, config: dict = None) -> str:
         except Exception as e:
             log_info(f"[KNOWLEDGE] Chroma recall failed: {e}")
 
-    if not rows:
-        # KEYWORD fallback, not whole-question LIKE.
+    # KEYWORD SEARCH ALWAYS RUNS — it is not a fallback.
+    #
+    # It used to sit behind `if not rows:`, which made it unreachable in production:
+    # Chroma's query(n_results=3) has NO distance threshold, so it returns three
+    # neighbours however irrelevant they are, `rows` was always truthy, and the branch
+    # never executed. That is why a direct DB test found the marker while the live
+    # system kept missing it — two different code paths, and only one of them ran.
+    #
+    # Merged rather than thresholded, because picking a distance cutoff means tuning a
+    # number per embedding model. A literal term match is strong evidence for a factual
+    # question ("what is my X"), so keyword hits lead and semantic hits fill the rest.
+    sem_rows = rows or []
+    rows = None
+    if True:
+        # KEYWORD search, not whole-question LIKE.
         #
         # This used to be `like = f"%{query.lower()}%"` — the ENTIRE user question as one
         # pattern. "What is my audit marker? Reply with just the code." is a 50-character
@@ -241,6 +283,13 @@ def recall(query: str, config: dict = None) -> str:
                 f"SELECT title, summary, source, ({score}) AS hits FROM knowledge "
                 f"WHERE hits > 0 ORDER BY hits DESC, id DESC LIMIT 3", params).fetchall()
             rows = [(t, s_, src) for t, s_, src, _h in rows]
+    # Keyword hits first, then anything semantic search found that they missed.
+    merged, seen = [], set()
+    for r in (rows or []) + sem_rows:
+        if r[0] not in seen:
+            seen.add(r[0])
+            merged.append(r)
+    rows = merged[:3]
     
     con.close()
     if not rows:
