@@ -1125,6 +1125,68 @@ def _process_command_internal(text: str, config: dict, broadcast_sync_fn, sessio
             log_info(f"[MESH] fast-path trigger: {_mq[:80]}")
             return _format_mesh_reply(mesh_answer(_mq, config))
 
+    # ── SELF-KNOWLEDGE fast-path: she can read her own books.
+    #
+    # Measured 2026-08-20: asked "how much did the orchestra cost me" she answered
+    # "I don't have that information in my knowledge base" — while orchestra.db sat on
+    # her own disk holding every debate with exact token counts, and the console
+    # rendered the same figure as a lifetime stat. An assistant that cannot answer a
+    # question about herself that her own dashboard displays looks broken even when
+    # every subsystem underneath is working.
+    #
+    # Same reasoning as the capabilities fast-path above: these are COUNTS, code owns
+    # them exactly, and routing them through a model only adds a chance to invent one —
+    # which is precisely the failure that produced MZN-6302554067 for an audit marker.
+    # Counting/cost intent ONLY. A bare "what" was too greedy on the first draft and
+    # swallowed "what messages did Sarthak send me" and "what emails came in from
+    # Autter" - those ask for CONTENT and belong to read_whatsapp and the mail tools, not
+    # to a totals report. Checked both directions against real phrasings before shipping:
+    # 8 intended hits, 10 correct misses including "how many days until Friday".
+    if re.search(r"\b(how much|how many)\b.{0,40}\b(cost|spent|tokens?|debates?|tribunal|"
+                 r"orchestra|memories|emails?|messages?|conversations?|turns?|"
+                 r"scheduled|reminders?|tasks?)\b"
+                 r"|\bwhat\s+have\s+you\s+(cost|spent|remembered|learned)\b"
+                 r"|\byour\s+(stats|numbers|usage|totals)\b",
+                 lower_text) and "[mission" not in lower_text:
+        import sqlite3
+        from contextlib import closing
+
+        def _q(db, sql, default=None):
+            try:
+                with closing(sqlite3.connect(db)) as con:
+                    return con.execute(sql).fetchone()
+            except Exception:
+                return default
+
+        bits = []
+        d = _q(".data/orchestra.db",
+               "SELECT COUNT(*), COALESCE(SUM(tokens),0), COALESCE(SUM(calls),0) FROM debates")
+        if d and d[0]:
+            avg = d[1] // d[0] if d[0] else 0
+            bits.append(f"**Orchestra** — {d[0]} debates, {d[1]:,} tokens total "
+                        f"({avg:,} per debate), {d[2]} model calls.")
+        h = _q(".data/mizune_memory.db", "SELECT COUNT(*) FROM history")
+        k = _q(".data/knowledge.db", "SELECT COUNT(*) FROM knowledge")
+        if h or k:
+            bits.append(f"**Memory** — {(h or [0])[0]:,} conversation turns kept, "
+                        f"{(k or [0])[0]:,} things you taught me.")
+        w = _q("cortex.db", "SELECT COUNT(*) FROM whatsapp_messages")
+        g = _q("cortex.db", "SELECT COUNT(*) FROM gmail_messages")
+        if w or g:
+            bits.append(f"**Synced** — {(w or [0])[0]:,} WhatsApp messages, "
+                        f"{(g or [0])[0]:,} emails.")
+        o = _q("data/schedules.db", "SELECT COUNT(*) FROM one_time_tasks WHERE executed = 0")
+        rr = _q("data/schedules.db", "SELECT COUNT(*) FROM recurring_tasks")
+        if o or rr:
+            bits.append(f"**Scheduled** — {(o or [0])[0]} one-off tasks still pending, "
+                        f"{(rr or [0])[0]} recurring jobs.")
+
+        if bits:
+            log_info("[SELF] fast-path: answered from my own databases")
+            return ("Here's what my own records say, Master — read straight off disk:\n\n"
+                    + "\n".join("• " + b for b in bits))
+        # No databases readable: fall through to the model rather than inventing a number.
+
     # ── CAPABILITIES fast-path: code answers "what can you do", not the model.
     #
     # Measured 2026-08-20: asked "what can you do", she replied "I'm sorry, Master, but
