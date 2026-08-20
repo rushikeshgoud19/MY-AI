@@ -966,6 +966,44 @@ def process_command(text: str, config: dict, broadcast_sync_fn, session_id: str 
     if not lock.acquire(blocking=False):
         log_info(f"[PROCESSOR] Ignoring overlapping input '{text}' for session '{session_id}' (busy).")
         return None
+    # A stated credential gets an HONEST, deterministic answer — code's, not the model's.
+    # Blocking the store silently was not enough: tested live, the guard kept the
+    # password out of the knowledge base and she then told Master "I've securely stored
+    # your Wi-Fi password in my memory". A confident lie about safekeeping is worse than
+    # either storing it or refusing, because it is the kind he would act on.
+    try:
+        from server.auto_learn import is_secret_disclosure
+        if is_secret_disclosure(text):
+            log_info("[AUTO-LEARN] refused to store a stated credential")
+            lock.release()
+            return ("I'm not going to keep that one, Master — passwords, keys and codes "
+                    "don't go in my memory, because anything I remember can be recalled "
+                    "out loud later or pulled into a prompt. Put it in a password manager "
+                    "and I'll help you with everything around it.")
+    except Exception as _e:
+        log_info(f"[AUTO-LEARN] secret check skipped: {_e}")
+
+    # ── AUTO-LEARN: notice a durable fact without being told to remember it.
+    #
+    # Her knowledge base held FIVE entries against 2,222 conversation turns, because
+    # knowledge.learn() only ever fires on an explicit "remember this". Everything else
+    # Master told her about himself evaporated into history that is scored and mostly
+    # dropped. See server/auto_learn.py for why the extractor is pure regex (zero tokens
+    # on a path that runs every turn) and refuses anything it is not sure about.
+    #
+    # Placed HERE, at the wrapper, because this is the one point every platform's turn
+    # passes through carrying Master's raw words — not hers. Learning from her own
+    # replies is how a model teaches itself its own hallucinations.
+    try:
+        from server.platforms.whatsapp.core import is_third_party_turn as _itp_al
+        if not _itp_al(text):
+            from server.auto_learn import extract_durable_fact, remember_fact
+            _fact = extract_durable_fact(text)
+            if _fact:
+                remember_fact(_fact)
+    except Exception as _e:
+        log_info(f"[AUTO-LEARN] skipped: {_e}")
+
     try:
         reply = _process_command_internal(text, config, broadcast_sync_fn, session_id)
         # If a tribunal sat during this turn, stamp its receipt onto whatever she
