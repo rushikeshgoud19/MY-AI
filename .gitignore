@@ -136,3 +136,9 @@ scratch/
 # --- Vendored / external tools --------------------------------------------
 openWakeWord/
 Agent-Reach/
+
+# Android Studio project metadata. 104 files that churn on every IDE open and
+# describe one machine's workspace, not the project — library jar paths, device
+# streaming caches, window layout. Untracked below; the build is defined by
+# build.gradle.kts and the wrapper, both of which stay tracked.
+mizune-android/.idea/
