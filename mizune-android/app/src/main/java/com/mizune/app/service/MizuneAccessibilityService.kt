@@ -21,6 +21,7 @@ class MizuneAccessibilityService : AccessibilityService() {
     override fun onServiceConnected() {
         instance = this
         Log.d(TAG, "Mizune accessibility service connected")
+        onStateChanged?.invoke()
     }
 
     // We don't react to events; we act on command from the WebSocket handler.
@@ -29,6 +30,9 @@ class MizuneAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         if (instance == this) instance = null
+        // Tell the registry the hands are gone BEFORE the process forgets, so the
+        // capability disappears instead of lingering as a claim the phone can't honour.
+        onStateChanged?.invoke()
         super.onDestroy()
     }
 
@@ -41,13 +45,26 @@ class MizuneAccessibilityService : AccessibilityService() {
         Log.e(TAG, "launch failed", e); false
     }
 
-    /** Tap the first element whose text OR content-description matches [text]. Falls
-     *  back to a coordinate gesture-tap when the node reports non-clickable (common for
-     *  media play buttons, which are icons with a contentDescription but no text). */
+    /** Tap the BEST element whose text OR content-description matches [text].
+     *  The old first-match walk grabbed whatever contained the word first in the tree
+     *  ("Google Play", "Playlist", "Play next"...) — on YT Music that meant tapping the
+     *  wrong thing and music never started. Now every match is scored: exact label wins
+     *  outright, then clickable nodes, then the shortest label (most button-like).
+     *  Falls back to a coordinate gesture-tap when the node reports non-clickable. */
     fun tapByText(text: String): Boolean {
         val root = rootInActiveWindow ?: return false
         val query = text.trim().lowercase()
-        val candidate = findByLabel(root, query) ?: return false
+        val matches = mutableListOf<AccessibilityNodeInfo>()
+        collectMatches(root, query, matches)
+        val candidate = matches.minByOrNull { node ->
+            val t = node.text?.toString()?.trim()?.lowercase() ?: ""
+            val d = node.contentDescription?.toString()?.trim()?.lowercase() ?: ""
+            val label = if (t.contains(query)) t else d
+            var score = label.length              // shorter label = more button-like
+            if (label == query) score -= 10_000   // exact match ("play") wins outright
+            if (node.isClickable) score -= 1_000
+            score
+        } ?: return false
         // 1. Try a real click on the node or its nearest clickable ancestor.
         var target: AccessibilityNodeInfo? = candidate
         while (target != null && !target.isClickable) target = target.parent
@@ -56,15 +73,12 @@ class MizuneAccessibilityService : AccessibilityService() {
         return tapNodeCenter(candidate)
     }
 
-    private fun findByLabel(node: AccessibilityNodeInfo?, query: String): AccessibilityNodeInfo? {
-        if (node == null) return null
+    private fun collectMatches(node: AccessibilityNodeInfo?, query: String, out: MutableList<AccessibilityNodeInfo>) {
+        if (node == null) return
         val t = node.text?.toString()?.trim()?.lowercase()
         val d = node.contentDescription?.toString()?.trim()?.lowercase()
-        if ((t != null && t.contains(query)) || (d != null && d.contains(query))) return node
-        for (i in 0 until node.childCount) {
-            findByLabel(node.getChild(i), query)?.let { return it }
-        }
-        return null
+        if ((t != null && t.contains(query)) || (d != null && d.contains(query))) out.add(node)
+        for (i in 0 until node.childCount) collectMatches(node.getChild(i), query, out)
     }
 
     private fun tapNodeCenter(node: AccessibilityNodeInfo): Boolean {
@@ -171,5 +185,10 @@ class MizuneAccessibilityService : AccessibilityService() {
         @Volatile
         var instance: MizuneAccessibilityService? = null
         fun isEnabled(): Boolean = instance != null
+
+        /** Set by [MizuneService] to re-register capabilities when this grant flips.
+         *  Held as a lambda rather than a service reference so it can't leak the Service. */
+        @Volatile
+        var onStateChanged: (() -> Unit)? = null
     }
 }

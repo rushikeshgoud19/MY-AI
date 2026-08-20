@@ -375,6 +375,7 @@ fun SlimeScreen(
             imageCapture = imageCapture,
             mizuneMessage = mizuneMessage,
             isThinking = isThinking,
+            emotion = emotion,
             onBack = { isVisionMode = false },
             onCapture = { b64 ->
                 onCaptureVision(b64)
@@ -423,6 +424,7 @@ private fun VisionModeScreen(
     imageCapture: ImageCapture,
     mizuneMessage: String,
     isThinking: Boolean,
+    emotion: SlimeEmotion,
     onBack: () -> Unit,
     onCapture: (String) -> Unit
 ) {
@@ -506,6 +508,25 @@ private fun VisionModeScreen(
                 style = MaterialTheme.typography.labelMedium,
                 color = Color.White,
                 modifier = Modifier.padding(top = 16.dp, bottom = 16.dp)
+            )
+        }
+
+        // Mizune herself, watching from the bottom corner while the camera is live.
+        // Placed in the OUTER Box rather than the shutter Column on purpose: she floats
+        // over the viewfinder without reflowing the shutter, and she never steals the
+        // centre of the shot. She reacts with the same emotion the reply carries, so
+        // when the server answers "surprised" she visibly reacts to what she just saw.
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(start = 12.dp, bottom = 20.dp)
+                .size(96.dp)
+                .zIndex(2f),
+            contentAlignment = Alignment.Center
+        ) {
+            SlimeRenderer(
+                emotion = if (isThinking) SlimeEmotion.THINKING else emotion,
+                modifier = Modifier.fillMaxSize()
             )
         }
     }

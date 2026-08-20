@@ -18,6 +18,8 @@
     <!-- Query installed apps so "open Brave / Spotify" can resolve to a package. -->
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
         tools:ignore="QueryAllPackagesPermission" />
+    <!-- Reconnect the device socket after a reboot (see BootReceiver). -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
         android:allowBackup="true"
@@ -49,6 +51,65 @@
                 android:resource="@xml/mizune_accessibility_config" />
         </service>
 
+        <!-- ── Replace Google Assistant ────────────────────────────────────────
+             This trio makes Mizune selectable under Settings → Apps → Default apps →
+             Digital assistant app. All three are required; drop one and she silently
+             never appears in the picker. -->
+        <service
+            android:name=".service.MizuneVoiceInteractionService"
+            android:exported="true"
+            android:permission="android.permission.BIND_VOICE_INTERACTION">
+            <intent-filter>
+                <action android:name="android.service.voice.VoiceInteractionService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.voice_interaction"
+                android:resource="@xml/voice_interaction_service" />
+        </service>
+
+        <service
+            android:name=".service.MizuneVoiceInteractionSessionService"
+            android:exported="true"
+            android:permission="android.permission.BIND_VOICE_INTERACTION" />
+
+        <!-- Stub: required by the assistant contract, never used for real STT. -->
+        <service
+            android:name=".service.MizuneRecognitionService"
+            android:exported="true"
+            android:permission="android.permission.RECORD_AUDIO">
+            <intent-filter>
+                <action android:name="android.speech.RecognitionService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.speech"
+                android:resource="@xml/recognition_service" />
+        </service>
+
+        <!-- One-tap voice from the notification shade. -->
+        <service
+            android:name=".service.MizuneTileService"
+            android:exported="true"
+            android:icon="@android:drawable/ic_btn_speak_now"
+            android:label="Mizune"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <!-- Bring the socket back after a reboot. Not exported: only the system
+             sends BOOT_COMPLETED, and exporting invites spurious restarts. -->
+        <receiver
+            android:name=".service.BootReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
+
         <receiver
             android:name=".widget.MizuneWidgetReceiver"
             android:exported="true">
@@ -78,6 +139,18 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="text/*" />
                 <data android:mimeType="image/*" />
+            </intent-filter>
+
+            <!-- Fallback assist route. Some OEM ROMs (and "Search assistant" pickers)
+                 fire ACTION_ASSIST at an activity instead of the VoiceInteractionService.
+                 Handling both means the gesture works on stock and on OxygenOS. -->
+            <intent-filter>
+                <action android:name="android.intent.action.ASSIST" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VOICE_COMMAND" />
+                <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
     </application>

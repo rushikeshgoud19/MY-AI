@@ -21,9 +21,11 @@ import com.mizune.app.network.MizuneWebSocket
 import com.mizune.app.network.MizuneWebSocketListener
 import com.mizune.app.network.TaskItem
 import com.mizune.app.ui.ConnectionState
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
@@ -42,11 +44,123 @@ class MizuneService : Service() {
     private var porcupine: com.mizune.app.audio.PorcupineWakeWord? = null
     private var serviceTts: com.mizune.app.audio.TtsPlayer? = null
 
+    // Voice Match: HTTP base derived from the WS server URL, for /api/voice/*.
+    @Volatile private var httpBase = ""
+    // Last key handed to the socket, so a bare reconnect doesn't lose authentication.
+    @Volatile private var currentApiKey = ""
+
+    // ── Turn ownership ─────────────────────────────────────────────────────────
+    // The server broadcasts EVERY frame to EVERY client and 20+ places speak with no
+    // human involved — the proactive agent alone fires every 15 minutes. Without this
+    // the phone spoke aloud, vibrated and notified for cron jobs, nightly self-review,
+    // and her replies to other people's WhatsApp messages.
+    //
+    // It lives in the service, not the Activity, because the service owns the socket and
+    // is the only place that sees ALL outbound traffic — typed messages, wake-word
+    // commands, assist captures and camera turns. Tracking it in the Activity missed the
+    // wake-word path entirely and would have muted replies Master actually asked for.
+    //
+    // A guard, not the fix: the frames still arrive. See
+    // .scratch/hands-free-voice/tickets/12-who-is-a-turn-for.md
+    @Volatile private var lastOutboundAt = 0L
+
+    /** Called on every outbound turn, so its reply is recognised as ours. */
+    fun markOutbound() { lastOutboundAt = System.currentTimeMillis() }
+
+    /** True while a reply could still plausibly belong to something this phone sent. */
+    fun awaitingReply(): Boolean =
+        System.currentTimeMillis() - lastOutboundAt < AWAIT_REPLY_WINDOW_MS
+
+    /**
+     * The server's verdict on the frame being handled, when it has one.
+     *
+     * Snapshotted per inbound frame because the timing guess above cannot be right: a
+     * subconscious tick landing inside the 90-second window is indistinguishable from a
+     * real reply, and a slow reply arriving after it is thrown away. The server now
+     * stamps each frame with the client whose turn produced it, which is an answer
+     * rather than an estimate.
+     *
+     * Null on a backend that predates the stamp — the phone must keep working against
+     * one, so [turnIsOurs] falls back rather than assuming.
+     */
+    @Volatile private var currentTurnOurs: Boolean? = null
+
+    /**
+     * Does the turn being handled belong to this phone? Server stamp first, timer second.
+     *
+     * Honest limit: the stamp is captured when the frame arrives, while the Activity
+     * reads it one UI-thread hop later. Two frames of DIFFERENT origin inside a single
+     * hop could therefore be judged by the wrong one. Bounded and rare — and strictly
+     * better than a 90-second window that is wrong by construction.
+     */
+    fun turnIsOurs(): Boolean = currentTurnOurs ?: awaitingReply()
+
+    /** The socket's verdict, or null if there is no socket yet / no stamp on the frame. */
+    private fun frameOwnership(): Boolean? =
+        if (::webSocket.isInitialized) webSocket.frameIsOurs() else null
+
+    /**
+     * Fan a frame out to the UI listeners. One bad subscriber never breaks the socket.
+     *
+     * Two defects in the old `synchronized(listenersLock) { uiListeners.forEach { … } }`,
+     * repeated at seven call sites:
+     *
+     *  1. **No containment.** A listener that threw propagated out of the dispatch loop,
+     *     past the remaining listeners, and into OkHttp's WebSocket callback thread —
+     *     which is the thread that keeps the connection alive. One Compose state bug in
+     *     the Activity could therefore take down the socket for the whole service, and
+     *     the symptom ("she just stopped responding") looks nothing like the cause.
+     *  2. **Arbitrary callbacks ran while holding the lock.** `onAudio` reaches into
+     *     `pauseWakeWord()`, which touches the audio engine; holding a service-wide lock
+     *     across that is a lock-ordering hazard, and a listener that removed itself
+     *     mid-dispatch would deadlock or throw ConcurrentModificationException.
+     *
+     * Snapshot under the lock, dispatch outside it, contain each callback.
+     */
+    private fun dispatch(what: String, action: (MizuneWebSocketListener) -> Unit) {
+        val snapshot = synchronized(listenersLock) { uiListeners.toList() }
+        for (listener in snapshot) {
+            try {
+                action(listener)
+            } catch (e: Throwable) {
+                Log.e(TAG, "listener threw on $what — continuing", e)
+            }
+        }
+    }
+    private val voiceHttp by lazy {
+        okhttp3.OkHttpClient.Builder()
+            .connectTimeout(3, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+    }
+
     companion object {
         private const val TAG = "MizuneService"
+
+        /** Identifies the running binary in logcat. Bump on every voice-loop change. */
+        private const val BUILD_STAMP = "2026-08-17-harness-pass-1"
         private const val CHANNEL_ID = "mizune_persistent"
         private const val ALERT_CHANNEL_ID = "mizune_alerts"
+        /** Silent channel for things she says that Master did NOT ask for. */
+        private const val AMBIENT_CHANNEL_ID = "mizune_ambient"
         private const val NOTIFICATION_ID = 1
+
+        /** How long a reply can still belong to a turn this phone started. Generous —
+         *  a slow model turn runs tens of seconds — but bounded, so a turn that dies
+         *  server-side can't leave the phone permanently "expecting" a reply. */
+        private const val AWAIT_REPLY_WINDOW_MS = 90_000L
+
+        /** Longest we'll stay deaf for one spoken reply before force-resuming the mic. */
+        private const val MAX_SPEAK_MS = 60_000L
+
+        /** Assist gesture (long-press power/home) or the Quick Settings tile fired:
+         *  start listening for one command, exactly as the wake word does. */
+        const val ACTION_ASSIST_LISTEN = "com.mizune.app.action.ASSIST_LISTEN"
+
+        /** Set by [BootReceiver]. Android 14 forbids starting a *microphone* foreground
+         *  service from BOOT_COMPLETED, so a boot start runs dataSync-only and leaves the
+         *  wake word for later. Without this the service crashes on every reboot. */
+        const val EXTRA_FROM_BOOT = "from_boot"
     }
 
     inner class LocalBinder : Binder() {
@@ -55,22 +169,94 @@ class MizuneService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        // Which binary is actually running? Three voice fixes were judged by "it's still
+        // happening" with no proof the phone had the fix on it. Bump BUILD_STAMP with
+        // every voice change: `adb logcat -s MizuneService:D | grep BUILD_STAMP`.
+        Log.d(TAG, "BUILD_STAMP: $BUILD_STAMP")
         appPreferences = AppPreferences(this)
         createNotificationChannels()
+        // URL and key are one connection identity: changing either must rebuild the
+        // socket, so they're collected together rather than racing in two collectors.
         serviceScope.launch {
-            appPreferences.serverUrl.collect { newUrl ->
-                if (::webSocket.isInitialized) {
-                    webSocket.disconnect()
+            kotlinx.coroutines.flow.combine(
+                appPreferences.serverUrl,
+                appPreferences.apiKey
+            ) { url, key -> url to key }
+                .distinctUntilChanged()
+                .collect { (newUrl, newKey) ->
+                    if (::webSocket.isInitialized) {
+                        webSocket.disconnect()
+                    }
+                    initializeWebSocket(newUrl, newKey)
                 }
-                initializeWebSocket(newUrl)
-            }
+        }
+        // The registry must lose a capability the moment its permission is revoked.
+        // Without this, turning Accessibility off left `tap`/`read_screen` advertised
+        // and the brain kept confidently dispatching actions that could not run.
+        MizuneAccessibilityService.onStateChanged = {
+            if (::webSocket.isInitialized) webSocket.sendRegistration()
         }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForeground(NOTIFICATION_ID, createPersistentNotification())
-        startWakeWord()
+        val fromBoot = intent?.getBooleanExtra(EXTRA_FROM_BOOT, false) == true
+
+        // A plain startForeground() claims EVERY type declared in the manifest —
+        // including microphone, which Android 14 refuses to grant from BOOT_COMPLETED
+        // and punishes with ForegroundServiceStartNotAllowedException. On a boot start
+        // we therefore claim dataSync only: the socket comes up (that's what boot
+        // survival is for) and the mic is picked up on the next foreground start.
+        if (fromBoot && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            androidx.core.app.ServiceCompat.startForeground(
+                this, NOTIFICATION_ID, createPersistentNotification(),
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, createPersistentNotification())
+        }
+
+        when {
+            // An assist/tile start is a COMMAND to an already-running service, not a
+            // cold start. It must not re-enter startWakeWord(): that allocates a fresh
+            // Porcupine every time and leaks the previous one, and two engines then
+            // fight over the microphone. This path is now hit on every gesture.
+            intent?.action == ACTION_ASSIST_LISTEN -> {
+                if (wakeWord == null) startWakeWord()   // cold start via the gesture
+                startAssistCapture()
+            }
+            fromBoot -> {
+                setWakeStatus("🔌 Reconnected after restart — open Mizune once for voice")
+                Log.d(TAG, "Boot start: socket only, wake word deferred (mic FGS blocked at boot)")
+            }
+            else -> startWakeWord()
+        }
         return START_STICKY
+    }
+
+    /**
+     * One-shot listen, triggered by the assist gesture or the Quick Settings tile.
+     * Deliberately reuses the wake-word capture path rather than adding a second audio
+     * pipeline — that path already handles mic hand-off, the 7s window and the silence
+     * cutoff, and it is the one that has been debugged on a real phone.
+     */
+    fun startAssistCapture() {
+        val wake = wakeWord
+        if (wake == null) {
+            setWakeStatus("⚠ voice engine still starting — try again in a second")
+            return
+        }
+        vibrateOnce()
+        setWakeStatus("✨ Listening…")
+        porcupine?.stop()                      // release the mic for the capture
+        wake.captureCommandOnce(7000) { cmd ->
+            if (!cmd.isNullOrBlank() && ::webSocket.isInitialized) {
+                sendMessage(cmd)          // routed so the turn is marked as ours
+                setWakeStatus("▶ running: $cmd")
+            } else {
+                setWakeStatus("🎙 \"Baka Mizune\" ready")
+            }
+            porcupine?.resume()
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
@@ -89,7 +275,7 @@ class MizuneService : Service() {
                 }
                 override fun onCommandRecognized(command: String) {
                     if (command.isNotBlank() && ::webSocket.isInitialized) {
-                        webSocket.sendMessage(command)
+                        sendMessage(command)   // routed so the turn is marked as ours
                         setWakeStatus("▶ running: $command")
                     }
                 }
@@ -101,8 +287,37 @@ class MizuneService : Service() {
                 }
                 override fun onReadyForSpeech() { setWakeStatus("🎙 Listening for \"Baka Mizune\"…") }
             })
+            // Voice Match: check the wake utterance against Master's enrolled voiceprint.
+            // Fail-OPEN (server unreachable / not enrolled → proceed) so wake never bricks.
+            wakeWord?.wakeVerifier = { wav, proceed ->
+                val base = httpBase
+                if (base.isBlank()) proceed(true) else {
+                    val req = okhttp3.Request.Builder()
+                        .url("$base/api/voice/verify")
+                        .post(okhttp3.RequestBody.create("audio/wav".toMediaTypeOrNull(), wav))
+                        .build()
+                    voiceHttp.newCall(req).enqueue(object : okhttp3.Callback {
+                        override fun onFailure(call: okhttp3.Call, e: java.io.IOException) = proceed(true)
+                        override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
+                            val ok = try {
+                                val body = response.body?.string() ?: "{}"
+                                !org.json.JSONObject(body).optBoolean("enrolled", false) ||
+                                    org.json.JSONObject(body).optBoolean("match", true)
+                            } catch (_: Exception) { true }
+                            response.close()
+                            if (!ok) setWakeStatus("🚫 voice didn't match Master — ignored")
+                            proceed(ok)
+                        }
+                    })
+                }
+            }
         }
 
+        // Release any previous engine first. onStartCommand can run several times over a
+        // service's life (server-URL change, re-bind, restart), and each unreleased
+        // Porcupine holds a mic handle — they accumulate and eventually starve the wake
+        // word that is supposed to be always-on.
+        porcupine?.release()
         porcupine = com.mizune.app.audio.PorcupineWakeWord(this) { onPorcupineWake() }
         if (porcupine?.start() == true) {
             setWakeStatus("🎙 \"Baka Mizune\" ready (Porcupine)")
@@ -122,7 +337,7 @@ class MizuneService : Service() {
         porcupine?.stop()                        // release mic
         wakeWord?.captureCommandOnce(7000) { cmd ->
             if (!cmd.isNullOrBlank() && ::webSocket.isInitialized) {
-                webSocket.sendMessage(cmd)
+                sendMessage(cmd)          // routed so the turn is marked as ours
                 setWakeStatus("▶ running: $cmd")
             } else {
                 setWakeStatus("🎙 \"Baka Mizune\" ready")
@@ -135,6 +350,35 @@ class MizuneService : Service() {
     fun pauseWakeWord() { porcupine?.stop(); wakeWord?.pause() }
     fun resumeWakeWord() { if (porcupine != null) porcupine?.resume() else wakeWord?.resume() }
 
+    /**
+     * Speak, with the microphone deaf for the duration.
+     *
+     * The mic was live while she talked and there is no acoustic echo cancellation, so
+     * she could hear her own voice — and a wake match on her own speech starts a turn,
+     * which produces another spoken reply, which she hears again. That is a self-
+     * sustaining loop and a strong candidate for "she activates for no reason".
+     *
+     * Production assistants solve this with AEC (subtracting the known playback signal
+     * before the detector). We have no AEC, so we do the blunt version: go deaf while
+     * speaking. We lose barge-in — she can't be interrupted mid-sentence — which is a
+     * fair trade against her talking to herself.
+     */
+    private fun speakWithMicPaused(base64Mp3: String) {
+        pauseWakeWord()
+        var resumed = false
+        val resumeOnce = {
+            if (!resumed) { resumed = true; resumeWakeWord() }
+        }
+        // Watchdog: never let a playback that silently never finishes leave the wake
+        // word off forever. Deaf-until-restart would be a worse bug than the one above.
+        handler.postDelayed({ resumeOnce() }, MAX_SPEAK_MS)
+        serviceTts?.playBase64(base64Mp3) {
+            handler.post { resumeOnce() }
+        }
+    }
+
+    private val handler = android.os.Handler(android.os.Looper.getMainLooper())
+
     private fun vibrateOnce() {
         try {
             val v = getSystemService(android.os.Vibrator::class.java)
@@ -146,6 +390,7 @@ class MizuneService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        MizuneAccessibilityService.onStateChanged = null
         wakeWord?.stopListening()
         wakeWord = null
         porcupine?.release()
@@ -158,59 +403,210 @@ class MizuneService : Service() {
         serviceScope.launch { /* allow cleanup */ }
     }
 
-    private fun initializeWebSocket(serverUrl: String) {
+    private fun httpBaseFrom(url: String): String {
+        var u = url.trim().trimEnd('/')
+        u = when {
+            u.startsWith("ws://", true) -> "http://" + u.substring(5)
+            u.startsWith("wss://", true) -> "https://" + u.substring(6)
+            u.startsWith("http://", true) || u.startsWith("https://", true) -> u
+            else -> "http://$u"
+        }
+        return u.removeSuffix("/ws")
+    }
+
+    // ── Voice Match calibration (used by Settings) ──────────────────────────────
+
+    private var enrollment: com.mizune.app.audio.VoiceEnrollment? = null
+
+    /** Progress for the setup wizard: how many GOOD samples are banked so far. */
+    fun enrolledCount(): Int = enrollment?.acceptedCount ?: 0
+
+    /** Throw away every template and start calibration from scratch. */
+    fun resetEnrollment() {
+        enrollment?.reset()
+        enrollment = null
+    }
+
+    /**
+     * Record and JUDGE one calibration sample.
+     *
+     * The old version was a counter: it saved whatever the mic produced and incremented
+     * a tally, so "3/3 calibrated" could be three clips of room tone and the wake word
+     * would never fire. Every template is a permanent vote in the DTW match, so a bad
+     * one is worse than no sample at all. [VoiceEnrollment] refuses those, and the
+     * callback reports WHY so the wizard can ask again for a specific reason.
+     */
+    fun calibrateVoiceSample(onResult: (String) -> Unit) {
+        val wake = wakeWord
+        if (wake == null) { onResult("Wake engine not ready yet — try again in a moment."); return }
+        val enroll = enrollment ?: com.mizune.app.audio.VoiceEnrollment(wake).also { enrollment = it }
+
+        pauseWakeWord()
+        enroll.recordSample { result ->
+            resumeWakeWord()
+            when (result) {
+                is com.mizune.app.audio.VoiceEnrollment.Result.Accepted ->
+                    onResult("✅ Sample ${result.accepted}/${result.needed} — say it again.")
+                is com.mizune.app.audio.VoiceEnrollment.Result.Rejected ->
+                    onResult("↻ ${result.reason}. ${result.hint} (${result.accepted}/${result.needed} kept)")
+                is com.mizune.app.audio.VoiceEnrollment.Result.Complete -> {
+                    // Only now is it worth telling the server: the on-device templates are
+                    // what make the wake word fire, the server voiceprint only decides it
+                    // was Master. Sending rejected clips would train it on noise.
+                    onResult(
+                        "✅ Calibrated — ${result.accepted} good samples " +
+                            "(match spread ${"%.1f".format(result.spread)}). " +
+                            "Lock your phone and say \"Baka Mizune\"."
+                    )
+                    syncEnrollmentToServer()
+                }
+                is com.mizune.app.audio.VoiceEnrollment.Result.Failed ->
+                    onResult("⚠ ${result.message}")
+            }
+        }
+    }
+
+    /**
+     * Live wake-word test: say it once, get a verdict and the actual match score.
+     * Pauses the always-on loop so the test doesn't fight it for the microphone.
+     */
+    fun testWakeWord(onResult: (Boolean, String) -> Unit) {
+        val wake = wakeWord
+        if (wake == null) { onResult(false, "Wake engine not ready yet — try again in a moment."); return }
+        val enroll = enrollment ?: com.mizune.app.audio.VoiceEnrollment(wake).also { enrollment = it }
+        pauseWakeWord()
+        enroll.testWake { r ->
+            resumeWakeWord()
+            onResult(r.passed, r.message)
+        }
+    }
+
+    /**
+     * What the wake word's health actually is, as checkable facts rather than a claim.
+     * Each line is (label, ok) — the failure that started all this was invisible because
+     * nothing ever showed which engine was really running.
+     */
+    fun wakeDiagnostics(): List<Pair<String, Boolean>> {
+        val wake = wakeWord
+        val templates = wake?.templateCount ?: 0
+        val micOk = androidx.core.content.ContextCompat.checkSelfPermission(
+            this, android.Manifest.permission.RECORD_AUDIO
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        return listOf(
+            "Microphone permission" to micOk,
+            "Voice engine running" to (wake != null),
+            "Voice samples saved ($templates/${com.mizune.app.audio.VoiceEnrollment.NEEDED})"
+                to (templates >= com.mizune.app.audio.VoiceEnrollment.NEEDED),
+            // "some templates exist" is not the same as "the matcher is allowed to
+            // fire" — a half-finished calibration used to report armed and then wake on
+            // the room. Ask the detector, don't infer.
+            "Acoustic wake armed" to (wake?.wakeArmed == true),
+            "Connected to Mizune" to (lastConnectionState == ConnectionState.CONNECTED),
+            "Accessibility (hands)" to MizuneAccessibilityService.isEnabled()
+        )
+    }
+
+    /** Upload the accepted templates to the server voiceprint (best-effort). */
+    private fun syncEnrollmentToServer() {
+        val wake = wakeWord ?: return
+        try {
+            wake.templatesDir().listFiles { f -> f.name.endsWith(".wav") }
+                ?.forEach { f -> postVoice("/api/voice/enroll", f.readBytes()) { } }
+        } catch (e: Exception) {
+            Log.w(TAG, "server voiceprint sync failed (wake word still works locally)", e)
+        }
+    }
+
+    fun voiceStatus(onResult: (String) -> Unit) {
+        val req = okhttp3.Request.Builder().url("${httpBase}/api/voice/status").build()
+        voiceHttp.newCall(req).enqueue(object : okhttp3.Callback {
+            override fun onFailure(call: okhttp3.Call, e: java.io.IOException) =
+                onResult("Server unreachable")
+            override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
+                val body = response.body?.string() ?: "{}"; response.close()
+                val msg = try {
+                    val j = org.json.JSONObject(body)
+                    if (j.optBoolean("enrolled", false)) "✅ Enrolled (${j.optInt("samples")} samples)"
+                    else "Not calibrated (${j.optInt("samples")}/3 samples)"
+                } catch (_: Exception) { "Unknown" }
+                onResult(msg)
+            }
+        })
+    }
+
+    fun resetVoiceProfile(onResult: (String) -> Unit) {
+        resetEnrollment()
+        postVoice("/api/voice/reset", ByteArray(0)) { onResult("Voice profile cleared.") }
+    }
+
+    private fun postVoice(path: String, bytes: ByteArray, onBody: (String) -> Unit) {
+        val req = okhttp3.Request.Builder()
+            .url("$httpBase$path")
+            .post(okhttp3.RequestBody.create("audio/wav".toMediaTypeOrNull(), bytes))
+            .build()
+        voiceHttp.newCall(req).enqueue(object : okhttp3.Callback {
+            override fun onFailure(call: okhttp3.Call, e: java.io.IOException) =
+                onBody("{\"error\":\"${e.message}\"}")
+            override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
+                val b = response.body?.string() ?: "{}"; response.close(); onBody(b)
+            }
+        })
+    }
+
+    private fun initializeWebSocket(serverUrl: String, apiKey: String = "") {
+        httpBase = httpBaseFrom(serverUrl)
+        currentApiKey = apiKey
         webSocket = MizuneWebSocket(object : MizuneWebSocketListener {
             override fun onConnected() {}
             override fun onDisconnected() {}
 
             override fun onConnectionStateChanged(state: ConnectionState) {
                 lastConnectionState = state
-                synchronized(listenersLock) {
-                    uiListeners.forEach { it.onConnectionStateChanged(state) }
-                }
+                dispatch("connectionState") { it.onConnectionStateChanged(state) }
                 updatePersistentNotification()
             }
 
             override fun onMessage(text: String, emotion: String) {
-                synchronized(listenersLock) {
-                    uiListeners.forEach { it.onMessage(text, emotion) }
-                }
+                currentTurnOurs = frameOwnership()
+                dispatch("message") { it.onMessage(text, emotion) }
                 if (!isAppInForeground) {
-                    showAlertNotification("Mizune", text)
+                    // Unsolicited speech lands silently. She still reaches Master — a
+                    // proactive thought or a finished scheduled task is worth seeing —
+                    // but it no longer buzzes his pocket every 15 minutes.
+                    if (turnIsOurs()) showAlertNotification("Mizune", text)
+                    else showAmbientNotification("Mizune", text)
                 }
             }
 
             override fun onStateUpdate(valence: Double, arousal: Double) {
-                synchronized(listenersLock) {
-                    uiListeners.forEach { it.onStateUpdate(valence, arousal) }
-                }
+                dispatch("stateUpdate") { it.onStateUpdate(valence, arousal) }
             }
 
             override fun onStatusUpdate(status: String) {
-                synchronized(listenersLock) {
-                    uiListeners.forEach { it.onStatusUpdate(status) }
-                }
+                dispatch("statusUpdate") { it.onStatusUpdate(status) }
             }
 
             override fun onTaskList(tasks: List<TaskItem>) {
-                synchronized(listenersLock) {
-                    uiListeners.forEach { it.onTaskList(tasks) }
-                }
+                dispatch("taskList") { it.onTaskList(tasks) }
             }
 
             override fun onAudio(base64Mp3: String) {
-                synchronized(listenersLock) {
-                    uiListeners.forEach { it.onAudio(base64Mp3) }
-                }
+                currentTurnOurs = frameOwnership()
+                dispatch("audio") { it.onAudio(base64Mp3) }
                 // Hands-free: if the app isn't in the foreground (e.g. wake-word command
                 // with the phone locked), the service plays her real voice itself.
-                if (!isAppInForeground) {
+                //
+                // ONLY for a turn Master started. This is the line that made her talk out
+                // loud from a pocket every 15 minutes: the proactive agent's reply carried
+                // an audio frame like any other, and the service dutifully played it.
+                if (!isAppInForeground && turnIsOurs()) {
                     if (serviceTts == null) serviceTts = com.mizune.app.audio.TtsPlayer(this@MizuneService)
-                    serviceTts?.playBase64(base64Mp3)
+                    speakWithMicPaused(base64Mp3)
                 }
             }
 
             override fun onDeviceCommand(requestId: String, action: String, args: Map<String, String>) {
+                currentTurnOurs = frameOwnership()
                 val result = try {
                     when (action) {
                         "notify" -> {
@@ -269,20 +665,42 @@ class MizuneService : Service() {
                                 "Scrolled $dir on the phone."
                             else "Nothing scrollable on the current screen."
                         }
+                        "media_play", "media_pause", "media_next" -> {
+                            // A media-key event drives the ACTIVE media session (YT Music
+                            // web player registers one) — far more reliable than hunting
+                            // for a "play" button node in the page.
+                            val am = getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+                            val key = when (action) {
+                                "media_play" -> android.view.KeyEvent.KEYCODE_MEDIA_PLAY
+                                "media_pause" -> android.view.KeyEvent.KEYCODE_MEDIA_PAUSE
+                                else -> android.view.KeyEvent.KEYCODE_MEDIA_NEXT
+                            }
+                            am.dispatchMediaKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, key))
+                            am.dispatchMediaKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_UP, key))
+                            "Sent ${action.removePrefix("media_")} to the phone's media player."
+                        }
                         "read_screen" -> {
                             if (!MizuneAccessibilityService.isEnabled())
                                 needsAccessibility("read the screen")
                             else "SCREEN:\n" + (MizuneAccessibilityService.instance?.dumpScreen() ?: "(unreadable)")
                         }
                         "speak" -> {
+                            // The one path that walked past every ownership check. Any
+                            // caller able to address this device — a scheduled task, the
+                            // dashboard, the proactive agent — could push a 'speak'
+                            // command and get the loud alert channel, while the same
+                            // words arriving as a normal 'speak' FRAME would have been
+                            // routed to the silent ambient channel. Same rule for both,
+                            // or the rule is just a detour.
                             val text = args["text"] ?: args["message"] ?: ""
-                            synchronized(listenersLock) {
-                                uiListeners.forEach { it.onMessage(text, "neutral") }
+                            dispatch("deviceCommand.speak") { it.onMessage(text, "neutral") }
+                            if (!isAppInForeground) {
+                                if (turnIsOurs()) showAlertNotification("Mizune", text)
+                                else showAmbientNotification("Mizune", text)
                             }
-                            if (!isAppInForeground) showAlertNotification("Mizune", text)
-                            "Spoken/notified on phone."
+                            "Shown on phone."
                         }
-                        else -> "Unknown action '$action'. Phone supports: notify, open_url, open_app, tap, type, press, scroll, read_screen, speak."
+                        else -> "Unknown action '$action'. Phone supports: notify, open_url, open_app, tap, type, press, scroll, read_screen, speak, media_play, media_pause, media_next."
                     }
                 } catch (e: Exception) {
                     Log.e("MizuneService", "Device command failed", e)
@@ -290,7 +708,7 @@ class MizuneService : Service() {
                 }
                 webSocket.sendDeviceResult(requestId, result)
             }
-        }, serverUrl)
+        }, serverUrl, apiKey) { DeviceCapabilities.current() }
 
         webSocket.connect()
     }
@@ -409,12 +827,14 @@ class MizuneService : Service() {
 
     fun sendMessage(text: String) {
         if (::webSocket.isInitialized) {
+            markOutbound()
             webSocket.sendMessage(text)
         }
     }
 
     fun sendVisionMessage(base64Image: String) {
         if (::webSocket.isInitialized) {
+            markOutbound()
             webSocket.sendVisionMessage(base64Image)
         }
     }
@@ -423,7 +843,9 @@ class MizuneService : Service() {
         if (::webSocket.isInitialized) {
             webSocket.disconnect()
         }
-        initializeWebSocket(serverUrl)
+        // Reuse the stored key: passing the default "" here would silently drop auth and
+        // reconnect unauthenticated, which fails closed the moment ws_auth_required is on.
+        initializeWebSocket(serverUrl, currentApiKey)
     }
 
     private fun createNotificationChannels() {
@@ -446,8 +868,21 @@ class MizuneService : Service() {
                 setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION), null)
             }
 
+            // Silent by design: no sound, no vibration, no heads-up. This is where
+            // everything she says unprompted goes.
+            val ambientChannel = NotificationChannel(
+                AMBIENT_CHANNEL_ID,
+                "Mizune Thoughts",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "Things Mizune says on her own — proactive thoughts, " +
+                    "finished tasks. Never makes a sound."
+                setSound(null, null)
+                enableVibration(false)
+            }
+
             val manager = getSystemService(NotificationManager::class.java)
-            manager.createNotificationChannels(listOf(persistentChannel, alertChannel))
+            manager.createNotificationChannels(listOf(persistentChannel, alertChannel, ambientChannel))
         }
     }
 
@@ -481,6 +916,26 @@ class MizuneService : Service() {
     private fun updatePersistentNotification() {
         val manager = getSystemService(NotificationManager::class.java)
         manager.notify(NOTIFICATION_ID, createPersistentNotification())
+    }
+
+    /** Unprompted speech: visible, never audible. One slot, so a chatty hour can't
+     *  stack fifty notifications — the newest replaces the last. */
+    private fun showAmbientNotification(title: String, message: String) {
+        val pendingIntent = PendingIntent.getActivity(
+            this, 0, Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE
+        )
+        val notification = NotificationCompat.Builder(this, AMBIENT_CHANNEL_ID)
+            .setContentTitle(title)
+            .setContentText(message.take(100))
+            .setStyle(NotificationCompat.BigTextStyle().bigText(message.take(400)))
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setSilent(true)
+            .build()
+        getSystemService(NotificationManager::class.java).notify(2, notification)
     }
 
     private fun showAlertNotification(title: String, message: String) {
