@@ -1,0 +1,422 @@
+{
+  "config": {
+    "probes": 16,
+    "seed": 20260823,
+    "depths": [
+      0,
+      2,
+      4,
+      8,
+      12,
+      16,
+      24,
+      32,
+      48
+    ],
+    "budgets": [
+      1000,
+      2000,
+      4000,
+      8000
+    ],
+    "production_budget": 4000,
+    "live_model": "mistral-small-latest"
+  },
+  "grid": [
+    {
+      "depth": 0,
+      "budget": 1000,
+      "untrimmed_tokens": 32,
+      "median_prompt_tokens": 32,
+      "retained": 16,
+      "n": 16,
+      "retention_pct": 100.0
+    },
+    {
+      "depth": 0,
+      "budget": 2000,
+      "untrimmed_tokens": 32,
+      "median_prompt_tokens": 32,
+      "retained": 16,
+      "n": 16,
+      "retention_pct": 100.0
+    },
+    {
+      "depth": 0,
+      "budget": 4000,
+      "untrimmed_tokens": 32,
+      "median_prompt_tokens": 32,
+      "retained": 16,
+      "n": 16,
+      "retention_pct": 100.0
+    },
+    {
+      "depth": 0,
+      "budget": 8000,
+      "untrimmed_tokens": 32,
+      "median_prompt_tokens": 32,
+      "retained": 16,
+      "n": 16,
+      "retention_pct": 100.0
+    },
+    {
+      "depth": 2,
+      "budget": 1000,
+      "untrimmed_tokens": 637,
+      "median_prompt_tokens": 637,
+      "retained": 15,
+      "n": 16,
+      "retention_pct": 93.8
+    },
+    {
+      "depth": 2,
+      "budget": 2000,
+      "untrimmed_tokens": 637,
+      "median_prompt_tokens": 637,
+      "retained": 16,
+      "n": 16,
+      "retention_pct": 100.0
+    },
+    {
+      "depth": 2,
+      "budget": 4000,
+      "untrimmed_tokens": 637,
+      "median_prompt_tokens": 637,
+      "retained": 16,
+      "n": 16,
+      "retention_pct": 100.0
+    },
+    {
+      "depth": 2,
+      "budget": 8000,
+      "untrimmed_tokens": 637,
+      "median_prompt_tokens": 637,
+      "retained": 16,
+      "n": 16,
+      "retention_pct": 100.0
+    },
+    {
+      "depth": 4,
+      "budget": 1000,
+      "untrimmed_tokens": 1499,
+      "median_prompt_tokens": 942,
+      "retained": 2,
+      "n": 16,
+      "retention_pct": 12.5
+    },
+    {
+      "depth": 4,
+      "budget": 2000,
+      "untrimmed_tokens": 1499,
+      "median_prompt_tokens": 1499,
+      "retained": 16,
+      "n": 16,
+      "retention_pct": 100.0
+    },
+    {
+      "depth": 4,
+      "budget": 4000,
+      "untrimmed_tokens": 1499,
+      "median_prompt_tokens": 1499,
+      "retained": 16,
+      "n": 16,
+      "retention_pct": 100.0
+    },
+    {
+      "depth": 4,
+      "budget": 8000,
+      "untrimmed_tokens": 1499,
+      "median_prompt_tokens": 1499,
+      "retained": 16,
+      "n": 16,
+      "retention_pct": 100.0
+    },
+    {
+      "depth": 8,
+      "budget": 1000,
+      "untrimmed_tokens": 2994,
+      "median_prompt_tokens": 934,
+      "retained": 0,
+      "n": 16,
+      "retention_pct": 0.0
+    },
+    {
+      "depth": 8,
+      "budget": 2000,
+      "untrimmed_tokens": 2994,
+      "median_prompt_tokens": 1879,
+      "retained": 0,
+      "n": 16,
+      "retention_pct": 0.0
+    },
+    {
+      "depth": 8,
+      "budget": 4000,
+      "untrimmed_tokens": 2994,
+      "median_prompt_tokens": 2994,
+      "retained": 16,
+      "n": 16,
+      "retention_pct": 100.0
+    },
+    {
+      "depth": 8,
+      "budget": 8000,
+      "untrimmed_tokens": 2994,
+      "median_prompt_tokens": 2994,
+      "retained": 16,
+      "n": 16,
+      "retention_pct": 100.0
+    },
+    {
+      "depth": 12,
+      "budget": 1000,
+      "untrimmed_tokens": 4159,
+      "median_prompt_tokens": 898,
+      "retained": 0,
+      "n": 16,
+      "retention_pct": 0.0
+    },
+    {
+      "depth": 12,
+      "budget": 2000,
+      "untrimmed_tokens": 4159,
+      "median_prompt_tokens": 1893,
+      "retained": 0,
+      "n": 16,
+      "retention_pct": 0.0
+    },
+    {
+      "depth": 12,
+      "budget": 4000,
+      "untrimmed_tokens": 4159,
+      "median_prompt_tokens": 3898,
+      "retained": 6,
+      "n": 16,
+      "retention_pct": 37.5
+    },
+    {
+      "depth": 12,
+      "budget": 8000,
+      "untrimmed_tokens": 4159,
+      "median_prompt_tokens": 4159,
+      "retained": 16,
+      "n": 16,
+      "retention_pct": 100.0
+    },
+    {
+      "depth": 16,
+      "budget": 1000,
+      "untrimmed_tokens": 5368,
+      "median_prompt_tokens": 893,
+      "retained": 0,
+      "n": 16,
+      "retention_pct": 0.0
+    },
+    {
+      "depth": 16,
+      "budget": 2000,
+      "untrimmed_tokens": 5368,
+      "median_prompt_tokens": 1923,
+      "retained": 0,
+      "n": 16,
+      "retention_pct": 0.0
+    },
+    {
+      "depth": 16,
+      "budget": 4000,
+      "untrimmed_tokens": 5368,
+      "median_prompt_tokens": 3931,
+      "retained": 0,
+      "n": 16,
+      "retention_pct": 0.0
+    },
+    {
+      "depth": 16,
+      "budget": 8000,
+      "untrimmed_tokens": 5368,
+      "median_prompt_tokens": 5368,
+      "retained": 16,
+      "n": 16,
+      "retention_pct": 100.0
+    },
+    {
+      "depth": 24,
+      "budget": 1000,
+      "untrimmed_tokens": 8458,
+      "median_prompt_tokens": 873,
+      "retained": 0,
+      "n": 16,
+      "retention_pct": 0.0
+    },
+    {
+      "depth": 24,
+      "budget": 2000,
+      "untrimmed_tokens": 8458,
+      "median_prompt_tokens": 1936,
+      "retained": 0,
+      "n": 16,
+      "retention_pct": 0.0
+    },
+    {
+      "depth": 24,
+      "budget": 4000,
+      "untrimmed_tokens": 8458,
+      "median_prompt_tokens": 3918,
+      "retained": 0,
+      "n": 16,
+      "retention_pct": 0.0
+    },
+    {
+      "depth": 24,
+      "budget": 8000,
+      "untrimmed_tokens": 8458,
+      "median_prompt_tokens": 7915,
+      "retained": 6,
+      "n": 16,
+      "retention_pct": 37.5
+    },
+    {
+      "depth": 32,
+      "budget": 1000,
+      "untrimmed_tokens": 11245,
+      "median_prompt_tokens": 897,
+      "retained": 0,
+      "n": 16,
+      "retention_pct": 0.0
+    },
+    {
+      "depth": 32,
+      "budget": 2000,
+      "untrimmed_tokens": 11245,
+      "median_prompt_tokens": 1871,
+      "retained": 0,
+      "n": 16,
+      "retention_pct": 0.0
+    },
+    {
+      "depth": 32,
+      "budget": 4000,
+      "untrimmed_tokens": 11245,
+      "median_prompt_tokens": 3934,
+      "retained": 0,
+      "n": 16,
+      "retention_pct": 0.0
+    },
+    {
+      "depth": 32,
+      "budget": 8000,
+      "untrimmed_tokens": 11245,
+      "median_prompt_tokens": 7929,
+      "retained": 0,
+      "n": 16,
+      "retention_pct": 0.0
+    },
+    {
+      "depth": 48,
+      "budget": 1000,
+      "untrimmed_tokens": 16633,
+      "median_prompt_tokens": 915,
+      "retained": 0,
+      "n": 16,
+      "retention_pct": 0.0
+    },
+    {
+      "depth": 48,
+      "budget": 2000,
+      "untrimmed_tokens": 16633,
+      "median_prompt_tokens": 1821,
+      "retained": 0,
+      "n": 16,
+      "retention_pct": 0.0
+    },
+    {
+      "depth": 48,
+      "budget": 4000,
+      "untrimmed_tokens": 16633,
+      "median_prompt_tokens": 3875,
+      "retained": 0,
+      "n": 16,
+      "retention_pct": 0.0
+    },
+    {
+      "depth": 48,
+      "budget": 8000,
+      "untrimmed_tokens": 16633,
+      "median_prompt_tokens": 7904,
+      "retained": 0,
+      "n": 16,
+      "retention_pct": 0.0
+    }
+  ],
+  "live": [
+    {
+      "depth": 0,
+      "budget": 4000,
+      "retained": 16,
+      "correct": 16,
+      "graded": 16,
+      "errors": 0,
+      "accuracy_pct": 100.0
+    },
+    {
+      "depth": 4,
+      "budget": 4000,
+      "retained": 16,
+      "correct": 16,
+      "graded": 16,
+      "errors": 0,
+      "accuracy_pct": 100.0
+    },
+    {
+      "depth": 8,
+      "budget": 4000,
+      "retained": 16,
+      "correct": 16,
+      "graded": 16,
+      "errors": 0,
+      "accuracy_pct": 100.0
+    },
+    {
+      "depth": 12,
+      "budget": 4000,
+      "retained": 6,
+      "correct": 6,
+      "graded": 16,
+      "errors": 0,
+      "accuracy_pct": 37.5
+    },
+    {
+      "depth": 16,
+      "budget": 4000,
+      "retained": 0,
+      "correct": 0,
+      "graded": 16,
+      "errors": 0,
+      "accuracy_pct": 0.0
+    },
+    {
+      "depth": 24,
+      "budget": 4000,
+      "retained": 0,
+      "correct": 0,
+      "graded": 16,
+      "errors": 0,
+      "accuracy_pct": 0.0
+    },
+    {
+      "depth": 32,
+      "budget": 4000,
+      "retained": 0,
+      "correct": 0,
+      "graded": 16,
+      "errors": 0,
+      "accuracy_pct": 0.0
+    }
+  ],
+  "recall_horizon": {
+    "1000": 0,
+    "2000": 4,
+    "4000": 8,
+    "8000": 16
+  }
+}
